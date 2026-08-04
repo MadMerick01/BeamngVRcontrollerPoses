@@ -33,6 +33,13 @@ committed.
 
 ## Temporary activation (reversible)
 
+> **Release blocker:** static security review found that the current
+> `xrLocateSpace` interception takes a blocking mapping mutex. No Windows binary
+> has been built or packaged, and this source must not be installed until that
+> high-frequency-path issue is corrected and a clean MSVC x64 build is verified.
+> See `docs/FIRST_WINDOWS_TEST.md` for the audit result, exact test order, logs,
+> session-only activation, and recovery procedure.
+
 Do not replace `openxr_loader.dll`, rename VDXR, or register this as a runtime.
 Keep the DLL beside the manifest and launch BeamNG from the same PowerShell:
 
