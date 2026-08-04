@@ -33,9 +33,11 @@ committed.
 
 ## Temporary activation (reversible)
 
-> **Current status:** the former blocking `xrLocateSpace` mapping mutex has been
-> replaced by immutable atomic snapshots plus session/space in-flight lifetime
-> guards. The checked-in Windows job performs a clean MSVC x64 build, PE/export,
+> **Installation warning:** PR #4 must not be merged and its artifacts must not be
+> released or installed until the complete Windows x64 workflow passes. The
+> former blocking `xrLocateSpace` mapping mutex has been replaced by immutable
+> atomic snapshots plus session/space in-flight lifetime guards. The checked-in
+> Windows job performs a clean MSVC x64 build, PE/export,
 > manifest/package and test verification. Do not install a package from an
 > unpassed job, and do not treat those checks as VDXR/Quest 3 validation. The
 > first in-headset test and recovery procedure remain in
