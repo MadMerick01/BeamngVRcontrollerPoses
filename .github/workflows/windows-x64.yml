@@ -50,10 +50,30 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           $dist=Resolve-Path openxr-layer/dist
           $dll=Join-Path $dist BeamNGVRPosesLayer.dll
-          $headers=& dumpbin /headers $dll | Out-String
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (!(Test-Path $vswhere)) {
+            throw "vswhere.exe was not found"
+          }
+          $vsInstall = & $vswhere `
+            -latest `
+            -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
+          if ($LASTEXITCODE -ne 0 -or !$vsInstall) {
+            throw "Visual Studio C++ installation could not be located"
+          }
+          $dumpbin = Get-ChildItem `
+            -Path (Join-Path $vsInstall 'VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe') `
+            -File |
+            Sort-Object FullName |
+            Select-Object -Last 1
+          if (!$dumpbin) {
+            throw "64-bit dumpbin.exe could not be located"
+          }
+          $headers=& $dumpbin.FullName /headers $dll | Out-String
           if ($LASTEXITCODE -ne 0) { throw "dumpbin header inspection failed with exit code $LASTEXITCODE" }
           if($headers -notmatch '8664 machine \(x64\)'){throw 'DLL is not an x64 PE image'}
-          $exports=& dumpbin /exports $dll | Out-String
+          $exports=& $dumpbin.FullName /exports $dll | Out-String
           if ($LASTEXITCODE -ne 0) { throw "dumpbin export inspection failed with exit code $LASTEXITCODE" }
           if($exports -notmatch 'xrNegotiateLoaderApiLayerInterface'){throw 'Negotiation export missing'}
           $manifest=Get-Content (Join-Path $dist XR_APILAYER_BEAMNG_controller_poses.json) -Raw | ConvertFrom-Json
