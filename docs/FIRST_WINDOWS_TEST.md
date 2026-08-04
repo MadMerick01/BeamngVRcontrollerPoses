@@ -62,9 +62,10 @@ the logs.
 
 ## Build status and security inspection
 
-The repository contains source only. No Windows DLL has been produced or tested
-in this environment. A clean MSVC x64 Release build and PE machine check remain
-mandatory before a binary package can be called verified. Use:
+The repository contains source only. The Windows x64 GitHub Actions job now
+performs the clean build, Python tests, PE machine/export checks, manifest/package
+validation, and hashes before uploading an artifact. A package is verified only
+when that job passes. A local equivalent is:
 
 ```powershell
 Remove-Item openxr-layer\build\windows-x64 -Recurse -Force -ErrorAction Ignore
@@ -87,10 +88,10 @@ not alter BeamNG's location. Position and orientation VALID bits are both requir
 The UDP representation is JSON protocol 2 with named scalar fields, so it has no
 C/C++ padding or ABI dependence.
 
-However, static inspection also found a release blocker: the current
-`xrLocateSpace` hook holds the global mapping mutex while calling downstream, and
-destruction uses the same mapping storage. Although that prevents use-after-free,
-it violates the requirement that the high-frequency path have no blocking lock.
-Consequently the source is **not approved for first installation or binary
-packaging yet**. The scripts are recovery aids for a future verified DLL, not a
-claim that the current source is secure or build-tested.
+The former global-mutex release blocker is corrected: `xrLocateSpace` reads an
+immutable atomically published registry and uses atomic session/space in-flight
+guards. Destruction unpublishes and retires handles before waiting outside the
+writer lock, and downstream calls occur without project locks. See
+`docs/CONCURRENCY.md` for the full before/after audit. This is approval to produce
+the CI artifact after every automated check passes; it is **not** a claim of VDXR
+or Quest 3 validation. Do not install artifacts from failed or incomplete jobs.
