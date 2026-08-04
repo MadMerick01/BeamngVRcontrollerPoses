@@ -7,6 +7,23 @@ def close(a,b): assert all(abs(x-y)<1e-6 for x,y in zip(a,b))
 def test_identity_hmd_preserves_controller():
     c=Pose((.2,1.1,-.4),I); assert controller_world(Pose((0,0,0),I),Pose((0,0,0),I),c)==c
 
+def test_identity_composition_preserves_pose_and_xyzw_order():
+    child=Pose((1.,2.,3.),(.1,.2,.3,.9))
+    result=compose(Pose((0.,0.,0.),I),child)
+    close(result.position,child.position)
+    # qnorm preserves the OpenXR component order: x, y, z, w.
+    assert result.orientation[0] > 0 and result.orientation[1] > result.orientation[0]
+    assert result.orientation[2] > result.orientation[1] and result.orientation[3] > result.orientation[2]
+
+def test_translation_composition_adds_parent_and_child():
+    result=compose(Pose((10.,-2.,5.),I),Pose((1.,3.,-4.),I))
+    close(result.position,(11.,1.,1.));close(result.orientation,I)
+
+def test_parent_quarter_turn_rotates_child_translation():
+    qz=(0.,0.,sin(pi/4),cos(pi/4))
+    result=compose(Pose((0.,0.,0.),qz),Pose((1.,0.,0.),I))
+    close(result.position,(0.,1.,0.));close(result.orientation,qz)
+
 def test_shared_tracking_translation_cancels():
     h=Pose((10,2,3),I); c=Pose((10.3,1.8,2.5),I)
     close(controller_world(Pose((100,20,5),I),h,c).position,(100.3,19.8,4.5))

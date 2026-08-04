@@ -161,16 +161,23 @@ bool consume(Sample& sample) {
   return true;
 }
 
+XrQuaternionf multiply(const XrQuaternionf& a, const XrQuaternionf& b) {
+  // OpenXR stores quaternion components in x, y, z, w order.
+  return {a.w*b.x+a.x*b.w+a.y*b.z-a.z*b.y,
+          a.w*b.y-a.x*b.z+a.y*b.w+a.z*b.x,
+          a.w*b.z+a.x*b.y-a.y*b.x+a.z*b.w,
+          a.w*b.w-a.x*b.x-a.y*b.y-a.z*b.z};
+}
 XrPosef inverse(const XrPosef& p) {
   auto q=p.orientation; XrQuaternionf qi{-q.x,-q.y,-q.z,q.w}; auto v=p.position;
-  XrQuaternionf t{-v.x,-v.y,-v.z,0}, qc{-qi.x,-qi.y,-qi.z,qi.w};
-  auto mul=[](auto a,auto b){return XrQuaternionf{a.w*b.x+a.x*b.w+a.y*b.z-a.z*b.y,a.w*b.y-a.x*b.z+a.y*b.w+a.z*b.x,a.w*b.z+a.x*b.y-a.y*b.x+a.z*b.w,a.w*b.w-a.x*b.x-a.y*b.y-a.z*b.z};};
-  auto r=mul(mul(qi,t),qc); return {qi,{r.x,r.y,r.z}};
+  XrQuaternionf t{-v.x,-v.y,-v.z,0.0f}, qc{-qi.x,-qi.y,-qi.z,qi.w};
+  auto r=multiply(multiply(qi,t),qc); return {qi,{r.x,r.y,r.z}};
 }
 XrPosef compose(const XrPosef& a,const XrPosef& b) {
-  auto mul=[](auto x,auto y){return XrQuaternionf{x.w*y.x+x.x*y.w+x.y*y.z-x.z*y.y,x.w*y.y-x.x*y.z+x.y*y.w+x.z*y.x,x.w*y.z+x.x*y.y-x.y*y.x+x.z*y.w,x.w*y.w-x.x*y.x-x.y*y.y-x.z*y.z};};
-  auto q=mul(a.orientation,b.orientation), ac=XrQuaternionf{-a.orientation.x,-a.orientation.y,-a.orientation.z,a.orientation.w};
-  auto t=mul(mul(a.orientation,{b.position.x,b.position.y,b.position.z,0}),ac);
+  auto q=multiply(a.orientation,b.orientation);
+  XrQuaternionf ac{-a.orientation.x,-a.orientation.y,-a.orientation.z,a.orientation.w};
+  XrQuaternionf translation{b.position.x,b.position.y,b.position.z,0.0f};
+  auto t=multiply(multiply(a.orientation,translation),ac);
   return {q,{a.position.x+t.x,a.position.y+t.y,a.position.z+t.z}};
 }
 
