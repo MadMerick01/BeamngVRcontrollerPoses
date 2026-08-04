@@ -1,5 +1,7 @@
 """Testable model of the native API layer's identity, lifecycle and packet rules."""
 import json
+import threading
+from types import MappingProxyType
 from dataclasses import dataclass
 from .math3d import Pose, compose, inverse
 
@@ -34,9 +36,53 @@ class SpaceRegistry:
         self.sessions.pop(session, None)
         self.spaces = {k:v for k,v in self.spaces.items() if v[0] != session}
 
+@dataclass(frozen=True)
+class RegistrySnapshot:
+    """Immutable reader view used to test the native copy-on-write contract."""
+    generation: int
+    sessions: object
+    spaces: object
+
+class SnapshotRegistry:
+    """Writer-locked publication; snapshot() itself never takes that lock."""
+    def __init__(self):
+        self._writer = threading.Lock()
+        self._generation = 0
+        self._sessions, self._spaces = {}, {}
+        self._snapshot = RegistrySnapshot(0, MappingProxyType({}), MappingProxyType({}))
+        self.destroyed_views = []
+    def snapshot(self): return self._snapshot
+    def _publish(self):
+        self._generation += 1
+        self._snapshot = RegistrySnapshot(self._generation,
+            MappingProxyType(dict(self._sessions)), MappingProxyType(dict(self._spaces)))
+    def add_session(self, session, view):
+        with self._writer: self._sessions[session] = view; self._publish()
+    def add_space(self, space, session, hand):
+        with self._writer: self._spaces[space] = (session, hand); self._publish()
+    def destroy_space(self, space):
+        with self._writer: self._spaces.pop(space, None); self._publish()
+    def destroy_session(self, session):
+        with self._writer:
+            view = self._sessions.pop(session, None)
+            self._spaces = {k:v for k,v in self._spaces.items() if v[0] != session}
+            self._publish()
+        if view is not None: self.destroyed_views.append(view)
+    @staticmethod
+    def lookup(snapshot, space):
+        metadata = snapshot.spaces.get(space)
+        if not metadata or metadata[0] not in snapshot.sessions: return None
+        return metadata, snapshot.sessions[metadata[0]]
+
 def usable(flags): return flags & REQUIRED_VALID == REQUIRED_VALID
 def relative_pose(hmd_in_base: Pose, controller_in_base: Pose) -> Pose:
     return compose(inverse(hmd_in_base), controller_in_base)
+
+def model_locate(app_result, app_pose, app_flags, view_result, view_pose, view_flags):
+    """Small fail-open oracle for native interception result/validity rules."""
+    if app_result != 'success': return app_result, None
+    valid = view_result == 'success' and usable(app_flags) and usable(view_flags)
+    return app_result, (relative_pose(view_pose, app_pose), app_flags) if valid else None
 
 def encode_packet(counter, xr_time, left, right):
     def hand(value):

@@ -33,12 +33,15 @@ committed.
 
 ## Temporary activation (reversible)
 
-> **Release blocker:** static security review found that the current
-> `xrLocateSpace` interception takes a blocking mapping mutex. No Windows binary
-> has been built or packaged, and this source must not be installed until that
-> high-frequency-path issue is corrected and a clean MSVC x64 build is verified.
-> See `docs/FIRST_WINDOWS_TEST.md` for the audit result, exact test order, logs,
-> session-only activation, and recovery procedure.
+> **Installation warning:** PR #4 must not be merged and its artifacts must not be
+> released or installed until the complete Windows x64 workflow passes. The
+> former blocking `xrLocateSpace` mapping mutex has been replaced by immutable
+> atomic snapshots plus session/space in-flight lifetime guards. The checked-in
+> Windows job performs a clean MSVC x64 build, PE/export,
+> manifest/package and test verification. Do not install a package from an
+> unpassed job, and do not treat those checks as VDXR/Quest 3 validation. The
+> first in-headset test and recovery procedure remain in
+> `docs/FIRST_WINDOWS_TEST.md`.
 
 Do not replace `openxr_loader.dll`, rename VDXR, or register this as a runtime.
 Keep the DLL beside the manifest and launch BeamNG from the same PowerShell:
@@ -74,7 +77,7 @@ ORIENTATION_VALID are required (TRACKED bits are preserved in `flags`); invalid
 tracking immediately publishes invalidity rather than recycling an old pose.
 
 For every qualifying locate, the layer calls the *downstream* `xrLocateSpace`
-directly for BeamNG's VIEW space using the exact same `baseSpace` and `XrTime`, then
+directly for its session-owned VIEW space using the exact same `baseSpace` and `XrTime`, then
 computes `inverse(hmdInBase) * controllerInBase`. Samples are merged only when the
 session/base/time key is compatible. The Lua bridge maps/calibrates that relative
 pose and computes `beamngHmdWorld * controllerRelativeToHmd`, retains stale packet
