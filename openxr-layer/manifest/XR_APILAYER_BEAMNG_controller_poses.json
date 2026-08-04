@@ -1,0 +1,11 @@
+{
+  "file_format_version": "1.0.0",
+  "api_layer": {
+    "name": "XR_APILAYER_BEAMNG_controller_poses",
+    "library_path": ".\\BeamNGVRPosesLayer.dll",
+    "api_version": "1.0",
+    "implementation_version": "1",
+    "description": "Read-only BeamNG controller pose publisher",
+    "disable_environment": "BEAMNG_VR_POSES_DISABLE"
+  }
+}

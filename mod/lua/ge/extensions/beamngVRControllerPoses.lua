@@ -25,10 +25,11 @@ local function beamHmd()
   if not qw then return nil end
   return {p={x,y,z},q={qx,qy,qz,qw}}
 end
-local function updateHand(name, raw, hmdRaw, hmdWorld, now)
+local function updateHand(name, raw, hmdWorld, now)
   local out=state[name..'ControllerWorld']; out.valid=false
-  if not raw or not raw.valid or not hmdRaw or not hmdRaw.valid then return end
-  local rel=compose(inverse(mappedPose(hmdRaw)),mappedPose(raw))
+  if not raw or not raw.valid then return end
+  -- Protocol 2 is already inverse(hmdInBase) * controllerInBase, sampled at one XrTime/baseSpace.
+  local rel=mappedPose(raw)
   local offset={p=cfg[name..'PositionOffset'],q=cfg[name..'RotationOffset']}
   local world=compose(hmdWorld,compose(rel,offset))
   out.position=world.p; out.orientation=world.q; out.valid=true; out.updateCounter=latest.counter; out.ageMs=(now-latest.received)*1000
@@ -39,7 +40,7 @@ local function receive()
     local data=sock:receive()
     if not data then break end
     local ok,p=pcall(jsonDecode,data)
-    if ok and p and p.v==1 and type(p.counter)=='number' and p.counter>lastCounter then p.received=socketlib.gettime(); latest=p; lastCounter=p.counter end
+    if ok and p and p.v==2 and type(p.counter)=='number' and p.counter>lastCounter then p.received=socketlib.gettime(); latest=p; lastCounter=p.counter end
   end
 end
 function M.onExtensionLoaded()
@@ -51,7 +52,7 @@ end
 function M.onPreRender(dtReal,dtSim,dtRaw)
   if not sock then return end; receive(); local now=socketlib.gettime(); local h=beamHmd()
   if not latest or not h or (now-latest.received)*1000>cfg.staleAfterMs then state.leftControllerWorld.valid=false; state.rightControllerWorld.valid=false; return end
-  updateHand('left',latest.left,latest.hmd,h,now); updateHand('right',latest.right,latest.hmd,h,now)
+  updateHand('left',latest.left,h,now); updateHand('right',latest.right,h,now)
   local c=ColorF(cfg.sphereColour[1],cfg.sphereColour[2],cfg.sphereColour[3],cfg.sphereColour[4]); local radius=cfg.sphereDiameter/2
   for _,hand in ipairs({'left','right'}) do local p=state[hand..'ControllerWorld']; if p.valid then debugDrawer:drawSphere(vec3(p.position),radius,c) end end
   if now-lastLog>cfg.logIntervalSeconds then

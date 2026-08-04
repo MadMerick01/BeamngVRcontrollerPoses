@@ -1,0 +1,11 @@
+cmake_minimum_required(VERSION 3.21)
+project(BeamNGVRPosesOpenXRLayer LANGUAGES CXX)
+
+find_package(OpenXR CONFIG REQUIRED)
+add_library(BeamNGVRPosesLayer SHARED src/layer.cpp)
+target_compile_features(BeamNGVRPosesLayer PRIVATE cxx_std_20)
+target_link_libraries(BeamNGVRPosesLayer PRIVATE OpenXR::headers ws2_32)
+target_compile_definitions(BeamNGVRPosesLayer PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+set_target_properties(BeamNGVRPosesLayer PROPERTIES OUTPUT_NAME "BeamNGVRPosesLayer")
+install(TARGETS BeamNGVRPosesLayer RUNTIME DESTINATION .)
+install(FILES manifest/XR_APILAYER_BEAMNG_controller_poses.json DESTINATION .)

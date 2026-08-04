@@ -1,102 +1,99 @@
-# BeamngVRcontrollerPoses — Stage 1
+# BeamNG VR Controller Poses — Stage 1 (OpenXR / VDXR)
 
-This proof of concept publishes role-labelled SteamVR HMD/controller tracking over
-localhost UDP and draws two 7 cm blue world-space diagnostics in BeamNG. It has no
-hands, IK, input mapping, raycasts, game hooks, or hard-coded offsets. See
-[`docs/INSPECTION.md`](docs/INSPECTION.md) for dump evidence, alternatives, and
-explicit unknowns.
+The primary architecture is now:
 
-> **Validation status:** transform and transport code is source-tested here. It is
-> not honest to claim the milestone complete until the OpenVR/OpenXR coexistence,
-> BeamNG HMD getter convention, and `debugDrawer` stereo behaviour pass the listed
-> in-headset tests.
-
-## Components and generated files
-
-* `beamng-vr-poses` is the Python console program. It uses OpenVR's background app
-  mode, reads all devices from the same standing tracking universe, labels
-  controllers by runtime role, and transmits validity, monotonic time and counter.
-* `beamngVRControllerPoses.lua` is the non-blocking GE Lua receiver/converter and
-  diagnostic renderer. `getState()` exposes both final poses to later mod code.
-* No binary is checked in. `pip` creates the platform launcher
-  `beamng-vr-poses.exe` (a Python entry-point wrapper, not a native DLL). A mod ZIP
-  is only an archive of the `mod/` tree.
-
-## Build and install
-
-On the Windows PC running BeamNG, with Python 3.10+ and SteamVR installed:
-
-```powershell
-py -m venv .venv
-.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-pip install ".[steamvr]"
-python -m pytest                 # also install .[test], or use a dev checkout
-Compress-Archive -Path mod\* -DestinationPath beamngVRControllerPoses.zip
+```text
+BeamNG → the official OpenXR loader → this API layer → VDXR
+                                      ↓ lock-free handoff
+                                loopback UDP → BeamNG Lua
 ```
 
-Copy the ZIP to
-`%LOCALAPPDATA%\BeamNG.drive\0.39\mods\unpacked\beamngVRControllerPoses\` and
-extract it so that `lua/ge/extensions/beamngVRControllerPoses.lua` and
-`settings/beamngVRControllerPoses.json` are directly below that directory. An
-unpacked directory is recommended for calibration. In the BeamNG GE Lua console:
+The layer observes the pose-action spaces which BeamNG already creates. It never
+creates an application, instance, session, or competing OpenXR connection, and it
+never changes a pose returned to BeamNG. SteamVR/OpenVR is **not required**. The
+old Python OpenVR publisher remains only as an unsupported fallback entry point,
+`beamng-vr-poses-openvr-fallback`, so the earlier work remains recoverable.
+
+## Build the 64-bit Windows layer
+
+Install Visual Studio 2022 (Desktop C++ workload), CMake, and the official OpenXR
+SDK NuGet/CMake package, then use an **x64 Native Tools** prompt:
+
+```powershell
+cd openxr-layer
+cmake --preset windows-x64 -DOpenXR_DIR=C:\path\to\OpenXR\lib\cmake\openxr
+cmake --build --preset windows-x64
+cmake --install build\windows-x64 --config Release
+```
+
+`dist` must contain `BeamNGVRPosesLayer.dll` and
+`XR_APILAYER_BEAMNG_controller_poses.json`. BeamNG is 64-bit, so a Win32 DLL will
+not load. This Linux checkout has no Windows compiler; no untested binary is
+committed.
+
+## Temporary activation (reversible)
+
+Do not replace `openxr_loader.dll`, rename VDXR, or register this as a runtime.
+Keep the DLL beside the manifest and launch BeamNG from the same PowerShell:
+
+```powershell
+$env:XR_API_LAYER_PATH=(Resolve-Path .\openxr-layer\dist)
+$env:XR_ENABLE_API_LAYERS='XR_APILAYER_BEAMNG_controller_poses'
+$env:XR_LOADER_DEBUG='all'
+Start-Process 'C:\Program Files (x86)\Steam\steamapps\common\BeamNG.drive\Bin64\BeamNG.drive.x64.exe' -Wait -NoNewWindow
+```
+
+`XR_LOADER_DEBUG=all` should name `XR_APILAYER_BEAMNG_controller_poses`; successful
+VR startup and frames confirm that it chained to the currently selected VDXR
+runtime. The layer's packet `source` is `openxr-api-layer`. To disable it fully,
+close BeamNG and remove the variables (`Remove-Item Env:XR_API_LAYER_PATH,
+Env:XR_ENABLE_API_LAYERS,Env:XR_LOADER_DEBUG`) or set
+`BEAMNG_VR_POSES_DISABLE=1`. No registry change is made.
+
+The publisher thread sends UDP to `127.0.0.1:44441`; a missing receiver is harmless.
+High-frequency hooks do no file I/O and do not send network packets. Loader output
+is the initial discovery/chaining diagnostic source; capture it from the launching
+console. The background publisher writes its throttled five-second diagnostic to
+`%TEMP%\BeamNGVRPosesLayer.log`.
+
+## Capture rules
+
+The layer tracks action type/name/localised name/subaction paths, action-set and
+instance ownership, action spaces, session ownership, VIEW spaces, and destruction.
+Only pose actions explicitly associated with `/user/hand/left` or
+`/user/hand/right` qualify; creation order and a two-space assumption are never
+used. `xrLocateSpace` is passed through first. Both POSITION_VALID and
+ORIENTATION_VALID are required (TRACKED bits are preserved in `flags`); invalid
+tracking immediately publishes invalidity rather than recycling an old pose.
+
+For every qualifying locate, the layer calls the *downstream* `xrLocateSpace`
+directly for BeamNG's VIEW space using the exact same `baseSpace` and `XrTime`, then
+computes `inverse(hmdInBase) * controllerInBase`. Samples are merged only when the
+session/base/time key is compatible. The Lua bridge maps/calibrates that relative
+pose and computes `beamngHmdWorld * controllerRelativeToHmd`, retains stale packet
+rejection, exposes `getState()`, and draws the two bright-blue stereo spheres.
+
+## Install the BeamNG mod and test
+
+Copy `mod/` as an unpacked mod, preserving
+`lua/ge/extensions/beamngVRControllerPoses.lua` and the settings file. In GE Lua:
 
 ```lua
 extensions.load('beamngVRControllerPoses')
 ```
 
-Start SteamVR first, then run `beamng-vr-poses`. The provider defaults to
-`127.0.0.1:44441`, 90 Hz and a five-second diagnostic cadence. Run
-`beamng-vr-poses --help` for overrides. UDP is loopback-only; do not bind publicly.
+Enable BeamNG OpenXR controllers, enter VR through Virtual Desktop/VDXR, and move
+each Quest 3 controller independently. Verify head turns, vehicle movement and VR
+recenter do not introduce offsets; disabling/occluding either controller hides its
+sphere, and stopping publication hides both within `staleAfterMs`. Inspect
+`extensions.beamngVRControllerPoses.getState()` for the world transforms. Calibration,
+sphere size/colour, port, stale threshold and log cadence remain in
+`mod/settings/beamngVRControllerPoses.json`.
 
-## Configuration
+## Tests and preserved fallback
 
-`mod/settings/beamngVRControllerPoses.json` documents every calibration value.
-Indices are Lua-style: `axisOrder=[1,2,3]`; signs are independently selectable.
-`quaternionBasis=[x,y,z,w]` performs `basis * raw * inverse(basis)`. Position
-mapping happens before relative composition. Per-hand position (BeamNG units) and
-rotation offsets are applied in controller-local space. Defaults intentionally
-contain no hidden correction. Sphere diameter is `0.07` BeamNG units and RGBA is
-bright blue. Packets older than 150 ms invalidate both hands; individual OpenVR
-invalidity hides only that hand.
-
-The packet is UTF-8 JSON with protocol `v=1`, `counter`, provider
-`monotonic_ns`, source, and `hmd`/`left`/`right` objects. Each valid pose has
-`p=[x,y,z]`, `q=[x,y,z,w]`, and `valid=true`. Provider time is diagnostic only;
-the receiver uses local arrival age, avoiding unsynchronised-clock errors.
-
-## Exact in-game Stage 1 test
-
-1. Enable BeamNG VR controllers (`openXRuseControllers`), start SteamVR, BeamNG VR,
-   the provider, and load the extension. Confirm five-second logs show three valid
-   devices and sub-150 ms age.
-2. Move each controller separately; only its sphere may move. Move right, up, and
-   toward the HMD. Adjust only the documented axis order/sign/basis if directions
-   disagree, record the final values, then reload the extension.
-3. Rotate each stationary controller and inspect
-   `dump(extensions.beamngVRControllerPoses.getState())`; its orientation must
-   change while its centre stays fixed.
-4. Turn and translate the head while holding controllers fixed in the room; then
-   drive, rotate the vehicle, and use BeamNG VR recenter. Spheres must remain
-   coherent without a duplicated offset.
-5. Occlude/disable one controller, then stop the provider. Its sphere must vanish;
-   both must vanish within 150 ms when the provider stops.
-6. Close one eye at a time and verify each sphere occupies the same world point
-   with correct parallax (not a desktop overlay).
-
-## Diagnostics and troubleshooting
-
-Logs are throttled by `logIntervalSeconds`. Provider logs device validity. BeamNG
-logs update counter, receive age, mapping, validity, relative transform and final
-world pose. If nothing appears, check console load errors, matching port, Windows
-Firewall, SteamVR roles, and that packets remain loopback-local. If a
-`drawSphere` method error occurs, return the log: the dump exposes opaque
-`debugDrawer` userdata but not method signatures, and the persistent `TSStatic`
-fallback must be selected after confirming the installed build's supported API.
-
-After the first test, return `beamng.log` from the user directory, provider console
-output, active OpenXR runtime/headset/controller model, final config, whether each
-eye rendered the primitives, and a new OpenXR API dump covering startup, recenter,
-tracking loss, and recovery. Do not publish logs without checking them for paths or
-personal data.
-
+Run `python -m pytest`. Tests cover transform composition, identity mapping,
+multiple candidate spaces, lifecycle, validity flags, coherent time/base relative
+math, protocol-2 encoding/decoding, stale counters, and UDP-without-a-receiver.
+The fallback requires `pip install .[steamvr]` and SteamVR, but is not part of the
+primary installation or test route.
