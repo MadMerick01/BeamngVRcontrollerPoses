@@ -109,8 +109,8 @@ def test_locate_hot_path_has_no_blocking_or_io_operations():
 
 def test_valid_candidate_not_overwritten_by_later_invalid_candidate_source():
     source=(Path(__file__).parents[1]/'openxr-layer/src/layer.cpp').read_text()
-    assert 'if(candidate.valid || !current.valid) current=candidate;' in source
-    assert 'A later invalid' in source
+    assert 'if(incoming.valid)' in source
+    assert 'without latching stale ghost controllers indefinitely' in source
 
 def test_lua_uses_beamng_camera_world_transform_and_diagnostics():
     source=(Path(__file__).parents[1]/'mod/lua/ge/extensions/beamngVRControllerPoses.lua').read_text()
@@ -119,3 +119,47 @@ def test_lua_uses_beamng_camera_world_transform_and_diagnostics():
     assert 'getCameraPosRotPredictedXYZXYZW' not in source
     assert 'cameraTestSphereWorld' in source
     assert 'rawLeft=%s rawRight=%s leftWorld=%s rightWorld=%s' in source
+
+def test_left_then_right_valid_updates_publish_combined_snapshot():
+    p=StableHandPublisher(); p.update('left','L1',True,0); snap=p.update('right','R1',True,10)
+    assert snap['left']['valid'] and snap['right']['valid']
+
+def test_right_update_does_not_clear_fresh_left_pose():
+    p=StableHandPublisher(); p.update('left','L1',True,0); snap=p.update('right','R1',True,50)
+    assert snap['left']['valid'] and snap['left']['candidate'] == 'L1'
+
+def test_left_update_does_not_clear_fresh_right_pose():
+    p=StableHandPublisher(); p.update('right','R1',True,0); snap=p.update('left','L1',True,50)
+    assert snap['right']['valid'] and snap['right']['candidate'] == 'R1'
+
+def test_invalid_secondary_candidate_cannot_overwrite_valid_selected_candidate():
+    p=StableHandPublisher(); p.update('left','L1',True,0); snap=p.update('left','L2',False,10)
+    assert snap['left']['valid'] and snap['left']['candidate'] == 'L1'
+
+def test_hand_remains_valid_during_brief_gap_within_grace_threshold():
+    p=StableHandPublisher(); p.update('left','L1',True,0); snap=p.snapshot(124)
+    assert snap['left']['valid'] and snap['left']['ageMs'] == 124
+
+def test_hand_becomes_invalid_after_individual_freshness_timeout():
+    p=StableHandPublisher(); p.update('left','L1',True,0); snap=p.snapshot(126)
+    assert not snap['left']['valid']
+
+def test_one_controller_can_expire_while_other_remains_valid():
+    p=StableHandPublisher(); p.update('left','L1',True,0); p.update('right','R1',True,100); snap=p.snapshot(130)
+    assert not snap['left']['valid'] and snap['right']['valid']
+
+def test_session_and_space_destruction_clear_cached_poses():
+    p=StableHandPublisher(); p.update('left','L1',True,0); p.update('right','R1',True,0); p.destroy_space('L1')
+    assert not p.snapshot(1)['left']['valid'] and p.snapshot(1)['right']['valid']
+    p.destroy_session(); assert not p.snapshot(2)['right']['valid']
+
+def test_candidate_switching_uses_valid_replacement_without_invalid_pulse():
+    p=StableHandPublisher(); p.update('left','L1',True,0); p.update('left','L2',True,10); snap=p.snapshot(126)
+    assert snap['left']['valid'] and snap['left']['candidate'] == 'L2'
+
+def test_locate_hot_path_still_has_no_project_locks_io_or_allocation_after_stability_fix():
+    source=(Path(__file__).parents[1]/'openxr-layer/src/layer.cpp').read_text()
+    body=source.split('layerLocateSpace(',1)[1].split('\n}\n\nXRAPI_ATTR',1)[0]
+    for forbidden in ('lock_guard','writerMutex','sendto(','fopen(','sleep_for','make_shared','new ','candidateSlot('):
+        assert forbidden not in body
+    assert 'sample.candidate=space' in body
