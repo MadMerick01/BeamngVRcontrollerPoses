@@ -97,3 +97,42 @@ def decode_packet(data, last_counter=-1):
         h=packet.get(name)
         if not isinstance(h,dict) or h.get('valid') != usable(int(h.get('flags',0))) or len(h.get('p',[])) != 3 or len(h.get('q',[])) != 4: raise ValueError('invalid hand')
     return packet
+
+class StableHandPublisher:
+    """Python oracle for the layer's per-hand candidate cache and 125 ms grace."""
+    def __init__(self, freshness_ms=125):
+        self.freshness_ms = freshness_ms
+        self.hands = {"left": {"selected": None, "candidates": {}, "updates": 0}, "right": {"selected": None, "candidates": {}, "updates": 0}}
+    def update(self, hand, candidate, valid, now_ms, pose=None, flags=REQUIRED_VALID):
+        state = self.hands[hand]
+        if valid:
+            state["candidates"][candidate] = {"pose": pose or Pose((0,0,0),(0,0,0,1)), "flags": flags, "time": now_ms, "updates": state["candidates"].get(candidate, {}).get("updates", 0) + 1}
+            state["updates"] += 1
+            if state["selected"] is None:
+                state["selected"] = candidate
+        return self.snapshot(now_ms)
+    def destroy_space(self, candidate):
+        for state in self.hands.values():
+            state["candidates"].pop(candidate, None)
+            if state["selected"] == candidate:
+                state["selected"] = None
+    def destroy_session(self):
+        for state in self.hands.values():
+            state["selected"] = None; state["candidates"].clear()
+    def _hand(self, name, now_ms):
+        state = self.hands[name]
+        def fresh(item): return now_ms - item[1]["time"] <= self.freshness_ms
+        selected = state["selected"]
+        chosen = None
+        if selected in state["candidates"] and fresh((selected, state["candidates"][selected])):
+            chosen = (selected, state["candidates"][selected])
+        else:
+            fresh_candidates = [item for item in state["candidates"].items() if fresh(item)]
+            chosen = max(fresh_candidates, key=lambda item: item[1]["time"], default=None)
+        if not chosen:
+            state["selected"] = None
+            return {"valid": False, "candidate": None, "updates": state["updates"], "ageMs": 0}
+        state["selected"] = chosen[0]
+        return {"valid": True, "candidate": chosen[0], "updates": state["updates"], "ageMs": now_ms - chosen[1]["time"], "pose": chosen[1]["pose"]}
+    def snapshot(self, now_ms):
+        return {"left": self._hand("left", now_ms), "right": self._hand("right", now_ms)}
