@@ -23,6 +23,7 @@ that its root contains:
 ```text
 BeamNGVRPosesLayer.dll
 XR_APILAYER_BEAMNG_controller_poses.json
+Launch-BeamNGVRControllerPoses.cmd
 scripts\
 mod\
 docs\
@@ -63,25 +64,95 @@ cmake --install build\windows-x64 --config Release
 not load. This Linux checkout has no Windows compiler; no untested binary is
 committed.
 
-## Install and temporarily activate the layer
+## Recommended everyday launch
 
-Do not replace `openxr_loader.dll`, rename VDXR, or register this as a runtime.
-Keep the DLL beside the manifest; activation is process-scoped and makes no
-registry changes.
+Do not replace `openxr_loader.dll`, rename VDXR, register this project as an
+OpenXR runtime, or install it as a global implicit layer. For normal use, extract
+the Windows x64 package and double-click the package-root launcher:
 
-First confirm that VDXR is the selected OpenXR runtime:
-
-```powershell
-.\scripts\Confirm-VDXRRuntime.ps1
+```text
+Launch-BeamNGVRControllerPoses.cmd
 ```
 
-If Windows blocks unsigned local scripts, first run:
+The CMD launcher finds its own package directory, starts PowerShell with
+`-NoLogo -NoProfile -ExecutionPolicy Bypass`, and applies that bypass only to the
+temporary launcher process. It does not run `Set-ExecutionPolicy`, does not need
+administrator privileges, and does not make persistent registry or environment
+changes.
+
+After double-clicking:
+
+1. The launcher validates `BeamNGVRPosesLayer.dll` and
+   `XR_APILAYER_BEAMNG_controller_poses.json`.
+2. It prints the active OpenXR `ActiveRuntime` manifest from HKCU or, if HKCU is
+   absent, HKLM.
+3. It warns if the runtime does not look like Virtual Desktop VDXR, but it never
+   changes the runtime automatically.
+4. It finds the root BeamNG launcher, `BeamNG.drive.exe`, preferring a saved
+   per-user path in `%LOCALAPPDATA%\BeamNGVRControllerPoses\launcher.json`, then
+   Steam library discovery, common Steam locations, and finally a file-selection
+   dialog.
+5. It sets `XR_API_LAYER_PATH`, `XR_ENABLE_API_LAYERS`, and `XR_LOADER_DEBUG` only
+   inside that PowerShell process so the BeamNG launcher and Vulkan child process
+   inherit them. The variables disappear when the process tree closes.
+
+Everyday procedure:
+
+```text
+Double-click Launch-BeamNGVRControllerPoses.cmd
+Select Vulkan in the BeamNG launcher
+Enter a map
+Start BeamNG VR
+```
+
+The launcher intentionally starts the root `BeamNG.drive.exe`, not
+`Bin64\BeamNG.drive.x64.exe`, because selecting Vulkan happens in the normal
+BeamNG launcher. To select a different BeamNG installation later, run:
+
+```powershell
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\Launch-BeamNGVRControllerPoses.ps1 -ResetLauncherPath
+```
+
+Optional per-user desktop shortcut helpers are available and require no
+administrator privileges:
+
+```powershell
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\Install-DesktopShortcut.ps1
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\Remove-DesktopShortcut.ps1
+```
+
+Diagnostics are written to:
+
+```text
+%TEMP%\BeamNG-OpenXR-loader.log
+%TEMP%\BeamNGVRPosesLayer.log
+%TEMP%\BeamNGVRPosesLauncher.log
+```
+
+Example paths from the verified test computer are shown below. They are examples
+only and must not be hard-coded for other users:
+
+```text
+Package: C:\BeamNGVRcontrollerPosesTest
+BeamNG launcher: D:\SteamLibrary\steamapps\common\BeamNG.drive\BeamNG.drive.exe
+BeamNG x64 executable: D:\SteamLibrary\steamapps\common\BeamNG.drive\Bin64\BeamNG.drive.x64.exe
+BeamNG user folder: C:\Users\fenci\AppData\Local\BeamNG\BeamNG.drive\current
+Unpacked mod: C:\Users\fenci\AppData\Local\BeamNG\BeamNG.drive\current\mods\unpacked\BeamNGVRControllerPoses
+VDXR manifest: C:\Program Files\Virtual Desktop Streamer\OpenXR\virtualdesktop-openxr.json
+```
+
+## Manual diagnostic launch
+
+The older PowerShell path remains useful for troubleshooting and development. It
+uses process-scoped environment variables and makes no registry changes. If you
+are manually typing commands in a blocked PowerShell window, use a process-only
+policy bypass for that window, never a persistent user or machine policy change:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
 
-This affects only the current PowerShell process and disappears when that window closes. From the tested package directory `C:\BeamNGVRcontrollerPosesTest`, launch the BeamNG launcher with the supplied script so its Vulkan child process inherits the API-layer environment:
+From the tested package directory `C:\BeamNGVRcontrollerPosesTest`:
 
 ```powershell
 .\scripts\Enable-BeamNGVRPoses.ps1 `
@@ -89,7 +160,7 @@ This affects only the current PowerShell process and disappears when that window
   -BeamNGExecutable 'D:\SteamLibrary\steamapps\common\BeamNG.drive\BeamNG.drive.exe'
 ```
 
-The `-BeamNGExecutable` argument may point to the BeamNG launcher; for VR on the test PC it must be `D:\SteamLibrary\steamapps\common\BeamNG.drive\BeamNG.drive.exe`, not `Bin64\BeamNG.drive.x64.exe`, because the launcher is where Vulkan is selected. From a source checkout built using the preceding section, point the same script at
+From a source checkout built using the preceding section, point the same script at
 `openxr-layer\dist`:
 
 ```powershell
@@ -98,13 +169,7 @@ The `-BeamNGExecutable` argument may point to the BeamNG launcher; for VR on the
   -BeamNGExecutable 'D:\SteamLibrary\steamapps\common\BeamNG.drive\BeamNG.drive.exe'
 ```
 
-The script captures OpenXR loader diagnostics in
-`%TEMP%\BeamNG-OpenXR-loader.log`. Confirm that the log names
-`XR_APILAYER_BEAMNG_controller_poses` and that VR starts and continues rendering
-through the selected VDXR runtime. The layer's packet `source` is
-`openxr-api-layer`.
-
-For manual troubleshooting, the equivalent source-checkout launch is:
+The equivalent source-checkout diagnostic launch is:
 
 ```powershell
 $env:XR_API_LAYER_PATH=(Resolve-Path .\openxr-layer\dist)
@@ -114,11 +179,11 @@ Start-Process 'D:\SteamLibrary\steamapps\common\BeamNG.drive\BeamNG.drive.exe' -
 ```
 
 To disable the layer, close BeamNG and either close the launching PowerShell or run
-`.\scripts\Disable-BeamNGVRPoses.ps1` from an artifact. From a source checkout, use
-`.\openxr-layer\scripts\Disable-BeamNGVRPoses.ps1`. To remove an extracted artifact
-and the layer diagnostic log, first copy out any logs you need, leave the package
-directory, and run `Remove-BeamNGVRPoses.ps1 -PackageDirectory C:\path\to\package`.
-See `docs/INSTALL_AND_TEST_GUIDE.md` for the step-by-step install/setup guide and `docs/FIRST_WINDOWS_TEST.md` for the complete first-test and recovery checklist.
+`Disable-BeamNGVRPoses.ps1`. To remove an extracted artifact and the layer
+diagnostic log, first copy out any logs you need, leave the package directory, and
+run `Remove-BeamNGVRPoses.ps1 -PackageDirectory C:\path\to\package`. See
+`docs/INSTALL_AND_TEST_GUIDE.md` for the step-by-step install/setup guide and
+`docs/FIRST_WINDOWS_TEST.md` for the complete first-test and recovery checklist.
 
 The publisher thread sends UDP to `127.0.0.1:44441`; a missing receiver is harmless.
 High-frequency hooks do no file I/O and do not send network packets. Loader output

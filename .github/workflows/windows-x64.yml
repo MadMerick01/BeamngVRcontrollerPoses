@@ -79,11 +79,29 @@ jobs:
           $manifest=Get-Content (Join-Path $dist XR_APILAYER_BEAMNG_controller_poses.json) -Raw | ConvertFrom-Json
           $library=[IO.Path]::GetFileName(($manifest.api_layer.library_path -replace '\\','/'))
           if($library -ne 'BeamNGVRPosesLayer.dll' -or !(Test-Path (Join-Path $dist $library))){throw 'Manifest library_path mismatch'}
+          foreach ($required in @('Launch-BeamNGVRControllerPoses.cmd','scripts\Launch-BeamNGVRControllerPoses.ps1','scripts\Install-DesktopShortcut.ps1','scripts\Remove-DesktopShortcut.ps1')) {
+            if (!(Test-Path $required)) { throw "Required launcher package file missing from checkout: $required" }
+          }
           $package=Join-Path $pwd package
+          if (Test-Path $package) { Remove-Item $package -Recurse -Force }
           New-Item $package -ItemType Directory | Out-Null
           Copy-Item "$dist\*" $package
-          Copy-Item openxr-layer/scripts,mod,docs $package -Recurse
-          Copy-Item README.md $package
+          Copy-Item mod,docs $package -Recurse
+          New-Item (Join-Path $package scripts) -ItemType Directory | Out-Null
+          Copy-Item openxr-layer/scripts\* (Join-Path $package scripts) -Recurse
+          Copy-Item scripts\* (Join-Path $package scripts) -Recurse
+          Copy-Item Launch-BeamNGVRControllerPoses.cmd,README.md $package
+          foreach ($packaged in @(
+            'Launch-BeamNGVRControllerPoses.cmd',
+            'scripts\Launch-BeamNGVRControllerPoses.ps1',
+            'scripts\Install-DesktopShortcut.ps1',
+            'scripts\Remove-DesktopShortcut.ps1',
+            'scripts\Enable-BeamNGVRPoses.ps1',
+            'mod\lua\ge\extensions\beamngVRControllerPoses.lua',
+            'mod\settings\beamngVRControllerPoses.json'
+          )) {
+            if (!(Test-Path (Join-Path $package $packaged))) { throw "Required packaged file missing: $packaged" }
+          }
           Get-ChildItem $package -File -Recurse | Get-FileHash -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  $($_.Path.Substring($package.Length+1))" } | Set-Content (Join-Path $package SHA256SUMS.txt)
           Compress-Archive "$package\*" BeamNGVRcontrollerPoses-windows-x64.zip
       - uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
