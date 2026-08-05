@@ -35,3 +35,39 @@ def test_rotated_hmd_relative_pose_and_world_rotation():
 def test_inverse_roundtrip():
     p=Pose((2,-3,4),(0,sin(pi/8),0,cos(pi/8))); x=compose(inverse(p),p)
     close(x.position,(0,0,0)); close(x.orientation,I)
+
+def test_nonzero_beamng_camera_world_position_is_parent_origin():
+    camera=Pose((-715.3673609,106.5844518,119.8104916),I)
+    controller_relative=Pose((0.48,1.10,-0.97),I)
+    world=compose(camera,controller_relative)
+    close(world.position,(-714.8873609,107.6844518,118.8404916))
+
+
+def test_nonidentity_beamng_camera_world_rotation_affects_controller():
+    qz=(0.,0.,sin(pi/4),cos(pi/4))
+    camera=Pose((-715.,106.,119.),qz)
+    world=compose(camera,Pose((1.,0.,0.),I))
+    close(world.position,(-715.,107.,119.))
+    close(world.orientation,qz)
+
+
+def test_controller_relative_to_camera_composition_without_external_hmd_twice():
+    camera=Pose((-715.,106.,119.),I)
+    controller_relative=Pose((0.5,1.0,-1.0),I)
+    world=compose(camera,controller_relative)
+    close(world.position,(-714.5,107.,118.))
+
+
+def test_left_and_right_independent_movement_near_camera_origin():
+    camera=Pose((-715.,106.,119.),I)
+    left=compose(camera,Pose((-0.4,1.0,-0.9),I))
+    right=compose(camera,Pose((0.4,1.2,-0.8),I))
+    assert left.position != right.position
+    close(left.position,(-715.4,107.,118.1))
+    close(right.position,(-714.6,107.2,118.2))
+
+
+def test_diagnostic_sphere_position_near_nonzero_camera_origin():
+    camera=Pose((-715.,106.,119.),I)
+    sphere=compose(camera,Pose((0.,1.,0.),I))
+    close(sphere.position,(-715.,107.,119.))

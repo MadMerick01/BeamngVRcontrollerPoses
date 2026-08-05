@@ -106,3 +106,16 @@ def test_locate_hot_path_has_no_blocking_or_io_operations():
     for forbidden in ('lock_guard','writerMutex','sendto(','fopen(','sleep_for','make_shared','new '):
         assert forbidden not in body
     assert 'publishedRegistry.load' in body and 'InFlight sessionInFlight' in body and 'InFlight spaceInFlight' in body
+
+def test_valid_candidate_not_overwritten_by_later_invalid_candidate_source():
+    source=(Path(__file__).parents[1]/'openxr-layer/src/layer.cpp').read_text()
+    assert 'if(candidate.valid || !current.valid) current=candidate;' in source
+    assert 'A later invalid' in source
+
+def test_lua_uses_beamng_camera_world_transform_and_diagnostics():
+    source=(Path(__file__).parents[1]/'mod/lua/ge/extensions/beamngVRControllerPoses.lua').read_text()
+    assert 'getCameraPosition' in source
+    assert 'getCameraQuat' in source
+    assert 'getCameraPosRotPredictedXYZXYZW' not in source
+    assert 'cameraTestSphereWorld' in source
+    assert 'rawLeft=%s rawRight=%s leftWorld=%s rightWorld=%s' in source

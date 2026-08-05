@@ -1,3 +1,14 @@
+<#
+.SYNOPSIS
+Temporarily enables the BeamNG controller-pose OpenXR API layer for one launch.
+.PARAMETER PackageDirectory
+Directory containing XR_APILAYER_BEAMNG_controller_poses.json and BeamNGVRPosesLayer.dll.
+.PARAMETER BeamNGExecutable
+Executable to start with the process-scoped API-layer environment. This may point
+to the BeamNG launcher (BeamNG.drive.exe) and should do so when Vulkan must be
+selected for BeamNG VR; the Vulkan child process inherits the environment from
+this launcher.
+#>
 param(
   [Parameter(Mandatory=$true)][string]$PackageDirectory,
   [Parameter(Mandatory=$true)][string]$BeamNGExecutable

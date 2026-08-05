@@ -3,14 +3,59 @@
   "listenPort": 44441,
   "staleAfterMs": 150,
   "metresToBeamNGUnit": 1.0,
-  "axisOrder": [1, 2, 3],
-  "axisSign": [1, 1, 1],
-  "quaternionBasis": [0, 0, 0, 1],
-  "leftPositionOffset": [0, 0, 0],
-  "rightPositionOffset": [0, 0, 0],
-  "leftRotationOffset": [0, 0, 0, 1],
-  "rightRotationOffset": [0, 0, 0, 1],
+  "axisOrder": [
+    1,
+    2,
+    3
+  ],
+  "axisSign": [
+    1,
+    1,
+    1
+  ],
+  "quaternionBasis": [
+    0,
+    0,
+    0,
+    1
+  ],
+  "leftPositionOffset": [
+    0,
+    0,
+    0
+  ],
+  "rightPositionOffset": [
+    0,
+    0,
+    0
+  ],
+  "leftRotationOffset": [
+    0,
+    0,
+    0,
+    1
+  ],
+  "rightRotationOffset": [
+    0,
+    0,
+    0,
+    1
+  ],
   "sphereDiameter": 0.07,
-  "sphereColour": [0.0, 0.35, 1.0, 1.0],
-  "logIntervalSeconds": 5.0
+  "sphereColour": [
+    0.0,
+    0.35,
+    1.0,
+    1.0
+  ],
+  "logIntervalSeconds": 5.0,
+  "cameraTestSphere": {
+    "enabled": true,
+    "offset": [
+      0,
+      1,
+      0
+    ],
+    "diameter": 0.12
+  }
 }

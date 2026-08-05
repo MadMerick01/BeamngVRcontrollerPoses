@@ -192,7 +192,12 @@ void publisherMain() {
       Sample next{};
       while(consume(next)) {
         if(next.session==sample.session&&next.base==sample.base&&next.time==sample.time){
-          if(next.hand==Hand::left)sample.left=next.left;else if(next.hand==Hand::right)sample.right=next.right;
+          auto mergePose=[](Pose& current,const Pose& candidate){
+            // Multiple action spaces can exist for one hand. A later invalid
+            // candidate must not erase a valid pose from the same frame/time.
+            if(candidate.valid || !current.valid) current=candidate;
+          };
+          if(next.hand==Hand::left)mergePose(sample.left,next.left);else if(next.hand==Hand::right)mergePose(sample.right,next.right);
           sample.sequence=next.sequence;
         } else {
           // Different frame keys are deliberately not combined.
