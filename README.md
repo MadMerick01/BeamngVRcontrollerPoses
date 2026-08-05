@@ -112,7 +112,7 @@ To disable the layer, close BeamNG and either close the launching PowerShell or 
 `.\openxr-layer\scripts\Disable-BeamNGVRPoses.ps1`. To remove an extracted artifact
 and the layer diagnostic log, first copy out any logs you need, leave the package
 directory, and run `Remove-BeamNGVRPoses.ps1 -PackageDirectory C:\path\to\package`.
-See `docs/FIRST_WINDOWS_TEST.md` for the complete first-test and recovery checklist.
+See `docs/INSTALL_AND_TEST_GUIDE.md` for the step-by-step install/setup guide and `docs/FIRST_WINDOWS_TEST.md` for the complete first-test and recovery checklist.
 
 The publisher thread sends UDP to `127.0.0.1:44441`; a missing receiver is harmless.
 High-frequency hooks do no file I/O and do not send network packets. Loader output
