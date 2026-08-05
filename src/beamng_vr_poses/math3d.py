@@ -23,8 +23,14 @@ def qnorm(q):
     return tuple(v/n for v in q)
 
 
+def quaternion_inverse(q):
+    """Return the inverse of a rotation quaternion in (x, y, z, w) order."""
+    x, y, z, w = qnorm(q)
+    return (-x, -y, -z, w)
+
+
 def qrotate(q, v):
-    q = qnorm(q); r = qmul(qmul(q, (*v, 0.0)), (-q[0], -q[1], -q[2], q[3]))
+    q = qnorm(q); r = qmul(qmul(q, (*v, 0.0)), quaternion_inverse(q))
     return r[:3]
 
 
@@ -35,11 +41,10 @@ def compose(parent: Pose, child: Pose) -> Pose:
 
 
 def inverse(p: Pose) -> Pose:
-    q = qnorm(p.orientation); qi = (-q[0], -q[1], -q[2], q[3])
+    qi = quaternion_inverse(p.orientation)
     return Pose(qrotate(qi, tuple(-v for v in p.position)), qi)
 
 
 def controller_world(beamng_hmd: Pose, external_hmd: Pose, controller: Pose) -> Pose:
     """beamngHmd * inverse(externalHmd) * externalController."""
     return compose(beamng_hmd, compose(inverse(external_hmd), controller))
-
