@@ -10,6 +10,11 @@ local function qmul(a,b) return {
   a[4]*b[4]-a[1]*b[1]-a[2]*b[2]-a[3]*b[3]}
 end
 local function qinv(q) return {-q[1],-q[2],-q[3],q[4]} end
+local function qnorm(q)
+  local n=math.sqrt(q[1]*q[1]+q[2]*q[2]+q[3]*q[3]+q[4]*q[4])
+  if n==0 then return nil end
+  return {q[1]/n,q[2]/n,q[3]/n,q[4]/n}
+end
 local function qrot(q,p) local r=qmul(qmul(q,{p[1],p[2],p[3],0}),qinv(q)); return {r[1],r[2],r[3]} end
 local function compose(a,b) local p=qrot(a.q,b.p); return {p={a.p[1]+p[1],a.p[2]+p[2],a.p[3]+p[3]},q=qmul(a.q,b.q)} end
 local function mappedPose(p)
@@ -31,9 +36,14 @@ local function quatToXYZW(q)
 end
 local function beamCameraWorld()
   local pos=vec3ToTable(getCameraPosition and getCameraPosition())
-  local rot=quatToXYZW(getCameraQuat and getCameraQuat())
-  if not pos or not rot or not rot[4] then return nil end
-  return {p=pos,q=rot}
+  local rawRot=quatToXYZW(getCameraQuat and getCameraQuat())
+  if not pos or not rawRot or not rawRot[4] then return nil end
+  -- getCameraQuat() is the world-to-camera/view rotation.  The rigid-transform
+  -- helpers consume camera-to-world rotations, so normalize and invert once at
+  -- the BeamNG API boundary.  Controller-relative rotations are not inverted.
+  local cameraToWorld=qnorm(rawRot)
+  if not cameraToWorld then return nil end
+  return {p=pos,q=qinv(cameraToWorld)}
 end
 local function updateHand(name, raw, cameraWorld, now)
   local out=state[name..'ControllerWorld']; out.valid=false

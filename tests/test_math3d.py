@@ -1,5 +1,11 @@
 from math import cos, pi, sin
-from beamng_vr_poses.math3d import Pose, compose, controller_world, inverse
+from beamng_vr_poses.math3d import (
+    Pose,
+    compose,
+    controller_world,
+    inverse,
+    quaternion_inverse,
+)
 
 I=(0.,0.,0.,1.)
 def close(a,b): assert all(abs(x-y)<1e-6 for x,y in zip(a,b))
@@ -71,3 +77,81 @@ def test_diagnostic_sphere_position_near_nonzero_camera_origin():
     camera=Pose((-715.,106.,119.),I)
     sphere=compose(camera,Pose((0.,1.,0.),I))
     close(sphere.position,(-715.,107.,119.))
+
+
+def camera_world(position, raw_world_to_camera):
+    """Model the conversion performed at the BeamNG Lua API boundary."""
+    return Pose(position, quaternion_inverse(raw_world_to_camera))
+
+
+def test_identity_quaternion_remains_identity_after_inversion():
+    close(quaternion_inverse(I), I)
+
+
+def test_raw_world_to_camera_positive_pitch_becomes_camera_to_world_pitch():
+    raw_view_pitch = (sin(pi / 8), 0., 0., cos(pi / 8))
+    close(camera_world((0., 0., 0.), raw_view_pitch).orientation,
+          (-sin(pi / 8), 0., 0., cos(pi / 8)))
+
+
+def test_looking_up_rotates_local_forward_offset_upward():
+    # BeamNG local forward is +Y and up is +Z.  Its view quaternion has the
+    # opposite sign from the camera-to-world pitch consumed by compose().
+    raw_view_pitch_up = (-sin(pi / 8), 0., 0., cos(pi / 8))
+    sphere = compose(camera_world((0., 0., 0.), raw_view_pitch_up),
+                     Pose((0., 1., 0.), I))
+    assert sphere.position[1] > 0.
+    assert sphere.position[2] > 0.
+
+
+def test_looking_down_rotates_local_forward_offset_downward():
+    raw_view_pitch_down = (sin(pi / 8), 0., 0., cos(pi / 8))
+    sphere = compose(camera_world((0., 0., 0.), raw_view_pitch_down),
+                     Pose((0., 1., 0.), I))
+    assert sphere.position[1] > 0.
+    assert sphere.position[2] < 0.
+
+
+def test_left_and_right_yaw_rotate_forward_with_gaze():
+    raw_view_left = (0., 0., -sin(pi / 8), cos(pi / 8))
+    raw_view_right = (0., 0., sin(pi / 8), cos(pi / 8))
+    left = compose(camera_world((0., 0., 0.), raw_view_left), Pose((0., 1., 0.), I))
+    right = compose(camera_world((0., 0., 0.), raw_view_right), Pose((0., 1., 0.), I))
+    assert left.position[0] < 0. < right.position[0]
+    assert left.position[1] > 0. and right.position[1] > 0.
+
+
+def test_stationary_world_controller_survives_inverse_head_relative_change():
+    controller_world_pose = Pose((0., 2., 0.), I)
+    level_camera = camera_world((0., 0., 0.), I)
+    raw_view_yaw = (0., 0., sin(pi / 8), cos(pi / 8))
+    turned_camera = camera_world((0., 0., 0.), raw_view_yaw)
+    level_relative = compose(inverse(level_camera), controller_world_pose)
+    turned_relative = compose(inverse(turned_camera), controller_world_pose)
+    close(compose(level_camera, level_relative).position, controller_world_pose.position)
+    close(compose(turned_camera, turned_relative).position, controller_world_pose.position)
+
+
+def test_quaternion_correction_does_not_change_nonzero_camera_position():
+    position = (-715.3673609, 106.5844518, 119.8104916)
+    raw_view_yaw = (0., 0., sin(pi / 8), cos(pi / 8))
+    close(camera_world(position, raw_view_yaw).position, position)
+
+
+def test_hand_calibration_offsets_remain_after_corrected_camera_transform():
+    raw_view_yaw = (0., 0., -sin(pi / 4), cos(pi / 4))
+    camera = camera_world((10., 20., 30.), raw_view_yaw)
+    left_relative = Pose((-.4, 1., 0.), I)
+    right_relative = Pose((.4, 1., 0.), I)
+    left_offset = Pose((-.1, 0., 0.), I)
+    right_offset = Pose((.1, 0., 0.), I)
+    left = compose(camera, compose(left_relative, left_offset))
+    right = compose(camera, compose(right_relative, right_offset))
+    close(left.position, (9., 19.5, 30.))
+    close(right.position, (9., 20.5, 30.))
+
+
+def test_quaternion_inverse_round_trip():
+    q = (.2, -.3, .4, .8)
+    close(quaternion_inverse(quaternion_inverse(q)),
+          tuple(v / sum(x*x for x in q)**.5 for v in q))
