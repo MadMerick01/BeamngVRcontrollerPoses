@@ -1,97 +1,122 @@
 # First Windows test and recovery runbook
 
-This layer is an **explicit API layer**, not an OpenXR runtime. The package must
-never replace `openxr_loader.dll`, change `ActiveRuntime`, or be registered below
-the OpenXR runtime registry keys.
+This layer is an **explicit API layer**, not an OpenXR runtime. It must never
+replace `openxr_loader.dll`, change `ActiveRuntime`, or be registered below the
+OpenXR runtime registry keys.
 
-## Before the test
+## Confirmed test machine paths
 
-1. In a fresh PowerShell, run
-   `scripts/Confirm-VDXRRuntime.ps1`. Record both the manifest and runtime library
-   that it prints. This checks the current-user `ActiveRuntime`; also inspect the
-   machine-wide value if VDXR was installed for all users:
-   `Get-ItemProperty 'HKLM:\SOFTWARE\Khronos\OpenXR\1' -Name ActiveRuntime`.
-2. Start the mod normally once **without** the layer, to establish that VDXR and
-   BeamNG VR work.
-3. Run `Enable-BeamNGVRPoses.ps1 -PackageDirectory C:\path\to\package
-   -BeamNGExecutable 'C:\...\BeamNG.drive.x64.exe'`. The environment variables are
-   scoped to that PowerShell and its BeamNG child process. `XR_LOADER_DEBUG=all`
-   is captured by `Tee-Object` in `%TEMP%\BeamNG-OpenXR-loader.log`.
+```text
+Package: C:\BeamNGVRcontrollerPosesTest
+BeamNG install: D:\SteamLibrary\steamapps\common\BeamNG.drive
+BeamNG launcher: D:\SteamLibrary\steamapps\common\BeamNG.drive\BeamNG.drive.exe
+BeamNG x64 game exe: D:\SteamLibrary\steamapps\common\BeamNG.drive\Bin64\BeamNG.drive.x64.exe
+BeamNG user folder: C:\Users\fenci\AppData\Local\BeamNG\BeamNG.drive\current
+Unpacked mod: C:\Users\fenci\AppData\Local\BeamNG\BeamNG.drive\current\mods\unpacked\BeamNGVRControllerPoses
+VDXR registry key: HKLM:\SOFTWARE\Khronos\OpenXR\1
+VDXR ActiveRuntime: C:\Program Files\Virtual Desktop Streamer\OpenXR\virtualdesktop-openxr.json
+```
 
-## Exact first-test order
+Required mod files:
 
-1. Verify VDXR is active with `Confirm-VDXRRuntime.ps1`.
-2. In the loader log, verify discovery and enablement of
-   `XR_APILAYER_BEAMNG_controller_poses` from the intended manifest.
-3. Start BeamNG and confirm the loader continues from the layer into the VDXR
-   runtime without an instance/session creation failure.
-4. Enable controllers and verify diagnostics identify left and right pose action
-   spaces (not merely arbitrary spaces).
-5. Move and occlude each hand independently; verify valid left/right poses, and
-   invalidity while tracking validity bits are absent.
-6. In `beamng.log`, verify Lua receives monotonically increasing protocol-2
-   packets whose source is `openxr-api-layer`.
-7. Verify the Lua state reports a BeamNG predicted HMD world transform.
-8. Verify the renderer accepts both bright-blue sphere submissions.
-9. Check that both spheres appear in both eyes, rather than as a mono overlay.
-10. Test axis direction and scale, then rotate the head, move the vehicle, recenter,
-    and repeat. Controller-to-head motion must remain stable through vehicle motion.
+```text
+C:\Users\fenci\AppData\Local\BeamNG\BeamNG.drive\current\mods\unpacked\BeamNGVRControllerPoses\lua\ge\extensions\beamngVRControllerPoses.lua
+C:\Users\fenci\AppData\Local\BeamNG\BeamNG.drive\current\mods\unpacked\BeamNGVRControllerPoses\settings\beamngVRControllerPoses.json
+```
 
-Return these complete, unedited files after the run:
+If PowerShell blocks unsigned local scripts, run this in the same PowerShell
+window before the test:
 
-* `%TEMP%\BeamNG-OpenXR-loader.log`
-* `%TEMP%\BeamNGVRPosesLayer.log`
-* `%LOCALAPPDATA%\BeamNG.drive\0.39\temp\beamng.log` (or the `beamng.log` under
-  the actual versioned BeamNG user folder printed by the launcher)
-* the active VDXR runtime JSON manifest printed by `Confirm-VDXRRuntime.ps1`
-* `mod/settings/beamngVRControllerPoses.json` used for the test
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+```
 
-Also export `extensions.beamngVRControllerPoses.getState()` before moving, after
-moving each hand, after head rotation, after vehicle movement, and after recenter.
+This changes only the current PowerShell process and disappears when that window
+closes.
+
+## Exact launch procedure that worked
+
+Run BeamNG through its launcher, not directly through `Bin64\BeamNG.drive.x64.exe`.
+The launcher is essential on this system because Vulkan must be selected for
+BeamNG VR, and the Vulkan child process must inherit the process-scoped OpenXR
+API-layer environment.
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+
+Set-Location 'C:\BeamNGVRcontrollerPosesTest'
+
+.\scripts\Enable-BeamNGVRPoses.ps1 `
+  -PackageDirectory (Resolve-Path .) `
+  -BeamNGExecutable 'D:\SteamLibrary\steamapps\common\BeamNG.drive\BeamNG.drive.exe'
+```
+
+Then:
+
+1. Wait for the normal BeamNG launcher.
+2. Choose the Vulkan launch option.
+3. Keep the launching PowerShell window open.
+4. Allow the Vulkan BeamNG child process to inherit `XR_API_LAYER_PATH`,
+   `XR_ENABLE_API_LAYERS`, and `XR_LOADER_DEBUG`.
+5. Enter a map.
+6. Start BeamNG VR through Virtual Desktop/VDXR.
+7. Open the GE Lua console.
+8. Run `extensions.load('beamngVRControllerPoses')`.
+9. Inspect `dump(extensions.beamngVRControllerPoses.getState())`.
+10. Compare with `dump(getCameraPosition())`.
+
+Starting BeamNG later from Steam, a desktop shortcut, or an unrelated launcher
+process will not necessarily inherit the process-scoped API-layer environment.
+
+## What the first Quest 3 + VDXR test proved
+
+Confirmed working: BeamNG starts through its launcher using Vulkan; VDXR remains
+active; the explicit OpenXR API layer loads without preventing VR startup; the
+layer captures Quest controller poses; protocol-2 UDP packets arrive continuously
+at `127.0.0.1:44441`; the BeamNG GE Lua extension loads and receives packets;
+packet age is approximately `0.0-0.5 ms`; update counters increase continuously;
+and valid position/orientation data has been observed for both controllers.
+
+The Stage 1 defect was the Lua world transform. `dump(getCameraPosition())`
+returned approximately `vec3(-715.3673609, 106.5844518, 119.8104916)`, while the
+old extension reported controller positions near `(0.48, 1.10, -0.97)`. Therefore
+`OpenXR.getCameraPosRotPredictedXYZXYZW()` is not the complete BeamNG game-world
+camera transform. The Lua bridge now composes protocol-2
+`inverse(hmdInBase) * controllerInBase` with BeamNG `getCameraPosition()` and
+`getCameraQuat()` and keeps quaternion order as `(x, y, z, w)`.
+
+The settings include a red camera-relative diagnostic sphere one metre in front
+of the BeamNG camera and the existing bright-blue left/right controller spheres.
+If `getState()` shows final positions near `(-715, 106, 119)` but all spheres
+remain invisible in VR, record that as evidence that `debugDrawer:drawSphere` is
+not rendered in the required stereoscopic VR pass. The smallest BeamNG-native
+alternative should be transient scene objects or tiny TSStatic/debug mesh objects
+whose transforms are updated from the same Lua world poses.
+
+## Logs to retain
+
+```text
+%TEMP%\BeamNG-OpenXR-loader.log
+%TEMP%\BeamNGVRPosesLayer.log
+C:\Users\fenci\AppData\Local\BeamNG\BeamNG.drive\current\temp\beamng.log
+```
+
+Useful extraction commands:
+
+```powershell
+Get-Content "$env:TEMP\BeamNGVRPosesLayer.log" -Tail 200
+
+Select-String `
+  -Path "$env:TEMP\BeamNG-OpenXR-loader.log" `
+  -Pattern 'XR_APILAYER|BEAMNG|OpenXR|error' `
+  -CaseSensitive:$false
+```
+
+Also save the active VDXR runtime JSON manifest printed by
+`Confirm-VDXRRuntime.ps1` and the settings JSON used for the run.
 
 ## Disable and recover
 
-Close BeamNG and run `scripts/Disable-BeamNGVRPoses.ps1`, or simply close the
+Close BeamNG and run `scripts\Disable-BeamNGVRPoses.ps1`, or simply close the
 launching PowerShell. Start BeamNG from its normal launcher to confirm recovery.
-If VR still fails, confirm `XR_API_LAYER_PATH`, `XR_ENABLE_API_LAYERS`, and
-`XR_LOADER_DEBUG` are absent in the new process and that `ActiveRuntime` still
-points to the same VDXR JSON. No loader DLL needs restoration because the package
-does not replace it. To uninstall the test package, run
-`Remove-BeamNGVRPoses.ps1 -PackageDirectory C:\path\to\package` after copying out
-the logs.
-
-## Build status and security inspection
-
-The repository contains source only. The Windows x64 GitHub Actions job now
-performs the clean build, Python tests, PE machine/export checks, manifest/package
-validation, and hashes before uploading an artifact. A package is verified only
-when that job passes. A local equivalent is:
-
-```powershell
-Remove-Item openxr-layer\build\windows-x64 -Recurse -Force -ErrorAction Ignore
-cmake --preset windows-x64 -DOpenXR_DIR=C:\path\to\OpenXR\lib\cmake\openxr
-cmake --build --preset windows-x64 --clean-first
-cmake --install openxr-layer\build\windows-x64 --config Release
-python -m pytest
-dumpbin /headers openxr-layer\dist\BeamNGVRPosesLayer.dll | Select-String 'machine \(x64\)'
-Get-FileHash openxr-layer\dist\BeamNGVRPosesLayer.dll -Algorithm SHA256
-Get-FileHash openxr-layer\dist\XR_APILAYER_BEAMNG_controller_poses.json -Algorithm SHA256
-Compress-Archive openxr-layer\dist\* BeamNGVRcontrollerPoses-windows-x64.zip
-```
-
-Static inspection confirms that the sole exported negotiation entry point is
-`extern "C"`, `__declspec(dllexport)`, `XRAPI_ATTR`, and `XRAPI_CALL`; the next
-`xrGetInstanceProcAddr` is taken from `nextInfo`, stored per instance, and used to
-populate downstream dispatch. The internal VIEW locate calls that stored
-downstream pointer, not the hook. Intercepts return the downstream result and do
-not alter BeamNG's location. Position and orientation VALID bits are both required.
-The UDP representation is JSON protocol 2 with named scalar fields, so it has no
-C/C++ padding or ABI dependence.
-
-The former global-mutex release blocker is corrected: `xrLocateSpace` reads an
-immutable atomically published registry and uses atomic session/space in-flight
-guards. Destruction unpublishes and retires handles before waiting outside the
-writer lock, and downstream calls occur without project locks. See
-`docs/CONCURRENCY.md` for the full before/after audit. This is approval to produce
-the CI artifact after every automated check passes; it is **not** a claim of VDXR
-or Quest 3 validation. Do not install artifacts from failed or incomplete jobs.
+No loader DLL needs restoration because the package does not replace it.

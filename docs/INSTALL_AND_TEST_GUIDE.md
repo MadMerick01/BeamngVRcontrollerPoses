@@ -63,7 +63,7 @@ runtime, headset, or game setup issues.
 
 1. Open the BeamNG launcher.
 2. Note the active, versioned user folder shown by the launcher, for example
-   `%LOCALAPPDATA%\BeamNG.drive\0.39`.
+   `C:\Users\fenci\AppData\Local\BeamNG\BeamNG.drive\current`.
 3. Create this directory below that user folder:
 
    ```text
@@ -98,12 +98,14 @@ tool already uses the same port. The OpenXR layer publishes pose packets to
 
 ## 5. Launch BeamNG with the API layer enabled
 
+If scripts are blocked, run `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`; it affects only the current PowerShell process and disappears when that window closes. Use the BeamNG launcher for Vulkan selection; starting `Bin64\BeamNG.drive.x64.exe` directly bypasses the launcher.
+
 From an extracted workflow artifact, run:
 
 ```powershell
 .\scripts\Enable-BeamNGVRPoses.ps1 `
   -PackageDirectory (Resolve-Path .) `
-  -BeamNGExecutable 'C:\Program Files (x86)\Steam\steamapps\common\BeamNG.drive\Bin64\BeamNG.drive.x64.exe'
+  -BeamNGExecutable 'D:\SteamLibrary\steamapps\common\BeamNG.drive\BeamNG.drive.exe'
 ```
 
 From a source checkout after building and installing the layer to
@@ -112,7 +114,7 @@ From a source checkout after building and installing the layer to
 ```powershell
 .\openxr-layer\scripts\Enable-BeamNGVRPoses.ps1 `
   -PackageDirectory (Resolve-Path .\openxr-layer\dist) `
-  -BeamNGExecutable 'C:\Program Files (x86)\Steam\steamapps\common\BeamNG.drive\Bin64\BeamNG.drive.x64.exe'
+  -BeamNGExecutable 'D:\SteamLibrary\steamapps\common\BeamNG.drive\BeamNG.drive.exe'
 ```
 
 The launch script scopes these environment variables to the current PowerShell and
@@ -132,7 +134,7 @@ It also captures OpenXR loader diagnostics in:
 
 ## 6. Load the Lua extension in BeamNG
 
-After BeamNG starts and the unpacked mod is mounted, open the GE Lua console and
+After the BeamNG launcher appears, choose Vulkan, enter a map, start VR through VDXR, and after the unpacked mod is mounted, open the GE Lua console and
 run:
 
 ```lua
@@ -142,7 +144,7 @@ extensions.load('beamngVRControllerPoses')
 You can inspect the live receiver and pose state with:
 
 ```lua
-extensions.beamngVRControllerPoses.getState()
+dump(extensions.beamngVRControllerPoses.getState())
 ```
 
 ## 7. In-headset test checklist
@@ -164,11 +166,11 @@ Run this checklist in order:
    your hands.
 9. Move the vehicle and confirm controller positions do not drift with vehicle
    motion.
-10. Use BeamNG VR recenter and repeat the hand movement checks.
+10. Run `dump(getCameraPosition())` and confirm controller world positions in `getState()` are near that non-zero camera origin, not near `(0,0,0)`. Use BeamNG VR recenter and repeat the hand movement checks.
 11. Stop the publisher or close BeamNG and confirm both spheres disappear after
     the configured stale timeout.
 
-Expected result: both controllers render as bright-blue stereo spheres at the
+Expected result: both controllers render as bright-blue stereo spheres, and the optional red camera test sphere renders one metre in front of the BeamNG camera at the
 correct controller-relative-to-HMD positions, with no mono overlay effect, no
 head-turn offset, no vehicle-motion offset, and no recenter-induced drift.
 
@@ -179,7 +181,7 @@ Save these files before uninstalling or cleaning up:
 ```text
 %TEMP%\BeamNG-OpenXR-loader.log
 %TEMP%\BeamNGVRPosesLayer.log
-<BeamNG user folder>\temp\beamng.log
+C:\Users\fenci\AppData\Local\BeamNG\BeamNG.drive\current\temp\beamng.log
 <VDXR runtime manifest printed by Confirm-VDXRRuntime.ps1>
 <BeamNG user folder>\mods\unpacked\BeamNGVRControllerPoses\settings\beamngVRControllerPoses.json
 ```
@@ -187,7 +189,7 @@ Save these files before uninstalling or cleaning up:
 Also copy the output of:
 
 ```lua
-extensions.beamngVRControllerPoses.getState()
+dump(extensions.beamngVRControllerPoses.getState())
 ```
 
 Capture that state before moving, after moving each hand, after head rotation,
@@ -235,3 +237,17 @@ points to the same VDXR JSON recorded before the test.
 - **Spheres drift after recenter or vehicle movement:** save all required logs and
   `getState()` snapshots because this indicates a transform or calibration issue
   that needs investigation.
+
+
+The loader environment is process scoped. Starting BeamNG later from Steam, a desktop shortcut, or an unrelated launcher process will not necessarily inherit `XR_API_LAYER_PATH`, `XR_ENABLE_API_LAYERS`, or `XR_LOADER_DEBUG`.
+
+Use these commands to capture the most relevant log sections:
+
+```powershell
+Get-Content "$env:TEMP\BeamNGVRPosesLayer.log" -Tail 200
+
+Select-String `
+  -Path "$env:TEMP\BeamNG-OpenXR-loader.log" `
+  -Pattern 'XR_APILAYER|BEAMNG|OpenXR|error' `
+  -CaseSensitive:$false
+```
