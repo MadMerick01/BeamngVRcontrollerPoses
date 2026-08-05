@@ -2990,7 +2990,7 @@ _G: table
             setCustomDetailsButtons
             executeButton
             setDetailsButtonForFreeroam
-            executeDblClick
+            executeDoubleClick
             getManagementDetails
             setManagementButtonsEnabled
             goToMod
@@ -3126,14 +3126,14 @@ _G: table
             EndNode
             Resume
             SetNodePosition
-            GetDblClickedPin
+            GetDoubleClickedPin
             DestroyEditor
             setDebugEnabled
             shortDisplay
             NodeIdPtr
             GetNodePosition
             GetSelectedLinks
-            GetDblClickedNode
+            GetDoubleClickedNode
             isFunctionalNode
             FindLinkAt
             QueryDeletedNode
@@ -3230,9 +3230,9 @@ _G: table
             GetSelectedNodeIds
             variableEditor
             Link
-            IsBackgroundDblClicked
+            IsBackgroundDoubleClicked
             GetHotObjectId
-            GetDblClickedLink
+            GetDoubleClickedLink
             SetGroupingDisabled
             PinPivotSize
             AcceptNewItem1
@@ -4864,7 +4864,7 @@ _G: table
             resetDisplayDataToDefaults
             getScreenHeaderTitleAndPath
             closedFromUI
-            executeDblClick
+            executeDoubleClick
             getActiveFilters
             profilerFinish
             getDetails
@@ -5927,7 +5927,7 @@ _G: table
             exitCallback
             resetRangeFilter
             getDisplayDataOptions
-            executeDblClick
+            executeDoubleClick
             isRecent
             trackRecent
             onSettingsChanged
@@ -6047,7 +6047,7 @@ _G: table
             resetDisplayDataToDefaults
             getScreenHeaderTitleAndPath
             closedFromUI
-            executeDblClick
+            executeDoubleClick
             getActiveFilters
             profilerFinish
             getDetails
@@ -6789,7 +6789,7 @@ _G: table
             Button
             ImGuiIO_SetAppAcceptingEvents
             CollapsingHeader2
-            IsMouseDblClicked
+            IsMouseDoubleClicked
             Value3
             DragFloat4
             ImGuiStorage_GetFloat
@@ -6913,7 +6913,7 @@ _G: table
             TableBgTarget_None: number
             DragDropFlags_AcceptNoPreviewTooltip: number
             DragDropFlags_SourceAllowNullID: number
-            TreeNodeFlags_OpenOnDblClick: number
+            TreeNodeFlags_OpenOnDoubleClick: number
             SelectableFlags_Disabled: number
             TreeNodeFlags_CollapsingHeader: number
             InputTextFlags_CallbackAlways: number
@@ -6993,7 +6993,7 @@ _G: table
             Key_KeysData_SIZE: number
             PopupFlags_MouseButtonDefault_: number
             Col_TableRowBg: number
-            SelectableFlags_AllowDblClick: number
+            SelectableFlags_AllowDoubleClick: number
             Col_Tab: number
             DragDropFlags_AcceptBeforeDelivery: number
             HoveredFlags_NoPopupHierarchy: number
@@ -8432,7 +8432,7 @@ _G: table
         exitCallback
         resetDisplayDataToDefaults
         getDisplayDataOptions
-        executeDblClick
+        executeDoubleClick
         isRecent
         trackRecent
         onSettingsChanged
@@ -8568,7 +8568,7 @@ _G: table
       functions:
         makeSpawningButtons
         executeButton
-        executeDblClick
+        executeDoubleClick
         getCurrentVehicleThumb
         getFreeButtonId
         getVehicleName
@@ -10516,7 +10516,7 @@ _G: table
             EndCreate
             SetNodePosition
             DrawIcon
-            GetDblClickedPin
+            GetDoubleClickedPin
             GetGroupMax
             BeginShortcut
             CanvasToScreen
@@ -10535,7 +10535,7 @@ _G: table
             PushStyleColor
             GetNodePosition
             Link
-            GetDblClickedNode
+            GetDoubleClickedNode
             EndShortcut
             FindLinkAt
             GetActionContextNodeIds
@@ -10569,12 +10569,12 @@ _G: table
             BeginPin
             GetNodeSize
             SelectNode
-            IsBackgroundDblClicked
+            IsBackgroundDoubleClicked
             GetSelectedObjectCount
             GetSelectedLinkIds
             GetSelectedNodeIds
             GetHotObjectId
-            GetDblClickedLink
+            GetDoubleClickedLink
             PinPivotRect
             GetStyleColorName
             QueryNewNode1
@@ -11083,7 +11083,7 @@ _G: table
             GetMouseClickedCount
             SetItemDefaultFocus
             Separator
-            IsMouseDblClicked
+            IsMouseDoubleClicked
             MenuItem1
             IsMouseReleased
             IsMouseClicked
@@ -11922,7 +11922,7 @@ _G: table
                     ImGuiKey_F11
                     ImGuiStyleVar_CellPadding
                     ImGuiKey_F10
-                    ImGuiSelectableFlags_AllowDblClick
+                    ImGuiSelectableFlags_AllowDoubleClick
                     ImGuiTableFlags_Hideable
                     ImGuiStyleVar_WindowBorderSize
                     ImGuiWindowFlags_NoMove
@@ -11945,7 +11945,7 @@ _G: table
                     ImGuiCol_ChildBg
                     ImGuiTableFlags_NoClip
                     ImGuiCol_ScrollbarGrabHovered
-                    ImGuiTreeNodeFlags_OpenOnDblClick
+                    ImGuiTreeNodeFlags_OpenOnDoubleClick
                     ImGuiKey_COUNT
                     ImGuiHoveredFlags_NoPopupHierarchy
                     ImGuiTabBarFlags_None
@@ -12152,7 +12152,7 @@ _G: table
                     ImGuiKey_H: number
                     ImGuiHoveredFlags_AllowWhenBlockedByActiveItem: number
                     ImGuiFocusedFlags_RootWindow: number
-                    ImGuiSelectableFlags_AllowDblClick: number
+                    ImGuiSelectableFlags_AllowDoubleClick: number
                     ImGuiDragDropFlags_AcceptNoDrawDefaultRect: number
                     ImGuiTreeNodeFlags_NoTreePushOnOpen: number
                     ImGuiDataType_Float: number
@@ -12556,7 +12556,7 @@ _G: table
                     ImGuiCol_ChildBg: number
                     ImGuiWindowFlags_Popup: number
                     ImGuiCol_ScrollbarGrabHovered: number
-                    ImGuiTreeNodeFlags_OpenOnDblClick: number
+                    ImGuiTreeNodeFlags_OpenOnDoubleClick: number
                     ImGuiKey_Z: number
                     ImGuiSelectableFlags_AllowOverlap: number
                     ImGuiViewportFlags_TopMost: number
@@ -13008,7 +13008,7 @@ _G: table
         resetDisplayDataToDefaults
         getScreenHeaderTitleAndPath
         closedFromUI
-        executeDblClick
+        executeDoubleClick
         getActiveFilters
         profilerFinish
         getDetails
@@ -13573,7 +13573,7 @@ _G: table
         resetSetFilter
         executeButton
         toggleFavourite
-        executeDblClick
+        executeDoubleClick
         closedFromUI
       fields:
         BackendContract: table
@@ -13625,7 +13625,7 @@ _G: table
         resetRangeFilter
         getAppData
         getDisplayDataOptions
-        executeDblClick
+        executeDoubleClick
         profilerFinish
         onModDeactivated
         updateRangeFilter
@@ -43875,7 +43875,7 @@ _G: table
         onRootRouteLeave
         openVehicleSelectorForFreeroam
         getScreenHeaderTitleAndPath
-        executeDblClick
+        executeDoubleClick
         calculateActiveFilters
         onVehicleRouteMount
         updateRangeFilter
@@ -48188,7 +48188,7 @@ _G: table
         onWizardRouteEnter
         onUpdate
         updateOption
-        dblClickOverride
+        doubleClickOverride
         onWorldReadyState
         onDeserialized
         onSerialize
