@@ -24,22 +24,17 @@ C:\Users\fenci\AppData\Local\BeamNG\BeamNG.drive\current\mods\unpacked\BeamNGVRC
 C:\Users\fenci\AppData\Local\BeamNG\BeamNG.drive\current\mods\unpacked\BeamNGVRControllerPoses\settings\beamngVRControllerPoses.json
 ```
 
-The listed paths are examples from the verified test computer. They must not be universally hard-coded.
+If PowerShell blocks unsigned local scripts, run this in the same PowerShell
+window before the test:
 
-## Recommended everyday launch
-
-Use the package-root CMD launcher; do not manually open PowerShell and do not change persistent execution policy.
-
-```text
-Double-click Launch-BeamNGVRControllerPoses.cmd
-Select Vulkan in the BeamNG launcher
-Enter a map
-Start BeamNG VR
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
 
-The launcher validates the packaged manifest and DLL, prints the active OpenXR runtime manifest, warns if it does not look like VDXR, finds or asks for the root `BeamNG.drive.exe` launcher, and starts it with `XR_API_LAYER_PATH`, `XR_ENABLE_API_LAYERS`, and `XR_LOADER_DEBUG` set only for the launcher process tree. Use `scripts\Install-DesktopShortcut.ps1` or `scripts\Remove-DesktopShortcut.ps1` for the optional per-user desktop shortcut.
+This changes only the current PowerShell process and disappears when that window
+closes.
 
-## Manual diagnostic launch
+## Exact launch procedure that worked
 
 Run BeamNG through its launcher, not directly through `Bin64\BeamNG.drive.x64.exe`.
 The launcher is essential on this system because Vulkan must be selected for
@@ -103,7 +98,6 @@ whose transforms are updated from the same Lua world poses.
 ```text
 %TEMP%\BeamNG-OpenXR-loader.log
 %TEMP%\BeamNGVRPosesLayer.log
-%TEMP%\BeamNGVRPosesLauncher.log
 C:\Users\fenci\AppData\Local\BeamNG\BeamNG.drive\current\temp\beamng.log
 ```
 
