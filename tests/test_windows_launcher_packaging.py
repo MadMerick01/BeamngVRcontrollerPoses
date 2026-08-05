@@ -66,5 +66,10 @@ def test_windows_artifact_includes_launcher_files():
         "scripts\\Launch-BeamNGVRControllerPoses.ps1",
         "scripts\\Install-DesktopShortcut.ps1",
         "scripts\\Remove-DesktopShortcut.ps1",
+        "scripts\\Enable-BeamNGVRPoses.ps1",
+        "mod\\lua\\ge\\extensions\\beamngVRControllerPoses.lua",
+        "mod\\settings\\beamngVRControllerPoses.json",
     ]:
         assert required in WORKFLOW
+    assert "Copy-Item openxr-layer/scripts\\* (Join-Path $package scripts) -Recurse" in WORKFLOW
+    assert "Copy-Item scripts\\* (Join-Path $package scripts) -Recurse" in WORKFLOW
