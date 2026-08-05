@@ -16,9 +16,13 @@ old Python OpenVR publisher remains only as an unsupported fallback entry point,
 
 ## Choose an installation route
 
-Use a Windows x64 artifact from a successful `Windows x64 layer` workflow run for
-the simplest installation. Extract the archive to a temporary directory and verify
-that its root contains:
+Use a Windows x64 artifact from a successful post-documentation `Windows x64 layer` workflow run for
+the simplest installation. **Do not extract a new artifact over the previous PR #8
+test package**: deleted launcher and shortcut files could survive as stale local
+files and make the package look like it still supports the removed automatic
+launcher. Rename or delete `C:\BeamNGVRcontrollerPosesTest`, create a clean
+directory with that same name, download the new artifact, and extract it there.
+Verify that its root contains:
 
 ```text
 BeamNGVRPosesLayer.dll
@@ -29,6 +33,10 @@ docs\
 README.md
 SHA256SUMS.txt
 ```
+
+Also verify that the clean package does **not** contain
+the removed root `.cmd` launcher. The removed PR #8 automatic launcher and
+shortcut scripts are not the current procedure and are not required.
 
 The workflow verifies the x64 PE image, loader negotiation export, manifest/DLL
 pair, Python tests, and package hashes before uploading the archive. Those checks
@@ -69,27 +77,43 @@ Do not replace `openxr_loader.dll`, rename VDXR, or register this as a runtime.
 Keep the DLL beside the manifest; activation is process-scoped and makes no
 registry changes.
 
-First confirm that VDXR is the selected OpenXR runtime:
+From the tested package directory, first confirm that VDXR is the selected OpenXR runtime:
 
 ```powershell
+Set-Location 'C:\BeamNGVRcontrollerPosesTest'
+
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+
 .\scripts\Confirm-VDXRRuntime.ps1
 ```
 
-If Windows blocks unsigned local scripts, first run:
+The execution-policy bypass affects only the current PowerShell process,
+disappears when that window closes, and does not permanently change system
+policy. The tested runtime was
+`C:\Program Files\Virtual Desktop Streamer\OpenXR\virtualdesktop-openxr.json`.
+The script reports whether `ActiveRuntime` came from HKCU or HKLM; a missing HKCU
+OpenXR key is normal when the runtime is registered under HKLM.
+
+Launch the normal BeamNG launcher with the supplied script so the launcher and
+its Vulkan game process inherit the explicit API-layer environment:
 
 ```powershell
+Set-Location 'C:\BeamNGVRcontrollerPosesTest'
+
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-```
 
-This affects only the current PowerShell process and disappears when that window closes. From the tested package directory `C:\BeamNGVRcontrollerPosesTest`, launch the BeamNG launcher with the supplied script so its Vulkan child process inherits the API-layer environment:
-
-```powershell
 .\scripts\Enable-BeamNGVRPoses.ps1 `
   -PackageDirectory (Resolve-Path .) `
   -BeamNGExecutable 'D:\SteamLibrary\steamapps\common\BeamNG.drive\BeamNG.drive.exe'
 ```
 
-The `-BeamNGExecutable` argument may point to the BeamNG launcher; for VR on the test PC it must be `D:\SteamLibrary\steamapps\common\BeamNG.drive\BeamNG.drive.exe`, not `Bin64\BeamNG.drive.x64.exe`, because the launcher is where Vulkan is selected. From a source checkout built using the preceding section, point the same script at
+This launches the normal BeamNG launcher. Select Vulkan there, keep the
+PowerShell window open during the test, and let both the launcher and Vulkan game
+process inherit `XR_API_LAYER_PATH`, `XR_ENABLE_API_LAYERS`, and
+`XR_LOADER_DEBUG`. These environment variables are process-scoped. This procedure
+does not change the OpenXR `ActiveRuntime` registry value, does not replace
+`openxr_loader.dll`, and leaves VDXR as the active OpenXR runtime. For VR on the
+test PC, do not use `D:\SteamLibrary\steamapps\common\BeamNG.drive\Bin64\BeamNG.drive.x64.exe` because starting the Bin64 executable directly bypasses the launcher's Vulkan selection. From a source checkout built using the preceding section, point the same script at
 `openxr-layer\dist`:
 
 ```powershell
@@ -145,7 +169,7 @@ rejection, exposes `getState()`, and draws the two bright-blue stereo spheres.
 
 ## Install the BeamNG mod and test
 
-Create a directory such as `BeamNGVRControllerPoses` beneath the active BeamNG user
+Create `BeamNGVRControllerPoses` beneath the active BeamNG user
 folder's `mods\unpacked` directory, then copy the **contents** of this repository's
 `mod` directory into it. The resulting layout must be:
 
@@ -163,8 +187,18 @@ Lua:
 extensions.load('beamngVRControllerPoses')
 ```
 
-Enable BeamNG OpenXR controllers, enter VR through Virtual Desktop/VDXR, and move
-each Quest 3 controller independently. Verify head turns, vehicle movement and VR
+For the complete first test: connect the Quest 3 through Virtual Desktop, confirm
+VDXR, optionally confirm ordinary BeamNG Vulkan VR without the layer as a fresh
+baseline, install the unpacked mod, run the manual PowerShell launch command,
+select Vulkan in the normal BeamNG launcher, enter a map, start BeamNG VR, open
+the GE Lua console, load `extensions.load('beamngVRControllerPoses')`, then
+inspect `dump(extensions.beamngVRControllerPoses.getState())` and
+`dump(getCameraPosition())`. Verify the red camera diagnostic sphere is
+approximately one metre from the camera, the bright-blue spheres follow the
+controllers, controller world positions are near the non-zero BeamNG camera
+position rather than `(0,0,0)`, each controller moves independently, and the
+spheres remain correctly positioned during head rotation, vehicle movement, and
+VR recentering. Verify head turns, vehicle movement and VR
 recenter do not introduce offsets; disabling/occluding either controller hides its
 sphere, and stopping publication hides both within `staleAfterMs`. Inspect
 `extensions.beamngVRControllerPoses.getState()` for the world transforms. Calibration,
@@ -182,6 +216,6 @@ primary installation or test route.
 
 ## First Quest 3 + VDXR result
 
-The first real headset test used package `C:\BeamNGVRcontrollerPosesTest`, BeamNG `D:\SteamLibrary\steamapps\common\BeamNG.drive`, launcher `D:\SteamLibrary\steamapps\common\BeamNG.drive\BeamNG.drive.exe`, game executable `D:\SteamLibrary\steamapps\common\BeamNG.drive\Bin64\BeamNG.drive.x64.exe`, and user folder `C:\Users\fenci\AppData\Local\BeamNG\BeamNG.drive\current`. VDXR was active from `HKLM:\SOFTWARE\Khronos\OpenXR\1` with `ActiveRuntime=C:\Program Files\Virtual Desktop Streamer\OpenXR\virtualdesktop-openxr.json`.
+The first real headset test used package `C:\BeamNGVRcontrollerPosesTest`, BeamNG `D:\SteamLibrary\steamapps\common\BeamNG.drive`, launcher `D:\SteamLibrary\steamapps\common\BeamNG.drive\BeamNG.drive.exe`, direct Bin64 executable that must not be used for this VR test `D:\SteamLibrary\steamapps\common\BeamNG.drive\Bin64\BeamNG.drive.x64.exe`, and user folder `C:\Users\fenci\AppData\Local\BeamNG\BeamNG.drive\current`. VDXR was active from `HKLM:\SOFTWARE\Khronos\OpenXR\1` with `ActiveRuntime=C:\Program Files\Virtual Desktop Streamer\OpenXR\virtualdesktop-openxr.json`.
 
 Confirmed working: Vulkan launch through the BeamNG launcher, VDXR chaining, explicit API-layer load, Quest controller pose capture, protocol-2 UDP to `127.0.0.1:44441`, GE Lua receipt, approximately 0.0--0.5 ms packet age, continuously increasing counters, and valid positions/orientations for both controllers. The remaining Stage 1 isolation point is rendering: if blue controller spheres and the red camera test sphere have world coordinates near `getCameraPosition()` but are still invisible in VR, treat that as evidence that `debugDrawer:drawSphere` is not submitted to BeamNG's stereoscopic VR pass. The smallest next BeamNG-native fallback should be a pair of transient scene objects or TSStatic/debug mesh objects updated from the same Lua world poses, not a protocol or API-layer redesign.
