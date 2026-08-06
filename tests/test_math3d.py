@@ -1,6 +1,8 @@
 from math import cos, pi, sin
+import pytest
 from beamng_vr_poses.math3d import (
     Pose,
+    actual_hmd_world,
     compose,
     controller_world,
     inverse,
@@ -155,3 +157,27 @@ def test_quaternion_inverse_round_trip():
     q = (.2, -.3, .4, .8)
     close(quaternion_inverse(quaternion_inverse(q)),
           tuple(v / sum(x*x for x in q)**.5 for v in q))
+
+
+@pytest.mark.parametrize(('translation', 'expected'), [
+    ((0.4, 0., 0.), (10.4, 20., 30.)),       # OpenXR right -> BeamNG right
+    ((0., 0.3, 0.), (10., 20., 30.3)),       # OpenXR up -> BeamNG up
+    ((0., 0., -0.5), (10., 20.5, 30.)),      # OpenXR forward -> BeamNG forward
+])
+def test_hmd_translation_delta_mapping(translation, expected):
+    baseline=(2., 1.7, -3.)
+    hmd=Pose(tuple(baseline[i]+translation[i] for i in range(3)), I)
+    close(actual_hmd_world(Pose((10.,20.,30.),I),hmd,baseline).position, expected)
+
+
+def test_recenter_reestablishes_baseline_without_world_jump():
+    anchor=Pose((100.,200.,300.),I)
+    recentered=Pose((8.,1.7,-4.),I)
+    close(actual_hmd_world(anchor,recentered,recentered.position).position,anchor.position)
+
+
+def test_hmd_delta_uses_nonzero_world_anchor_and_nonidentity_rotation():
+    qz=(0.,0.,sin(pi/4),cos(pi/4))
+    actual=actual_hmd_world(Pose((-715.,106.,119.),qz),Pose((1.,0.,0.),I),(0.,0.,0.))
+    close(actual.position,(-715.,107.,119.))
+    close(actual.orientation,qz)

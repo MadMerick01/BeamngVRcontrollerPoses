@@ -33,6 +33,16 @@ def test_packet_roundtrip_and_stale_rejection():
     except ValueError: pass
     else: assert False
 
+def test_protocol_2_hmd_extension_and_legacy_packet_compatibility():
+    p=Pose((1,2,3),I)
+    legacy=decode_packet(encode_packet(1,100,(p,REQUIRED_VALID),(p,REQUIRED_VALID)))
+    assert 'hmd' not in legacy
+    extended=decode_packet(encode_packet(2,101,(p,REQUIRED_VALID),(p,REQUIRED_VALID),
+                                         (p,REQUIRED_VALID),session='session-a',base='local-a'))
+    assert extended['v'] == 2 and extended['hmd']['valid']
+    assert extended['hmd']['sampleTime'] == 101
+    assert extended['hmd']['session'] == 'session-a' and extended['hmd']['base'] == 'local-a'
+
 def test_udp_receiver_absent_is_safe():
     s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
     assert s.sendto(b'probe',('127.0.0.1',44449)) == 5
@@ -118,7 +128,15 @@ def test_lua_uses_beamng_camera_world_transform_and_diagnostics():
     assert 'getCameraQuat' in source
     assert 'getCameraPosRotPredictedXYZXYZW' not in source
     assert 'cameraTestSphereWorld' in source
-    assert 'rawLeft=%s rawRight=%s leftWorld=%s rightWorld=%s' in source
+    for diagnostic in ('rawHmdPose','hmdBaseline','mappedHmdDelta','beamngCameraAnchor','actualHmdWorldPosition'):
+        assert diagnostic in source
+    assert "local hmdWorld=actualHmdWorld(cameraAnchor,latest.hmd) or cameraAnchor" in source
+
+def test_native_packet_publishes_same_sample_hmd_without_changing_protocol_version():
+    source=(Path(__file__).parents[1]/'openxr-layer/src/layer.cpp').read_text()
+    assert 'sample.hmd.pose=head.pose' in source
+    assert '\\"v\\":2' in source and '\\"hmd\\":%s' in source
+    assert '\\"sampleTime\\":%lld' in source
 
 def test_left_then_right_valid_updates_publish_combined_snapshot():
     p=StableHandPublisher(); p.update('left','L1',True,0); snap=p.update('right','R1',True,10)

@@ -163,9 +163,18 @@ tracking immediately publishes invalidity rather than recycling an old pose.
 For every qualifying locate, the layer calls the *downstream* `xrLocateSpace`
 directly for its session-owned VIEW space using the exact same `baseSpace` and `XrTime`, then
 computes `inverse(hmdInBase) * controllerInBase`. Samples are merged only when the
-session/base/time key is compatible. The Lua bridge maps/calibrates that relative
-pose and computes `beamngCameraWorld * controllerRelativeToHmd` using `getCameraPosition()` plus `getCameraQuat()`; `OpenXR.getCameraPosRotPredictedXYZXYZW()` is deliberately not used as the game-world camera transform, retains stale packet
-rejection, exposes `getState()`, and draws the two bright-blue stereo spheres.
+session/base/time key is compatible. Protocol 2 now also carries an optional valid
+VIEW pose in that base space, its flags, sample time, and tracking-space identity;
+existing protocol-2 consumers can ignore this additive `hmd` member. The Lua
+bridge baselines its translation, maps `(x,y,z)` to `(x,-z,y)`, rotates the delta
+into game-world space, and supplements the anchor from `getCameraPosition()`.
+It then computes `actualHmdWorld * controllerRelativeToHmd` while retaining the
+corrected `getCameraQuat()` direction. Tracking-space/session changes, time resets,
+pose discontinuities, extension reload, and the exposed `resetHmdBaseline()` hook
+safely establish a new baseline without adding standing height. The bridge retains
+stale packet rejection; `OpenXR.getCameraPosRotPredictedXYZXYZW()` is deliberately
+not used as the game-world camera transform, exposes `getState()`, and draws the
+red headset diagnostic plus two bright-blue controller spheres.
 
 ## Install the BeamNG mod and test
 

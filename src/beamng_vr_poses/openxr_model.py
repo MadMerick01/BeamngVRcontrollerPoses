@@ -84,11 +84,17 @@ def model_locate(app_result, app_pose, app_flags, view_result, view_pose, view_f
     valid = view_result == 'success' and usable(app_flags) and usable(view_flags)
     return app_result, (relative_pose(view_pose, app_pose), app_flags) if valid else None
 
-def encode_packet(counter, xr_time, left, right):
+def encode_packet(counter, xr_time, left, right, hmd=None, session='1', base='1'):
     def hand(value):
         pose, flags = value
         return {'valid': usable(flags), 'flags': flags, 'p': list(pose.position), 'q': list(pose.orientation)}
-    return json.dumps({'v':2, 'counter':counter, 'xrTime':xr_time, 'source':'openxr-api-layer', 'left':hand(left), 'right':hand(right)}, separators=(',', ':')).encode()
+    packet={'v':2, 'counter':counter, 'xrTime':xr_time, 'source':'openxr-api-layer', 'left':hand(left), 'right':hand(right)}
+    if hmd is not None:
+        pose, flags = hmd
+        packet['hmd']={'valid':usable(flags),'flags':flags,'sampleTime':xr_time,
+                       'session':str(session),'base':str(base),
+                       'p':list(pose.position),'q':list(pose.orientation)}
+    return json.dumps(packet, separators=(',', ':')).encode()
 
 def decode_packet(data, last_counter=-1):
     packet=json.loads(data)
@@ -96,6 +102,9 @@ def decode_packet(data, last_counter=-1):
     for name in ('left','right'):
         h=packet.get(name)
         if not isinstance(h,dict) or h.get('valid') != usable(int(h.get('flags',0))) or len(h.get('p',[])) != 3 or len(h.get('q',[])) != 4: raise ValueError('invalid hand')
+    hmd=packet.get('hmd')
+    if hmd is not None and (not isinstance(hmd,dict) or hmd.get('valid') != usable(int(hmd.get('flags',0))) or len(hmd.get('p',[])) != 3 or len(hmd.get('q',[])) != 4 or not isinstance(hmd.get('sampleTime'),int)):
+        raise ValueError('invalid hmd')
     return packet
 
 class StableHandPublisher:

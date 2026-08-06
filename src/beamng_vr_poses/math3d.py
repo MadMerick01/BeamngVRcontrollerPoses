@@ -48,3 +48,18 @@ def inverse(p: Pose) -> Pose:
 def controller_world(beamng_hmd: Pose, external_hmd: Pose, controller: Pose) -> Pose:
     """beamngHmd * inverse(externalHmd) * externalController."""
     return compose(beamng_hmd, compose(inverse(external_hmd), controller))
+
+
+def map_openxr_position(position):
+    """Map OpenXR metres (x, y, z) to BeamNG axes (x, -z, y)."""
+    x, y, z = position
+    return (x, -z, y)
+
+
+def actual_hmd_world(camera_anchor: Pose, hmd_in_base: Pose, baseline):
+    """Supplement BeamNG's anchor with baseline-relative room-scale motion."""
+    raw_delta = tuple(hmd_in_base.position[i] - baseline[i] for i in range(3))
+    mapped_delta = map_openxr_position(raw_delta)
+    world_delta = qrotate(camera_anchor.orientation, mapped_delta)
+    return Pose(tuple(camera_anchor.position[i] + world_delta[i] for i in range(3)),
+                camera_anchor.orientation)

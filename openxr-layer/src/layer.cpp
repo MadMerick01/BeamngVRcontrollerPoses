@@ -114,7 +114,7 @@ class InFlight {
 };
 
 struct Pose { XrPosef pose{{0,0,0,1},{0,0,0}}; XrSpaceLocationFlags flags{}; bool valid{}; };
-struct Sample { uint64_t sequence{}; XrSession session{}; XrSpace base{}; XrTime time{}; Hand hand{}; XrSpace candidate{}; bool destroySession{}; bool destroySpace{}; Pose left{}, right{}; };
+struct Sample { uint64_t sequence{}; XrSession session{}; XrSpace base{}; XrTime time{}; Hand hand{}; XrSpace candidate{}; bool destroySession{}; bool destroySpace{}; Pose hmd{}, left{}, right{}; };
 
 // A bounded MPSC sequence queue avoids the data race in an ordinary double
 // buffer when runtimes locate spaces concurrently. Producers never wait: a full
@@ -188,7 +188,7 @@ XrPosef compose(const XrPosef& a,const XrPosef& b) {
 
 struct CandidatePose { XrSpace candidate{}; Pose pose{}; XrTime xrTime{}; std::chrono::steady_clock::time_point received{}; uint64_t updates{}; bool everValid{}; };
 struct HandCache { std::array<CandidatePose,16> candidates{}; XrSpace selected{}; uint64_t updates{}; };
-struct CombinedCache { XrSession session{}; XrSpace base{}; HandCache left{}, right{}; };
+struct CombinedCache { XrSession session{}; XrSpace base{}; Pose hmd{}; XrTime hmdTime{}; HandCache left{}, right{}; };
 
 CandidatePose* candidateSlot(HandCache& hand, XrSpace candidate) {
   CandidatePose* empty=nullptr; CandidatePose* oldest=&hand.candidates[0];
@@ -226,15 +226,20 @@ void publisherMain() {
       if(sample.destroySession){cache={}; continue;}
       if(sample.destroySpace){clearCandidate(cache.left,sample.candidate);clearCandidate(cache.right,sample.candidate);continue;}
       if(cache.session!=sample.session||cache.base!=sample.base){cache={};cache.session=sample.session;cache.base=sample.base;}
+      // The VIEW pose is sampled in exactly the same base space and at exactly
+      // the same XrTime as the controller-relative pose.  It is additional
+      // protocol-2 metadata; the established hand fields remain unchanged.
+      cache.hmd=sample.hmd;cache.hmdTime=sample.time;
       auto& handCache=sample.hand==Hand::left?cache.left:cache.right;
       Pose incoming=sample.hand==Hand::left?sample.left:sample.right;
       if(incoming.valid){auto* slot=candidateSlot(handCache,sample.candidate);slot->pose=incoming;slot->xrTime=sample.time;slot->received=now;slot->updates++;slot->everValid=true;handCache.updates++;if(handCache.selected==XR_NULL_HANDLE)handCache.selected=sample.candidate;}
       uint64_t leftAge=0,rightAge=0,leftUpdates=0,rightUpdates=0; XrSpace leftCandidate{},rightCandidate{};
       Pose left=currentPose(cache.left,now,leftAge,leftCandidate,leftUpdates), right=currentPose(cache.right,now,rightAge,rightCandidate,rightUpdates);
-      char out[1200],l[420],r[420];
+      char out[1600],h[420],l[420],r[420];
       auto hand=[](const Pose&p,uint64_t age,XrSpace candidate,uint64_t updates,char*b,size_t z){return std::snprintf(b,z,"{\"valid\":%s,\"flags\":%llu,\"ageMs\":%llu,\"candidate\":%llu,\"updates\":%llu,\"p\":[%.9g,%.9g,%.9g],\"q\":[%.9g,%.9g,%.9g,%.9g]}",p.valid?"true":"false",(unsigned long long)p.flags,(unsigned long long)age,(unsigned long long)candidate,(unsigned long long)updates,p.pose.position.x,p.pose.position.y,p.pose.position.z,p.pose.orientation.x,p.pose.orientation.y,p.pose.orientation.z,p.pose.orientation.w);};
+      std::snprintf(h,sizeof h,"{\"valid\":%s,\"flags\":%llu,\"sampleTime\":%lld,\"session\":\"%llu\",\"base\":\"%llu\",\"p\":[%.9g,%.9g,%.9g],\"q\":[%.9g,%.9g,%.9g,%.9g]}",cache.hmd.valid?"true":"false",(unsigned long long)cache.hmd.flags,(long long)cache.hmdTime,(unsigned long long)cache.session,(unsigned long long)cache.base,cache.hmd.pose.position.x,cache.hmd.pose.position.y,cache.hmd.pose.position.z,cache.hmd.pose.orientation.x,cache.hmd.pose.orientation.y,cache.hmd.pose.orientation.z,cache.hmd.pose.orientation.w);
       hand(left,leftAge,leftCandidate,leftUpdates,l,sizeof l); hand(right,rightAge,rightCandidate,rightUpdates,r,sizeof r);
-      int len=std::snprintf(out,sizeof out,"{\"v\":2,\"counter\":%llu,\"xrTime\":%lld,\"source\":\"openxr-api-layer\",\"left\":%s,\"right\":%s}",(unsigned long long)sample.sequence,(long long)sample.time,l,r);
+      int len=std::snprintf(out,sizeof out,"{\"v\":2,\"counter\":%llu,\"xrTime\":%lld,\"source\":\"openxr-api-layer\",\"hmd\":%s,\"left\":%s,\"right\":%s}",(unsigned long long)sample.sequence,(long long)sample.time,h,l,r);
       if(fd!=INVALID_SOCKET && len>0) sendto(fd,out,len,0,(sockaddr*)&to,sizeof to); seen=sample.sequence;
     }
     if(now-lastLog>std::chrono::seconds(5)) {
@@ -305,7 +310,8 @@ XRAPI_ATTR XrResult XRAPI_CALL layerLocateSpace(XrSpace space,XrSpace base,XrTim
   Sample sample{};sample.session=si->second.session;sample.base=base;sample.time=time;
   XrSpaceLocation head{XR_TYPE_SPACE_LOCATION};XrResult headResult=XR_ERROR_HANDLE_INVALID;
   if(session->second.layerView!=XR_NULL_HANDLE)headResult=d.locateSpace(session->second.layerView,base,time,&head);
-  Pose pose{};pose.flags=loc->locationFlags;pose.valid=XR_SUCCEEDED(headResult)&&((loc->locationFlags&kValid)==kValid)&&((head.locationFlags&kValid)==kValid);if(pose.valid)pose.pose=compose(inverse(head.pose),loc->pose);
+  sample.hmd.flags=head.locationFlags;sample.hmd.valid=XR_SUCCEEDED(headResult)&&((head.locationFlags&kValid)==kValid);if(sample.hmd.valid)sample.hmd.pose=head.pose;
+  Pose pose{};pose.flags=loc->locationFlags;pose.valid=sample.hmd.valid&&((loc->locationFlags&kValid)==kValid);if(pose.valid)pose.pose=compose(inverse(head.pose),loc->pose);
   sample.hand=si->second.hand;sample.candidate=space;if(si->second.hand==Hand::left)sample.left=pose;else sample.right=pose;publish(sample);return result;
 }
 
