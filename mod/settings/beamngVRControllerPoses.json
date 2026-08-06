@@ -59,5 +59,14 @@
       0
     ],
     "diameter": 0.12
+  },
+  "axisTripods": {
+    "enabled": true,
+    "axisLength": 0.25,
+    "endpointDiameter": 0.025,
+    "lineThickness": 0.01,
+    "drawDiagnosticSphereTripods": true,
+    "drawControllerTripods": true,
+    "drawOriginLines": true
   }
 }

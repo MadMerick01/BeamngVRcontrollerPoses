@@ -34,6 +34,17 @@ def qrotate(q, v):
     return r[:3]
 
 
+def axis_tripod_endpoints(position, orientation, axis_length):
+    """Return positive BeamNG X/Y/Z endpoints without modifying the centre."""
+    centre = tuple(position)
+    basis = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+    return tuple(
+        tuple(centre[i] + qrotate(orientation, axis)[i] * axis_length
+              for i in range(3))
+        for axis in basis
+    )
+
+
 def compose(parent: Pose, child: Pose) -> Pose:
     rp = qrotate(parent.orientation, child.position)
     return Pose(tuple(parent.position[i] + rp[i] for i in range(3)),

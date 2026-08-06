@@ -17,6 +17,10 @@ local function qnorm(q)
   return {q[1]/n,q[2]/n,q[3]/n,q[4]/n}
 end
 local function qrot(q,p) local r=qmul(qmul(q,{p[1],p[2],p[3],0}),qinv(q)); return {r[1],r[2],r[3]} end
+local function vaddScaled(p,d,s) return {p[1]+d[1]*s,p[2]+d[2]*s,p[3]+d[3]*s} end
+local function tripod(p,q,length)
+  return {x=vaddScaled(p,qrot(q,{1,0,0}),length),y=vaddScaled(p,qrot(q,{0,1,0}),length),z=vaddScaled(p,qrot(q,{0,0,1}),length)}
+end
 local function compose(a,b) local p=qrot(a.q,b.p); return {p={a.p[1]+p[1],a.p[2]+p[2],a.p[3]+p[3]},q=qmul(a.q,b.q)} end
 local function mappedPosition(p)
   local o,s=cfg.axisOrder,cfg.axisSign
@@ -126,7 +130,34 @@ local function receive()
     if ok and p and p.v==2 and type(p.counter)=='number' and p.counter>lastCounter then p.received=socketlib.gettime(); latest=p; lastCounter=p.counter end
   end
 end
-local function drawDiagnostics(candidates)
+-- The supplied API dump exposes debugDrawer only as userdata, and this extension
+-- already relies on its proven drawSphere signature.  Closely spaced spheres
+-- therefore form VR-visible sticks without guessing an undocumented line API.
+local function drawSphereStick(a,b,diameter,colour)
+  local length=distance(a,b)
+  if length==0 then return end
+  local steps=math.max(1,math.ceil(length/math.max(diameter,0.001)))
+  for i=0,steps do
+    local t=i/steps
+    debugDrawer:drawSphere(vec3({a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t,a[3]+(b[3]-a[3])*t}),diameter/2,colour)
+  end
+end
+local function drawTripod(centre,endpoints,settings)
+  local colours={x=ColorF(1,0,0,1),y=ColorF(0,1,0,1),z=ColorF(0,0,1,1)}
+  for _,axis in ipairs({'x','y','z'}) do
+    drawSphereStick(centre,endpoints[axis],settings.lineThickness,colours[axis])
+    debugDrawer:drawSphere(vec3(endpoints[axis]),settings.endpointDiameter/2,colours[axis])
+  end
+end
+local function drawDiagnostics(candidates,hmdWorld)
+  local settings=cfg.axisTripods or {}
+  settings.axisLength=settings.axisLength or 0.25
+  settings.endpointDiameter=settings.endpointDiameter or 0.025
+  settings.lineThickness=settings.lineThickness or 0.01
+  local tripodState={enabled=settings.enabled==true,axisLength=settings.axisLength or 0.25,
+    drawDiagnosticSphereTripods=settings.drawDiagnosticSphereTripods==true,
+    drawControllerTripods=settings.drawControllerTripods==true,drawOriginLines=settings.drawOriginLines==true,
+    diagnostic={},controllers={},originLines={}}
   if cfg.cameraTestSphere and cfg.cameraTestSphere.enabled then
     local localPos=cfg.cameraTestSphere.offset or {0,1,0}
     local red=compose(candidates.beamngOnly,{p=localPos,q={0,0,0,1}})
@@ -138,9 +169,29 @@ local function drawDiagnostics(candidates)
     debugDrawer:drawSphere(vec3(red.p),radius,ColorF(1,0,0,1))
     debugDrawer:drawSphere(vec3(green.p),radius,ColorF(0,1,0,1))
     debugDrawer:drawSphere(vec3(yellow.p),radius,ColorF(1,1,0,1))
+    for name,item in pairs({beamngOnly=red,beamngPlusHmdDelta=green,beamngMinusHmdDelta=yellow}) do
+      local endpoints=tripod(item.p,item.q,tripodState.axisLength)
+      tripodState.diagnostic[name]={centre=item.p,orientation=item.q,endpoints=endpoints}
+      tripodState.originLines[name]={start=candidates[name].p,endpoint=item.p}
+      if tripodState.enabled and tripodState.drawDiagnosticSphereTripods then drawTripod(item.p,endpoints,settings) end
+      if tripodState.enabled and tripodState.drawOriginLines then drawSphereStick(candidates[name].p,item.p,settings.lineThickness,ColorF(0.75,0.75,0.75,1)) end
+    end
   end
   local c=ColorF(cfg.sphereColour[1],cfg.sphereColour[2],cfg.sphereColour[3],cfg.sphereColour[4]); local radius=cfg.sphereDiameter/2
-  for _,hand in ipairs({'left','right'}) do local p=state[hand..'ControllerWorld']; if p.valid then debugDrawer:drawSphere(vec3(p.position),radius,c) end end
+  for _,hand in ipairs({'left','right'}) do
+    local p=state[hand..'ControllerWorld']
+    if p.valid then
+      debugDrawer:drawSphere(vec3(p.position),radius,c)
+      local endpoints=tripod(p.position,p.orientation,tripodState.axisLength)
+      tripodState.controllers[hand]={centre=p.position,orientation=p.orientation,endpoints=endpoints}
+      tripodState.originLines[hand]={start=hmdWorld.p,endpoint=p.position}
+      if tripodState.enabled and tripodState.drawControllerTripods then drawTripod(p.position,endpoints,settings) end
+      if tripodState.enabled and tripodState.drawOriginLines then
+        drawSphereStick(hmdWorld.p,p.position,settings.lineThickness,hand=='left' and ColorF(0,1,1,1) or ColorF(1,0,1,1))
+      end
+    end
+  end
+  state.diagnostics.axisTripods=tripodState
 end
 function M.onExtensionLoaded()
   cfg=jsonReadFile('settings/beamngVRControllerPoses.json') or jsonReadFile('/settings/beamngVRControllerPoses.json')
@@ -161,7 +212,7 @@ function M.onPreRender(dtReal,dtSim,dtRaw)
     left=state.leftControllerWorld.valid and state.leftControllerWorld.position or nil,
     right=state.rightControllerWorld.valid and state.rightControllerWorld.position or nil
   }
-  drawDiagnostics(candidates)
+  drawDiagnostics(candidates,hmdWorld)
   if now-lastLog>cfg.logIntervalSeconds then
     log('I','beamngVRControllerPoses',string.format('counter=%d age=%.1fms mode=%s beamngCamera=%s rawHmd=%s hmdBaseline=%s rawHmdDelta=%s mappedHmdDelta=%s worldHmdDelta=%s candidateHmdWorld=%s diagnosticSpheres=%s finalControllers=%s rawLeft=%s rawRight=%s',latest.counter,(now-latest.received)*1000,cfg.hmdTranslationMode,dumps(cameraAnchor.p),dumps(state.diagnostics.rawOpenXrHmdPosition),dumps(state.diagnostics.hmdBaseline),dumps(state.diagnostics.rawHmdDelta),dumps(state.diagnostics.mappedHmdDelta),dumps(state.diagnostics.rotatedWorldHmdDelta),dumps(state.diagnostics.candidateHmdWorldPositions),dumps(state.diagnostics.diagnosticSphereWorldPositions),dumps(state.diagnostics.finalControllerWorldPositions),dumps(latest.left),dumps(latest.right))); lastLog=now
   end
@@ -177,6 +228,10 @@ function M.setHmdTranslationMode(mode)
   state.diagnostics.selectedHmdTranslationMode=mode
   return true
 end
+function M.setAxisTripodsEnabled(enabled) cfg.axisTripods.enabled=enabled==true; return true end
+function M.setDiagnosticTripodsEnabled(enabled) cfg.axisTripods.drawDiagnosticSphereTripods=enabled==true; return true end
+function M.setControllerTripodsEnabled(enabled) cfg.axisTripods.drawControllerTripods=enabled==true; return true end
+function M.setOriginLinesEnabled(enabled) cfg.axisTripods.drawOriginLines=enabled==true; return true end
 function M.getState() return state end
 function M.onExtensionUnloaded() if sock then sock:close(); sock=nil end end
 return M
