@@ -213,6 +213,7 @@ Use the GE Lua console to select each mode without rebuilding or restarting:
 extensions.beamngVRControllerPoses.setHmdTranslationMode('beamngOnly')
 extensions.beamngVRControllerPoses.setHmdTranslationMode('beamngPlusHmdDelta')
 extensions.beamngVRControllerPoses.setHmdTranslationMode('beamngMinusHmdDelta')
+extensions.beamngVRControllerPoses.setHmdTranslationMode('beamngLateralDepthCorrection')
 ```
 
 Changing modes deliberately clears the current HMD baseline. Remain still long
@@ -220,7 +221,11 @@ enough for the next valid HMD sample to establish the new baseline before moving
 The red sphere represents `beamngOnly`, green represents
 `beamngPlusHmdDelta`, and yellow represents `beamngMinusHmdDelta`; all three are
 rendered simultaneously. The blue controller spheres use only the selected
-mode.
+mode. The default `beamngLateralDepthCorrection` mode uses BeamNG's camera
+position plus only the measured view-relative correction: a rightward headset
+strafe moves the anchor away along live view-forward, with the inverse response
+for a leftward strafe. It deliberately does not add the full OpenXR HMD delta,
+and its accumulated correction resets with the HMD baseline.
 
 Run this checklist in order:
 
