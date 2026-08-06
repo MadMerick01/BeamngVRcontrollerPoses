@@ -7,6 +7,8 @@ from beamng_vr_poses.math3d import (
     controller_world,
     inverse,
     quaternion_inverse,
+    hmd_translation_candidates,
+    select_hmd_translation,
 )
 
 I=(0.,0.,0.,1.)
@@ -181,3 +183,62 @@ def test_hmd_delta_uses_nonzero_world_anchor_and_nonidentity_rotation():
     actual=actual_hmd_world(Pose((-715.,106.,119.),qz),Pose((1.,0.,0.),I),(0.,0.,0.))
     close(actual.position,(-715.,107.,119.))
     close(actual.orientation,qz)
+
+
+def test_zero_hmd_delta_makes_all_translation_modes_identical():
+    camera = Pose((10., 20., 30.), I)
+    hmd = Pose((2., 1.7, -3.), I)
+    candidates = hmd_translation_candidates(camera, hmd, hmd.position)
+    assert set(candidates) == {"beamngOnly", "beamngPlusHmdDelta", "beamngMinusHmdDelta"}
+    for candidate in candidates.values():
+        close(candidate.position, camera.position)
+
+
+@pytest.mark.parametrize(('delta', 'mapped'), [
+    ((.4, 0., 0.), (.4, 0., 0.)),
+    ((0., .3, 0.), (0., 0., .3)),
+    ((0., 0., -.5), (0., .5, 0.)),
+    ((0., 0., .5), (0., -.5, 0.)),
+])
+def test_plus_and_minus_modes_for_room_scale_axes(delta, mapped):
+    origin = (-715., 106., 119.)
+    hmd = Pose(delta, I)
+    candidates = hmd_translation_candidates(Pose(origin, I), hmd, (0., 0., 0.))
+    close(candidates['beamngOnly'].position, origin)
+    close(candidates['beamngPlusHmdDelta'].position,
+          tuple(origin[i] + mapped[i] for i in range(3)))
+    close(candidates['beamngMinusHmdDelta'].position,
+          tuple(origin[i] - mapped[i] for i in range(3)))
+
+
+def test_translation_candidates_rotate_delta_without_rotating_world_origin():
+    qz = (0., 0., sin(pi/4), cos(pi/4))
+    camera = Pose((-715., 106., 119.), qz)
+    candidates = hmd_translation_candidates(camera, Pose((1., 0., 0.), I), (0., 0., 0.))
+    close(candidates['beamngOnly'].position, camera.position)
+    close(candidates['beamngPlusHmdDelta'].position, (-715., 107., 119.))
+    close(candidates['beamngMinusHmdDelta'].position, (-715., 105., 119.))
+
+
+def test_each_candidate_is_an_independent_pose_calculation():
+    candidates = hmd_translation_candidates(Pose((1., 2., 3.), I),
+                                            Pose((.2, .3, .4), I), (0., 0., 0.))
+    assert len({id(pose) for pose in candidates.values()}) == 3
+    assert len({id(pose.position) for pose in candidates.values()}) == 3
+    close(candidates['beamngOnly'].position, (1., 2., 3.))
+
+
+def test_selection_returns_requested_mode_and_rejects_invalid_mode():
+    camera = Pose((10., 20., 30.), I)
+    hmd = Pose((1., 0., 0.), I)
+    close(select_hmd_translation(camera, hmd, (0., 0., 0.),
+                                 'beamngMinusHmdDelta').position, (9., 20., 30.))
+    with pytest.raises(ValueError):
+        select_hmd_translation(camera, hmd, (0., 0., 0.), 'scaledGuess')
+
+
+def test_invalid_or_absent_hmd_data_uses_zero_delta_for_every_mode():
+    camera = Pose((10., 20., 30.), I)
+    for hmd, baseline in ((None, None), (Pose((99., 99., 99.), I), None)):
+        for candidate in hmd_translation_candidates(camera, hmd, baseline).values():
+            close(candidate.position, camera.position)

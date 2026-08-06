@@ -185,6 +185,43 @@ dump(extensions.beamngVRControllerPoses.getState())
 
 ## 7. In-headset test checklist
 
+### PR #14 room-scale translation diagnostic
+
+This PR is a controlled in-headset coordinate-space diagnostic, not a final
+solution based only on model tests. The headset result will determine the one
+permanent transform; the temporary alternative spheres and modes can then be
+removed.
+
+Follow this exact procedure:
+
+1. Download a fresh artifact generated after PR #14.
+2. Extract it into a new empty folder.
+3. Install the freshly packaged Lua/settings files.
+4. Launch using the existing manual PowerShell procedure.
+5. Enter VR and recenter while looking straight ahead.
+6. Load the Lua extension and remain still while the HMD baseline is established.
+7. Observe the red, green and yellow spheres.
+8. Move the headset right/left, forward/backward and up/down, holding still at each position.
+9. Record which sphere remains rigidly one metre ahead of the physical headset.
+10. Test each translation mode using `setHmdTranslationMode`.
+11. Verify that blue controller spheres follow the mode selected.
+12. Repeat after VR recenter.
+
+Use the GE Lua console to select each mode without rebuilding or restarting:
+
+```lua
+extensions.beamngVRControllerPoses.setHmdTranslationMode('beamngOnly')
+extensions.beamngVRControllerPoses.setHmdTranslationMode('beamngPlusHmdDelta')
+extensions.beamngVRControllerPoses.setHmdTranslationMode('beamngMinusHmdDelta')
+```
+
+Changing modes deliberately clears the current HMD baseline. Remain still long
+enough for the next valid HMD sample to establish the new baseline before moving.
+The red sphere represents `beamngOnly`, green represents
+`beamngPlusHmdDelta`, and yellow represents `beamngMinusHmdDelta`; all three are
+rendered simultaneously. The blue controller spheres use only the selected
+mode.
+
 Run this checklist in order:
 
 1. Connect the Quest 3 through Virtual Desktop.

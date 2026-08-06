@@ -63,3 +63,34 @@ def actual_hmd_world(camera_anchor: Pose, hmd_in_base: Pose, baseline):
     world_delta = qrotate(camera_anchor.orientation, mapped_delta)
     return Pose(tuple(camera_anchor.position[i] + world_delta[i] for i in range(3)),
                 camera_anchor.orientation)
+
+
+HMD_TRANSLATION_MODES = (
+    "beamngOnly",
+    "beamngPlusHmdDelta",
+    "beamngMinusHmdDelta",
+)
+
+
+def hmd_translation_candidates(camera_anchor: Pose, hmd_in_base: Pose | None, baseline):
+    """Return the three independently calculated Lua diagnostic candidates."""
+    raw_delta = ((0.0, 0.0, 0.0) if hmd_in_base is None or baseline is None else
+                 tuple(hmd_in_base.position[i] - baseline[i] for i in range(3)))
+    world_delta = qrotate(camera_anchor.orientation, map_openxr_position(raw_delta))
+    return {
+        "beamngOnly": Pose(tuple(camera_anchor.position[i] for i in range(3)),
+                           camera_anchor.orientation),
+        "beamngPlusHmdDelta": Pose(
+            tuple(camera_anchor.position[i] + world_delta[i] for i in range(3)),
+            camera_anchor.orientation),
+        "beamngMinusHmdDelta": Pose(
+            tuple(camera_anchor.position[i] - world_delta[i] for i in range(3)),
+            camera_anchor.orientation),
+    }
+
+
+def select_hmd_translation(camera_anchor: Pose, hmd_in_base: Pose | None, baseline,
+                           mode: str) -> Pose:
+    if mode not in HMD_TRANSLATION_MODES:
+        raise ValueError(f"invalid HMD translation mode: {mode}")
+    return hmd_translation_candidates(camera_anchor, hmd_in_base, baseline)[mode]
