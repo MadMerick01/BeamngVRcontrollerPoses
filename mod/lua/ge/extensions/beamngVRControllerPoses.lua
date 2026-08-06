@@ -3,6 +3,7 @@ local M = {}
 local sock, socketlib, cfg, latest, lastCounter, lastLog = nil, nil, nil, nil, -1, 0
 local state = {leftControllerWorld={valid=false}, rightControllerWorld={valid=false}, diagnostics={}}
 local hmdBaseline, hmdSpaceKey, previousRawHmd, previousHmdSampleTime = nil, nil, nil, nil
+local hmdLateralDepthCorrection = 0
 
 local function qmul(a,b) return {
   a[4]*b[1]+a[1]*b[4]+a[2]*b[3]-a[3]*b[2],
@@ -33,6 +34,7 @@ local function distance(a,b)
 end
 local function resetHmdBaseline(reason)
   hmdBaseline=nil; hmdSpaceKey=nil; previousRawHmd=nil; previousHmdSampleTime=nil
+  hmdLateralDepthCorrection=0
   state.diagnostics.hmdBaselineResetReason=reason
 end
 local function vec3ToTable(v)
@@ -67,18 +69,20 @@ local function updateHand(name, raw, cameraWorld, now)
   out.position=world.p; out.orientation=world.q; out.valid=true; out.updateCounter=latest.counter; out.ageMs=(now-latest.received)*1000
   out.relative=rel; out.rawRelative=raw
 end
-local validHmdTranslationModes={beamngOnly=true,beamngPlusHmdDelta=true,beamngMinusHmdDelta=true}
-local function hmdCandidates(cameraAnchor, worldDelta)
-  -- Keep these as three direct calculations from the BeamNG camera.  The test
-  -- alternatives must never accumulate or derive from one another.
+local validHmdTranslationModes={beamngOnly=true,beamngPlusHmdDelta=true,beamngMinusHmdDelta=true,beamngLateralDepthCorrection=true}
+local function hmdCandidates(cameraAnchor, worldDelta, crossAxisWorldDelta)
+  -- Keep every candidate as a direct calculation from the BeamNG camera.  The
+  -- diagnostic alternatives must never derive from one another.
   return {
     beamngOnly={p={cameraAnchor.p[1],cameraAnchor.p[2],cameraAnchor.p[3]},q=cameraAnchor.q},
     beamngPlusHmdDelta={p={cameraAnchor.p[1]+worldDelta[1],cameraAnchor.p[2]+worldDelta[2],cameraAnchor.p[3]+worldDelta[3]},q=cameraAnchor.q},
-    beamngMinusHmdDelta={p={cameraAnchor.p[1]-worldDelta[1],cameraAnchor.p[2]-worldDelta[2],cameraAnchor.p[3]-worldDelta[3]},q=cameraAnchor.q}
+    beamngMinusHmdDelta={p={cameraAnchor.p[1]-worldDelta[1],cameraAnchor.p[2]-worldDelta[2],cameraAnchor.p[3]-worldDelta[3]},q=cameraAnchor.q},
+    beamngLateralDepthCorrection={p={cameraAnchor.p[1]+crossAxisWorldDelta[1],cameraAnchor.p[2]+crossAxisWorldDelta[2],cameraAnchor.p[3]+crossAxisWorldDelta[3]},q=cameraAnchor.q}
   }
 end
 local function actualHmdWorld(cameraAnchor, hmd)
   local rawDelta,mappedDelta,worldDelta=nil,nil,{0,0,0}
+  local lateralStep,crossAxisWorldDelta=0,{0,0,0}
   local valid=hmd and hmd.valid and hmd.p
   if valid then
   local key=tostring(hmd.session or '')..':'..tostring(hmd.base or '')
@@ -88,6 +92,19 @@ local function actualHmdWorld(cameraAnchor, hmd)
   elseif sampleWentBack then resetHmdBaseline('sample time reset')
   elseif previousRawHmd and distance(previousRawHmd,hmd.p)>jump then resetHmdBaseline('HMD pose discontinuity') end
   if not hmdBaseline then hmdBaseline={hmd.p[1],hmd.p[2],hmd.p[3]}; hmdSpaceKey=key end
+
+  -- Headset tests isolated one residual in BeamNG's otherwise-correct camera
+  -- anchor: a physical right strafe pulls camera-relative objects toward the
+  -- face, at every yaw.  Integrate only motion along OpenXR's live head-right
+  -- vector, then apply the opposite correction along BeamNG's live view-forward
+  -- axis.  Rotation without translation contributes exactly zero, and no good
+  -- vertical, forward, or lateral camera component is added a second time.
+  if previousRawHmd and hmd.q and hmd.q[4] then
+    local rawStep={hmd.p[1]-previousRawHmd[1],hmd.p[2]-previousRawHmd[2],hmd.p[3]-previousRawHmd[3]}
+    local headRight=qrot(hmd.q,{1,0,0})
+    lateralStep=rawStep[1]*headRight[1]+rawStep[2]*headRight[2]+rawStep[3]*headRight[3]
+    hmdLateralDepthCorrection=hmdLateralDepthCorrection+lateralStep*(cfg.hmdLateralDepthCorrectionScale or 1.0)
+  end
   previousRawHmd={hmd.p[1],hmd.p[2],hmd.p[3]}; previousHmdSampleTime=hmd.sampleTime
 
   -- The baseline removes standing height/tracking-origin placement.  Apply the
@@ -96,8 +113,9 @@ local function actualHmdWorld(cameraAnchor, hmd)
   rawDelta={hmd.p[1]-hmdBaseline[1],hmd.p[2]-hmdBaseline[2],hmd.p[3]-hmdBaseline[3]}
   mappedDelta=mappedPosition(rawDelta)
   worldDelta=qrot(cameraAnchor.q,mappedDelta)
+  crossAxisWorldDelta=qrot(cameraAnchor.q,{0,hmdLateralDepthCorrection*cfg.metresToBeamNGUnit,0})
   end
-  local candidates=hmdCandidates(cameraAnchor,worldDelta)
+  local candidates=hmdCandidates(cameraAnchor,worldDelta,crossAxisWorldDelta)
   local mode=cfg.hmdTranslationMode
   if not validHmdTranslationModes[mode] then mode='beamngOnly'; cfg.hmdTranslationMode=mode end
   local selected=candidates[mode]
@@ -108,12 +126,16 @@ local function actualHmdWorld(cameraAnchor, hmd)
   state.diagnostics.rawHmdDelta=rawDelta
   state.diagnostics.mappedHmdDelta=mappedDelta
   state.diagnostics.rotatedWorldHmdDelta=valid and worldDelta or nil
+  state.diagnostics.hmdLateralStep=valid and lateralStep or nil
+  state.diagnostics.hmdLateralDepthCorrection=hmdLateralDepthCorrection
+  state.diagnostics.crossAxisWorldHmdDelta=valid and crossAxisWorldDelta or nil
   state.diagnostics.beamngCameraAnchor=cameraAnchor
   state.diagnostics.selectedHmdTranslationMode=mode
   state.diagnostics.candidateHmdWorldPositions={
     beamngOnly=candidates.beamngOnly.p,
     beamngPlusHmdDelta=candidates.beamngPlusHmdDelta.p,
-    beamngMinusHmdDelta=candidates.beamngMinusHmdDelta.p
+    beamngMinusHmdDelta=candidates.beamngMinusHmdDelta.p,
+    beamngLateralDepthCorrection=candidates.beamngLateralDepthCorrection.p
   }
   state.diagnostics.actualHmdWorldPosition=selected.p -- retained for PR #13 diagnostic consumers
   return selected,candidates

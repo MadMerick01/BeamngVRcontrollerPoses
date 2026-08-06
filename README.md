@@ -166,8 +166,14 @@ computes `inverse(hmdInBase) * controllerInBase`. Samples are merged only when t
 session/base/time key is compatible. Protocol 2 now also carries an optional valid
 VIEW pose in that base space, its flags, sample time, and tracking-space identity;
 existing protocol-2 consumers can ignore this additive `hmd` member. The Lua
-bridge baselines its translation, maps `(x,y,z)` to `(x,-z,y)`, rotates the delta
-into game-world space, and supplements the anchor from `getCameraPosition()`.
+bridge baselines its translation and preserves the confirmed `(x,y,z)` to
+`(x,-z,y)` controller mapping. Its default HMD mode leaves BeamNG's otherwise
+correct camera translation intact and applies only the headset-tested residual
+correction: motion along OpenXR's live head-right vector is accumulated and
+applied along BeamNG's live view-forward axis. This cancels the repeatable
+lateral-to-depth coupling without double-applying vertical, forward, or lateral
+room-scale translation. The original BeamNG-only and full plus/minus HMD-delta
+modes remain available for diagnostics.
 It then computes `actualHmdWorld * controllerRelativeToHmd` while retaining the
 corrected `getCameraQuat()` direction. Tracking-space/session changes, time resets,
 pose discontinuities, extension reload, and the exposed `resetHmdBaseline()` hook
