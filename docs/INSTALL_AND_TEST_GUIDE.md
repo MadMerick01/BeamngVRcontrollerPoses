@@ -192,6 +192,12 @@ solution based only on model tests. The headset result will determine the one
 permanent transform; the temporary alternative spheres and modes can then be
 removed.
 
+> **PR #15 headset-test result:** The live-head-vector lateral-step
+> accumulation did not correct the controller positions in headset testing and
+> was removed. The modes and diagnostics below remain the PR #14 diagnostic
+> baseline; no replacement transform, gain, smoothing, or controller offset was
+> introduced.
+
 Follow this exact procedure:
 
 1. Download a fresh artifact generated after PR #14.
@@ -213,7 +219,6 @@ Use the GE Lua console to select each mode without rebuilding or restarting:
 extensions.beamngVRControllerPoses.setHmdTranslationMode('beamngOnly')
 extensions.beamngVRControllerPoses.setHmdTranslationMode('beamngPlusHmdDelta')
 extensions.beamngVRControllerPoses.setHmdTranslationMode('beamngMinusHmdDelta')
-extensions.beamngVRControllerPoses.setHmdTranslationMode('beamngLateralDepthCorrection')
 ```
 
 Changing modes deliberately clears the current HMD baseline. Remain still long
@@ -221,11 +226,7 @@ enough for the next valid HMD sample to establish the new baseline before moving
 The red sphere represents `beamngOnly`, green represents
 `beamngPlusHmdDelta`, and yellow represents `beamngMinusHmdDelta`; all three are
 rendered simultaneously. The blue controller spheres use only the selected
-mode. The default `beamngLateralDepthCorrection` mode uses BeamNG's camera
-position plus only the measured view-relative correction: a rightward headset
-strafe moves the anchor away along live view-forward, with the inverse response
-for a leftward strafe. It deliberately does not add the full OpenXR HMD delta,
-and its accumulated correction resets with the HMD baseline.
+mode.
 
 Run this checklist in order:
 
