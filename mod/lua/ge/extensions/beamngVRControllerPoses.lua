@@ -67,8 +67,20 @@ local function updateHand(name, raw, cameraWorld, now)
   out.position=world.p; out.orientation=world.q; out.valid=true; out.updateCounter=latest.counter; out.ageMs=(now-latest.received)*1000
   out.relative=rel; out.rawRelative=raw
 end
+local validHmdTranslationModes={beamngOnly=true,beamngPlusHmdDelta=true,beamngMinusHmdDelta=true}
+local function hmdCandidates(cameraAnchor, worldDelta)
+  -- Keep these as three direct calculations from the BeamNG camera.  The test
+  -- alternatives must never accumulate or derive from one another.
+  return {
+    beamngOnly={p={cameraAnchor.p[1],cameraAnchor.p[2],cameraAnchor.p[3]},q=cameraAnchor.q},
+    beamngPlusHmdDelta={p={cameraAnchor.p[1]+worldDelta[1],cameraAnchor.p[2]+worldDelta[2],cameraAnchor.p[3]+worldDelta[3]},q=cameraAnchor.q},
+    beamngMinusHmdDelta={p={cameraAnchor.p[1]-worldDelta[1],cameraAnchor.p[2]-worldDelta[2],cameraAnchor.p[3]-worldDelta[3]},q=cameraAnchor.q}
+  }
+end
 local function actualHmdWorld(cameraAnchor, hmd)
-  if not hmd or not hmd.valid or not hmd.p then return nil end
+  local rawDelta,mappedDelta,worldDelta=nil,nil,{0,0,0}
+  local valid=hmd and hmd.valid and hmd.p
+  if valid then
   local key=tostring(hmd.session or '')..':'..tostring(hmd.base or '')
   local jump=cfg.hmdRecenterJumpMetres or 0.35
   local sampleWentBack=previousHmdSampleTime and hmd.sampleTime and hmd.sampleTime<previousHmdSampleTime
@@ -81,16 +93,30 @@ local function actualHmdWorld(cameraAnchor, hmd)
   -- The baseline removes standing height/tracking-origin placement.  Apply the
   -- confirmed OpenXR -> BeamNG mapping (x,y,z) -> (x,-z,y), then rotate the
   -- room-scale displacement by the corrected camera-to-world quaternion.
-  local rawDelta={hmd.p[1]-hmdBaseline[1],hmd.p[2]-hmdBaseline[2],hmd.p[3]-hmdBaseline[3]}
-  local mappedDelta=mappedPosition(rawDelta)
-  local worldDelta=qrot(cameraAnchor.q,mappedDelta)
-  local actual={p={cameraAnchor.p[1]+worldDelta[1],cameraAnchor.p[2]+worldDelta[2],cameraAnchor.p[3]+worldDelta[3]},q=cameraAnchor.q}
+  rawDelta={hmd.p[1]-hmdBaseline[1],hmd.p[2]-hmdBaseline[2],hmd.p[3]-hmdBaseline[3]}
+  mappedDelta=mappedPosition(rawDelta)
+  worldDelta=qrot(cameraAnchor.q,mappedDelta)
+  end
+  local candidates=hmdCandidates(cameraAnchor,worldDelta)
+  local mode=cfg.hmdTranslationMode
+  if not validHmdTranslationModes[mode] then mode='beamngOnly'; cfg.hmdTranslationMode=mode end
+  local selected=candidates[mode]
+  state.diagnostics.beamngCameraPosition={cameraAnchor.p[1],cameraAnchor.p[2],cameraAnchor.p[3]}
+  state.diagnostics.rawOpenXrHmdPosition=valid and {hmd.p[1],hmd.p[2],hmd.p[3]} or nil
   state.diagnostics.rawHmdPose=hmd
-  state.diagnostics.hmdBaseline={hmdBaseline[1],hmdBaseline[2],hmdBaseline[3]}
+  state.diagnostics.hmdBaseline=hmdBaseline and {hmdBaseline[1],hmdBaseline[2],hmdBaseline[3]} or nil
+  state.diagnostics.rawHmdDelta=rawDelta
   state.diagnostics.mappedHmdDelta=mappedDelta
+  state.diagnostics.rotatedWorldHmdDelta=valid and worldDelta or nil
   state.diagnostics.beamngCameraAnchor=cameraAnchor
-  state.diagnostics.actualHmdWorldPosition=actual.p
-  return actual
+  state.diagnostics.selectedHmdTranslationMode=mode
+  state.diagnostics.candidateHmdWorldPositions={
+    beamngOnly=candidates.beamngOnly.p,
+    beamngPlusHmdDelta=candidates.beamngPlusHmdDelta.p,
+    beamngMinusHmdDelta=candidates.beamngMinusHmdDelta.p
+  }
+  state.diagnostics.actualHmdWorldPosition=selected.p -- retained for PR #13 diagnostic consumers
+  return selected,candidates
 end
 local function receive()
   while true do
@@ -100,12 +126,18 @@ local function receive()
     if ok and p and p.v==2 and type(p.counter)=='number' and p.counter>lastCounter then p.received=socketlib.gettime(); latest=p; lastCounter=p.counter end
   end
 end
-local function drawDiagnostics(cameraWorld)
+local function drawDiagnostics(candidates)
   if cfg.cameraTestSphere and cfg.cameraTestSphere.enabled then
     local localPos=cfg.cameraTestSphere.offset or {0,1,0}
-    local world=compose(cameraWorld,{p=localPos,q={0,0,0,1}})
-    state.diagnostics.cameraTestSphereWorld=world.p
-    debugDrawer:drawSphere(vec3(world.p),(cfg.cameraTestSphere.diameter or cfg.sphereDiameter)/2,ColorF(1,0,0,1))
+    local red=compose(candidates.beamngOnly,{p=localPos,q={0,0,0,1}})
+    local green=compose(candidates.beamngPlusHmdDelta,{p=localPos,q={0,0,0,1}})
+    local yellow=compose(candidates.beamngMinusHmdDelta,{p=localPos,q={0,0,0,1}})
+    state.diagnostics.diagnosticSphereWorldPositions={beamngOnly=red.p,beamngPlusHmdDelta=green.p,beamngMinusHmdDelta=yellow.p}
+    state.diagnostics.cameraTestSphereWorld=red.p -- backward-compatible name
+    local radius=(cfg.cameraTestSphere.diameter or cfg.sphereDiameter)/2
+    debugDrawer:drawSphere(vec3(red.p),radius,ColorF(1,0,0,1))
+    debugDrawer:drawSphere(vec3(green.p),radius,ColorF(0,1,0,1))
+    debugDrawer:drawSphere(vec3(yellow.p),radius,ColorF(1,1,0,1))
   end
   local c=ColorF(cfg.sphereColour[1],cfg.sphereColour[2],cfg.sphereColour[3],cfg.sphereColour[4]); local radius=cfg.sphereDiameter/2
   for _,hand in ipairs({'left','right'}) do local p=state[hand..'ControllerWorld']; if p.valid then debugDrawer:drawSphere(vec3(p.position),radius,c) end end
@@ -122,15 +154,29 @@ function M.onPreRender(dtReal,dtSim,dtRaw)
   if not latest or not cameraAnchor or (now-latest.received)*1000>cfg.staleAfterMs then state.leftControllerWorld.valid=false; state.rightControllerWorld.valid=false; return end
   -- Packets from older protocol-2 publishers have no hmd member and retain the
   -- previous camera-anchor behavior rather than being rejected.
-  local hmdWorld=actualHmdWorld(cameraAnchor,latest.hmd) or cameraAnchor
+  local hmdWorld,candidates=actualHmdWorld(cameraAnchor,latest.hmd)
   state.diagnostics.cameraWorld=hmdWorld
   updateHand('left',latest.left,hmdWorld,now); updateHand('right',latest.right,hmdWorld,now)
-  drawDiagnostics(hmdWorld)
+  state.diagnostics.finalControllerWorldPositions={
+    left=state.leftControllerWorld.valid and state.leftControllerWorld.position or nil,
+    right=state.rightControllerWorld.valid and state.rightControllerWorld.position or nil
+  }
+  drawDiagnostics(candidates)
   if now-lastLog>cfg.logIntervalSeconds then
-    log('I','beamngVRControllerPoses',string.format('counter=%d age=%.1fms cameraAnchor=%s rawHmd=%s hmdBaseline=%s mappedHmdDelta=%s actualHmdWorld=%s rawLeft=%s rawRight=%s leftWorld=%s rightWorld=%s',latest.counter,(now-latest.received)*1000,dumps(cameraAnchor),dumps(latest.hmd),dumps(state.diagnostics.hmdBaseline),dumps(state.diagnostics.mappedHmdDelta),dumps(hmdWorld),dumps(latest.left),dumps(latest.right),dumps(state.leftControllerWorld),dumps(state.rightControllerWorld))); lastLog=now
+    log('I','beamngVRControllerPoses',string.format('counter=%d age=%.1fms mode=%s beamngCamera=%s rawHmd=%s hmdBaseline=%s rawHmdDelta=%s mappedHmdDelta=%s worldHmdDelta=%s candidateHmdWorld=%s diagnosticSpheres=%s finalControllers=%s rawLeft=%s rawRight=%s',latest.counter,(now-latest.received)*1000,cfg.hmdTranslationMode,dumps(cameraAnchor.p),dumps(state.diagnostics.rawOpenXrHmdPosition),dumps(state.diagnostics.hmdBaseline),dumps(state.diagnostics.rawHmdDelta),dumps(state.diagnostics.mappedHmdDelta),dumps(state.diagnostics.rotatedWorldHmdDelta),dumps(state.diagnostics.candidateHmdWorldPositions),dumps(state.diagnostics.diagnosticSphereWorldPositions),dumps(state.diagnostics.finalControllerWorldPositions),dumps(latest.left),dumps(latest.right))); lastLog=now
   end
 end
 function M.resetHmdBaseline() resetHmdBaseline('explicit reset') end
+function M.setHmdTranslationMode(mode)
+  if not validHmdTranslationModes[mode] then
+    log('E','beamngVRControllerPoses','invalid HMD translation mode: '..tostring(mode))
+    return false
+  end
+  cfg.hmdTranslationMode=mode
+  resetHmdBaseline('translation mode changed to '..mode)
+  state.diagnostics.selectedHmdTranslationMode=mode
+  return true
+end
 function M.getState() return state end
 function M.onExtensionUnloaded() if sock then sock:close(); sock=nil end end
 return M

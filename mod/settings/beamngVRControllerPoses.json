@@ -3,6 +3,7 @@
   "listenPort": 44441,
   "staleAfterMs": 150,
   "hmdRecenterJumpMetres": 0.35,
+  "hmdTranslationMode": "beamngOnly",
   "metresToBeamNGUnit": 1.0,
   "axisOrder": [
     1,
