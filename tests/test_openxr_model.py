@@ -131,14 +131,13 @@ def test_lua_uses_beamng_camera_world_transform_and_diagnostics():
     for diagnostic in ('beamngCameraPosition','rawOpenXrHmdPosition','rawHmdPose','hmdBaseline',
                        'rawHmdDelta','mappedHmdDelta','rotatedWorldHmdDelta',
                        'selectedHmdTranslationMode','candidateHmdWorldPositions',
-                       'diagnosticSphereWorldPositions','finalControllerWorldPositions',
-                       'hmdLateralStep','hmdLateralDepthCorrection','crossAxisWorldHmdDelta'):
+                       'diagnosticSphereWorldPositions','finalControllerWorldPositions'):
         assert diagnostic in source
     assert "local hmdWorld,candidates=actualHmdWorld(cameraAnchor,latest.hmd)" in source
 
 def test_lua_translation_modes_are_runtime_switchable_and_reset_baseline():
     source=(Path(__file__).parents[1]/'mod/lua/ge/extensions/beamngVRControllerPoses.lua').read_text()
-    for mode in ('beamngOnly','beamngPlusHmdDelta','beamngMinusHmdDelta','beamngLateralDepthCorrection'):
+    for mode in ('beamngOnly','beamngPlusHmdDelta','beamngMinusHmdDelta'):
         assert mode in source
     setter=source.split('function M.setHmdTranslationMode(mode)',1)[1].split('\nend',1)[0]
     assert "resetHmdBaseline('translation mode changed to '..mode)" in setter
@@ -155,17 +154,9 @@ def test_lua_candidate_spheres_are_independent_and_have_required_colours():
 def test_default_translation_mode_and_confirmed_axis_mapping_are_preserved():
     import json
     settings=json.loads((Path(__file__).parents[1]/'mod/settings/beamngVRControllerPoses.json').read_text())
-    assert settings['hmdTranslationMode'] == 'beamngLateralDepthCorrection'
-    assert settings['hmdLateralDepthCorrectionScale'] == 1.0
+    assert settings['hmdTranslationMode'] == 'beamngOnly'
     assert settings['axisOrder'] == [1,3,2]
     assert settings['axisSign'] == [1,-1,1]
-
-def test_lua_cross_axis_fix_is_view_relative_and_does_not_add_full_hmd_delta():
-    source=(Path(__file__).parents[1]/'mod/lua/ge/extensions/beamngVRControllerPoses.lua').read_text()
-    assert "local headRight=qrot(hmd.q,{1,0,0})" in source
-    assert "lateralStep=rawStep[1]*headRight[1]+rawStep[2]*headRight[2]+rawStep[3]*headRight[3]" in source
-    assert "crossAxisWorldDelta=qrot(cameraAnchor.q,{0,hmdLateralDepthCorrection*cfg.metresToBeamNGUnit,0})" in source
-    assert "beamngLateralDepthCorrection={p={cameraAnchor.p[1]+crossAxisWorldDelta[1]" in source
 
 def test_native_packet_publishes_same_sample_hmd_without_changing_protocol_version():
     source=(Path(__file__).parents[1]/'openxr-layer/src/layer.cpp').read_text()
