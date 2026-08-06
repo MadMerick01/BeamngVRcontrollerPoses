@@ -3,9 +3,11 @@ import pytest
 from beamng_vr_poses.math3d import (
     Pose,
     actual_hmd_world,
+    axis_tripod_endpoints,
     compose,
     controller_world,
     inverse,
+    qnorm,
     quaternion_inverse,
     hmd_translation_candidates,
     select_hmd_translation,
@@ -13,6 +15,46 @@ from beamng_vr_poses.math3d import (
 
 I=(0.,0.,0.,1.)
 def close(a,b): assert all(abs(x-y)<1e-6 for x,y in zip(a,b))
+
+
+def test_identity_tripod_points_right_forward_and_up_and_preserves_centre():
+    centre = [10., 20., 30.]
+    original = list(centre)
+    x, y, z = axis_tripod_endpoints(centre, I, .25)
+    close(x, (10.25, 20., 30.))
+    close(y, (10., 20.25, 30.))
+    close(z, (10., 20., 30.25))
+    assert centre == original
+
+
+def test_yaw_and_pitch_rotate_tripod_axes_in_xyzw_order():
+    yaw = (0., 0., sin(pi / 4), cos(pi / 4))
+    x, y, z = axis_tripod_endpoints((0., 0., 0.), yaw, 1.)
+    close(x, (0., 1., 0.)); close(y, (-1., 0., 0.)); close(z, (0., 0., 1.))
+    pitch = (sin(pi / 4), 0., 0., cos(pi / 4))
+    x, y, z = axis_tripod_endpoints((0., 0., 0.), pitch, 1.)
+    close(x, (1., 0., 0.)); close(y, (0., 0., 1.)); close(z, (0., -1., 0.))
+
+
+@pytest.mark.parametrize('length', [.025, .25, 2.])
+def test_every_tripod_axis_preserves_configured_length(length):
+    centre = (4., -2., 9.)
+    q = qnorm((.2, -.3, .4, .8))
+    for endpoint in axis_tripod_endpoints(centre, q, length):
+        assert sum((endpoint[i] - centre[i]) ** 2 for i in range(3)) ** .5 == pytest.approx(length)
+
+
+def test_controller_tripods_use_independent_controller_orientations_not_camera():
+    camera = (0., 0., 0., 1.)
+    left_q = (0., 0., sin(pi / 4), cos(pi / 4))
+    right_q = (sin(pi / 4), 0., 0., cos(pi / 4))
+    left = axis_tripod_endpoints((-1., 0., 0.), left_q, 1.)
+    right = axis_tripod_endpoints((1., 0., 0.), right_q, 1.)
+    camera_axes = axis_tripod_endpoints((-1., 0., 0.), camera, 1.)
+    assert left != camera_axes
+    assert left != right
+    close(left[0], (-1., 1., 0.))
+    close(right[1], (1., 0., 1.))
 
 def test_identity_hmd_preserves_controller():
     c=Pose((.2,1.1,-.4),I); assert controller_world(Pose((0,0,0),I),Pose((0,0,0),I),c)==c

@@ -341,3 +341,43 @@ Select-String `
   -Pattern 'XR_APILAYER|BEAMNG|OpenXR|error' `
   -CaseSensitive:$false
 ```
+
+## Axis-tripod headset diagnostic
+
+1. Download a new Windows x64 artifact built from this change and extract it to
+   a new, empty folder.
+2. Install its updated `lua` and `settings` directories as described above, then
+   launch BeamNG with the established manual PowerShell procedure.
+3. Enter VR, face straight ahead, recenter, and load
+   `extensions.beamngVRControllerPoses`.
+4. Confirm all five spheres have tripods whose red X, green Y, and blue Z sticks
+   begin at the sphere centres and have visible endpoint markers. On the camera
+   tripods, X should point right, Y forward, and Z upward.
+5. Rotate your head without translating. The red, green, and yellow tripods
+   should rotate consistently with the corrected camera orientation. Controller
+   tripods must not copy head rotation unless their physical controllers rotate.
+6. Hold both controllers still while rotating your head; each tripod should stay
+   attached to its physical controller. Then rotate one controller and confirm
+   only that controller tripod rotates.
+7. Point each controller naturally forward and record which coloured axis aligns
+   most closely with its physical pointing direction.
+8. Translate your head right/left, forward/backward, and up/down. Note whether a
+   tripod or grey origin line shows lateral motion being interpreted as depth.
+9. Without recentering, turn your head 90 degrees left and right and repeat all
+   translation checks.
+10. Run the following at the centred position, after right translation, after
+    forward translation, at 90-degree right yaw, and at 90-degree left yaw; save
+    each result with the corresponding logs:
+
+```lua
+dump(extensions.beamngVRControllerPoses.getState())
+```
+
+Tripods and origin lines can be hidden independently without resetting tracking:
+
+```lua
+extensions.beamngVRControllerPoses.setAxisTripodsEnabled(false)
+extensions.beamngVRControllerPoses.setDiagnosticTripodsEnabled(false)
+extensions.beamngVRControllerPoses.setControllerTripodsEnabled(false)
+extensions.beamngVRControllerPoses.setOriginLinesEnabled(false)
+```
