@@ -292,3 +292,32 @@ primary installation or test route.
 The first real headset test used package `C:\BeamNGVRcontrollerPosesTest`, BeamNG `D:\SteamLibrary\steamapps\common\BeamNG.drive`, launcher `D:\SteamLibrary\steamapps\common\BeamNG.drive\BeamNG.drive.exe`, direct Bin64 executable that must not be used for this VR test `D:\SteamLibrary\steamapps\common\BeamNG.drive\Bin64\BeamNG.drive.x64.exe`, and user folder `C:\Users\fenci\AppData\Local\BeamNG\BeamNG.drive\current`. VDXR was active from `HKLM:\SOFTWARE\Khronos\OpenXR\1` with `ActiveRuntime=C:\Program Files\Virtual Desktop Streamer\OpenXR\virtualdesktop-openxr.json`.
 
 Confirmed working: Vulkan launch through the BeamNG launcher, VDXR chaining, explicit API-layer load, Quest controller pose capture, protocol-2 UDP to `127.0.0.1:44441`, GE Lua receipt, approximately 0.0--0.5 ms packet age, continuously increasing counters, and valid positions/orientations for both controllers. The remaining Stage 1 isolation point is rendering: if blue controller spheres and the red camera test sphere have world coordinates near `core_camera.getPosition()` but are still invisible in VR, treat that as evidence that `debugDrawer:drawSphere` is not submitted to BeamNG's stereoscopic VR pass. The smallest next BeamNG-native fallback should be a pair of transient scene objects or TSStatic/debug mesh objects updated from the same Lua world poses, not a protocol or API-layer redesign.
+
+## PR #28 artificial-camera-yaw tracking rebase
+
+The additive `baselineRigidPositionBeamngRotationRebased` mode retains the PR #26
+rigid position and PR #27 live BeamNG orientation, but detects a game-camera turn
+by comparing the stored tracking-to-world orientation with
+`cameraWorld.q * inverse(currentMappedTrackingHmd.q)`. Differences above the
+configurable `artificialYawRebaseThresholdDegrees` (default `0.75`) rotate the
+tracking axes around the current HMD position. The transform translation is
+recalculated so the HMD pivot is numerically unchanged; this is not a full
+baseline reset. Purple and cyan continue to show the unchanged PR #26 and #27
+candidates, while orange shows the rebased candidate.
+
+Use a stationary vehicle, remain still briefly after selection, and then test
+natural rotation/translation, snap and smooth stick turns, a complete artificial
+360-degree turn, and VR recenter:
+
+```lua
+extensions.load('beamngVRControllerPoses')
+extensions.beamngVRControllerPoses.setHmdTranslationMode(
+  'baselineRigidPositionBeamngRotationRebased'
+)
+```
+
+Blue controller spheres follow the selected mode. Diagnostics expose the target
+and stored alignments, angular delta, trigger/count/reason/time, positions before
+and after rebase, discontinuity, rebased transform, hybrid HMD/controllers, and
+orange-sphere position. Rebase event logs are throttled; ordinary render frames
+do not emit an event log.

@@ -1,6 +1,6 @@
 """Rigid-transform math. Quaternions are (x, y, z, w), composed parent * child."""
 from dataclasses import dataclass
-from math import sqrt
+from math import acos, degrees, sqrt
 
 
 @dataclass(frozen=True)
@@ -99,6 +99,32 @@ def baseline_rigid_controller_world(candidate_hmd_world: Pose,
                                     calibration_offset: Pose) -> Pose:
     return compose(candidate_hmd_world,
                    compose(controller_relative_to_hmd, calibration_offset))
+
+
+def target_world_from_tracking_orientation(camera_world_orientation,
+                                           mapped_tracking_hmd_orientation):
+    """Alignment which maps the current tracking HMD rotation to the camera."""
+    return qnorm(qmul(qnorm(camera_world_orientation),
+                      quaternion_inverse(mapped_tracking_hmd_orientation)))
+
+
+def quaternion_angular_difference_degrees(a, b):
+    """Shortest rotation between normalized XYZW quaternions (q and -q agree)."""
+    dot = abs(sum(x*y for x, y in zip(qnorm(a), qnorm(b))))
+    return degrees(2 * acos(min(1.0, max(-1.0, dot))))
+
+
+def pivot_preserving_world_from_tracking_rebase(world_from_tracking: Pose,
+                                                mapped_tracking_hmd: Pose,
+                                                new_orientation) -> tuple[Pose, Pose, Pose]:
+    """Rotate tracking axes around the current HMD without moving the pivot."""
+    before = compose(world_from_tracking, mapped_tracking_hmd)
+    orientation = qnorm(new_orientation)
+    rotated = qrotate(orientation, mapped_tracking_hmd.position)
+    position = tuple(before.position[i] - rotated[i] for i in range(3))
+    rebased_transform = Pose(position, orientation)
+    after = compose(rebased_transform, mapped_tracking_hmd)
+    return rebased_transform, before, after
 
 
 def fixed_world_from_base(world_from_hmd, base_from_hmd):
