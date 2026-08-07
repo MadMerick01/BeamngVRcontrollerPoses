@@ -14,6 +14,8 @@ local baselineOrangeReferenceHmdWorldPosition=nil
 local movingArtificialYawRebaseCount=0
 local geluaCapture={captureInstalled=false,captureAvailable=false,captureFailureReason='capture not installed',setterSequence=0,pairComplete=false}
 local geluaOriginalSetter,geluaOriginalGetter,geluaSetterWrapper,geluaGetterWrapper=nil,nil,nil,nil
+local nativeSource={enabled=false,available=false,failureReason='diagnostics disabled',pollCounter=0,lastPollTimestamp=nil,lastLogTimestamp=0}
+local yellowCandidateFormula='captured GE Lua anchor position + raw BeamNG native source position'
 local unpackValues=table.unpack or unpack
 local function packValues(...) return {n=select('#',...),...} end
 
@@ -177,6 +179,117 @@ local function geluaNativeCandidate(now)
   local nativeCameraToWorldQuaternion=qinv(rawNativeViewQuaternion)
   return {p={a[1]+p[1],a[2]+p[2],a[3]+p[3]},q=nativeCameraToWorldQuaternion,
     rawNativeViewQuaternion=rawNativeViewQuaternion},nil
+end
+local function nativeHand(path)
+  if type(path)~='string' then return nil end
+  if path=='/user/hand/left' or path:sub(1,16)=='/user/hand/left/' then return 'left' end
+  if path=='/user/hand/right' or path:sub(1,17)=='/user/hand/right/' then return 'right' end
+  return nil
+end
+local function nativeFailure(reason)
+  nativeSource.enabled=false; nativeSource.available=false; nativeSource.failureReason=reason
+  state.nativeSourceDiagnosticsEnabled=false; state.nativeSourceDiagnosticsAvailable=false
+  state.nativeSourceDiagnosticsFailureReason=reason
+  log('E','beamngVRControllerPoses','native source pose diagnostics disabled: '..reason)
+end
+local function syncNativeSourceState(now)
+  state.nativeSourceDiagnosticsEnabled=nativeSource.enabled
+  state.nativeSourceDiagnosticsAvailable=nativeSource.available
+  state.nativeSourceDiagnosticsFailureReason=nativeSource.failureReason
+  state.nativeSourcePollCounter=nativeSource.pollCounter
+  state.nativeSourceLastPollTimestamp=nativeSource.lastPollTimestamp
+  state.nativeSourceAgeMs=nativeSource.lastPollTimestamp and (now-nativeSource.lastPollTimestamp)*1000 or nil
+  state.yellowCandidateFormula=yellowCandidateFormula
+end
+local function rejectNativePose(source,posePath,raw)
+  if type(source.path)~='string' then return 'source path is not a string' end
+  if not source.hand then return 'source is not explicitly left or right handed' end
+  if type(posePath)~='string' then return 'pose path is not a string' end
+  if source.active~=true then return 'source is inactive' end
+  if type(raw)~='table' then return 'pose value is not a table' end
+  if raw.active~=nil and raw.active~=true then return 'pose is inactive' end
+  if raw.poseValid~=true then return 'pose is invalid' end
+  local p,q=raw.pos,raw.rot
+  if not p or not finiteNumber(p.x) or not finiteNumber(p.y) or not finiteNumber(p.z) then return 'position is missing or non-finite' end
+  if not q or not finiteNumber(q.x) or not finiteNumber(q.y) or not finiteNumber(q.z) or not finiteNumber(q.w) then return 'quaternion is missing or non-finite' end
+  if q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w==0 then return 'quaternion has zero length' end
+  return nil
+end
+local function pollNativeSourcePoses(now)
+  if not nativeSource.enabled then syncNativeSourceState(now); return end
+  if type(OpenXR)~='table' or type(OpenXR.getInputSourceStates)~='function' or type(OpenXR.getSourcePoseStates)~='function' then
+    nativeFailure('required native OpenXR source-pose functions became unavailable'); syncNativeSourceState(now); return
+  end
+  local settings=cfg.nativeSourcePoseDiagnostics or {}
+  if nativeSource.lastPollTimestamp and now-nativeSource.lastPollTimestamp<(settings.pollIntervalSeconds or 0) then syncNativeSourceState(now); return end
+  local ok,sources=pcall(OpenXR.getInputSourceStates)
+  if not ok then nativeFailure('OpenXR.getInputSourceStates failed: '..tostring(sources)); syncNativeSourceState(now); return end
+  if type(sources)~='table' then nativeFailure('OpenXR.getInputSourceStates returned '..type(sources)..', expected table'); syncNativeSourceState(now); return end
+  nativeSource.pollCounter=nativeSource.pollCounter+1; nativeSource.lastPollTimestamp=now
+  local input,leftPaths,rightPaths,left,right={},{},{},{},{}
+  for sourceKey,rawSource in pairs(sources) do
+    if type(rawSource)=='table' then
+      local observedPath=rawSource.path or (type(sourceKey)=='string' and sourceKey or nil)
+      local source={path=observedPath,interactionProfile=rawSource.interactionProfile,active=rawSource.active,poseValid=rawSource.poseValid,hand=nativeHand(observedPath)}
+      input[#input+1]=source
+      if source.hand=='left' then leftPaths[#leftPaths+1]=source.path elseif source.hand=='right' then rightPaths[#rightPaths+1]=source.path end
+      if source.hand then
+        local poseOk,poses=pcall(OpenXR.getSourcePoseStates,source.path)
+        if not poseOk then nativeFailure('OpenXR.getSourcePoseStates failed for '..tostring(source.path)..': '..tostring(poses)); syncNativeSourceState(now); return end
+        if type(poses)~='table' then nativeFailure('OpenXR.getSourcePoseStates returned '..type(poses)..' for '..tostring(source.path)); syncNativeSourceState(now); return end
+        for posePath,rawPose in pairs(poses) do
+          local raw=type(rawPose)=='table' and rawPose or {}
+          local p=raw.pos and {raw.pos.x,raw.pos.y,raw.pos.z} or nil
+          local q=raw.rot and {raw.rot.x,raw.rot.y,raw.rot.z,raw.rot.w} or nil
+          local reason=rejectNativePose(source,posePath,rawPose)
+          local kind=type(posePath)=='string' and posePath:find('/grip/pose',1,true) and 'grip' or (type(posePath)=='string' and posePath:find('/aim/pose',1,true) and 'aim' or 'other')
+          local candidate={sourcePath=source.path,posePath=posePath,id=raw.id,active=raw.active,activeFieldAbsent=raw.active==nil,
+            poseValid=raw.poseValid,rawPosition=p,rawQuaternion=q,rawNativePosition=p,rawNativeQuaternion=q,
+            valid=reason==nil,rejectionReason=reason,candidateType=kind}
+          local anchor,anchorReason=geluaNativeCandidate(now)
+          if candidate.valid and anchor then candidate.interpretedWorldPosition={geluaCapture.rawAnchorPosition[1]+p[1],geluaCapture.rawAnchorPosition[2]+p[2],geluaCapture.rawAnchorPosition[3]+p[3]} end
+          if candidate.valid and not anchor then candidate.yellowCandidateUnavailableReason=anchorReason end
+          local target=source.hand=='left' and left or right; target[#target+1]=candidate
+        end
+      end
+    end
+  end
+  local function selections(items)
+    local grip,aim,world={}
+    for _,candidate in ipairs(items) do if candidate.valid then
+      if candidate.candidateType=='grip' and not grip then grip=candidate elseif candidate.candidateType=='aim' and not aim then aim=candidate end
+      if candidate.interpretedWorldPosition then world[#world+1]=candidate end
+    end end
+    return grip,aim,world
+  end
+  local lg,la,lw=selections(left); local rg,ra,rw=selections(right)
+  state.nativeInputSources=input; state.nativeLeftSourcePaths=leftPaths; state.nativeRightSourcePaths=rightPaths
+  state.nativeLeftPoseCandidates=left; state.nativeRightPoseCandidates=right
+  state.nativeSourceLeftCandidates=left; state.nativeSourceRightCandidates=right
+  state.nativeLeftSelectedGripPose=lg; state.nativeRightSelectedGripPose=rg
+  state.nativeLeftSelectedAimPose=la; state.nativeRightSelectedAimPose=ra
+  state.nativeLeftYellowWorldCandidates=lw; state.nativeRightYellowWorldCandidates=rw
+  local anchor,anchorReason=geluaNativeCandidate(now)
+  state.geluaAnchorUsedForYellowCandidates=anchor and {geluaCapture.rawAnchorPosition[1],geluaCapture.rawAnchorPosition[2],geluaCapture.rawAnchorPosition[3]} or nil
+  state.yellowCandidateUnavailableReason=anchor and nil or anchorReason
+  nativeSource.available=true; nativeSource.failureReason=nil; syncNativeSourceState(now)
+  if now-nativeSource.lastLogTimestamp>=(settings.logIntervalSeconds or 1) then
+    pcall(function() log('I','beamngVRControllerPoses','native source pose summary='..dumps({sourceCount=#input,leftSourcePaths=leftPaths,rightSourcePaths=rightPaths,sources=input,leftPoses=left,rightPoses=right,anchorAvailable=anchor~=nil})) end)
+    nativeSource.lastLogTimestamp=now
+  end
+end
+local function drawNativeSourcePoses()
+  if not nativeSource.enabled then return end
+  local settings=cfg.nativeSourcePoseDiagnostics or {}; local cap=math.max(0,math.floor(settings.maxVisibleCandidatesPerHand or 8))
+  for _,hand in ipairs({'left','right'}) do
+    local candidates=state['native'..(hand=='left' and 'Left' or 'Right')..'YellowWorldCandidates'] or {}
+    for index,candidate in ipairs(candidates) do if index<=cap then
+      local diameter=candidate.candidateType=='grip' and (settings.gripSphereDiameter or 0.07) or (candidate.candidateType=='aim' and (settings.aimSphereDiameter or 0.05) or (settings.otherSphereDiameter or 0.03))
+      local position=candidate.interpretedWorldPosition
+      debugDrawer:drawSphere(vec3(position),diameter/2,ColorF(1,1,0,1))
+      debugDrawer:drawSphere(vec3(position),diameter/6,hand=='left' and ColorF(0,1,1,1) or ColorF(1,0,1,1))
+    end end
+  end
 end
 local function syncGeluaDiagnostics()
   local values={geluaCaptureInstalled=geluaCapture.captureInstalled,geluaCaptureAvailable=geluaCapture.captureAvailable,
@@ -599,7 +712,44 @@ function M.onExtensionLoaded()
   state.selectedCameraSourceMode=cameraSourceMode
   socketlib=require('socket'); sock=socketlib.udp(); sock:settimeout(0); assert(sock:setsockname(cfg.listenAddress,cfg.listenPort))
   resetHmdBaseline('extension loaded')
+  nativeSource.enabled=cfg.nativeSourcePoseDiagnostics and cfg.nativeSourcePoseDiagnostics.enabled==true or false
+  nativeSource.failureReason=nativeSource.enabled and 'awaiting first poll' or 'diagnostics disabled'
+  state.nativeInputSources={}; state.nativeLeftSourcePaths={}; state.nativeRightSourcePaths={}
+  state.nativeLeftPoseCandidates={}; state.nativeRightPoseCandidates={}
+  state.nativeLeftYellowWorldCandidates={}; state.nativeRightYellowWorldCandidates={}
+  state.yellowCandidateFormula=yellowCandidateFormula; state.yellowCandidateUnavailableReason='GE Lua anchor capture unavailable'
+  syncNativeSourceState(captureNow())
   log('I','beamngVRControllerPoses','listening for pose datagrams on '..cfg.listenAddress..':'..cfg.listenPort)
+end
+function M.startNativeSourcePoseDiagnostics()
+  if nativeSource.enabled then return true end
+  if type(OpenXR)~='table' then nativeFailure('OpenXR table unavailable'); return false,nativeSource.failureReason end
+  if type(OpenXR.getInputSourceStates)~='function' then nativeFailure('OpenXR.getInputSourceStates unavailable'); return false,nativeSource.failureReason end
+  if type(OpenXR.getSourcePoseStates)~='function' then nativeFailure('OpenXR.getSourcePoseStates unavailable'); return false,nativeSource.failureReason end
+  nativeSource.enabled=true; nativeSource.available=true; nativeSource.failureReason=nil
+  nativeSource.lastPollTimestamp=nil; nativeSource.lastLogTimestamp=0
+  syncNativeSourceState(captureNow())
+  return true
+end
+function M.stopNativeSourcePoseDiagnostics()
+  nativeSource.enabled=false; nativeSource.failureReason='diagnostics disabled'
+  syncNativeSourceState(captureNow())
+  return true
+end
+function M.getNativeSourcePoseDiagnosticState()
+  syncNativeSourceState(captureNow())
+  return {
+    nativeSourceDiagnosticsEnabled=state.nativeSourceDiagnosticsEnabled,nativeSourceDiagnosticsAvailable=state.nativeSourceDiagnosticsAvailable,
+    nativeSourceDiagnosticsFailureReason=state.nativeSourceDiagnosticsFailureReason,nativeSourcePollCounter=state.nativeSourcePollCounter,
+    nativeSourceLastPollTimestamp=state.nativeSourceLastPollTimestamp,nativeSourceAgeMs=state.nativeSourceAgeMs,
+    nativeInputSources=state.nativeInputSources,nativeLeftSourcePaths=state.nativeLeftSourcePaths,nativeRightSourcePaths=state.nativeRightSourcePaths,
+    nativeLeftPoseCandidates=state.nativeLeftPoseCandidates,nativeRightPoseCandidates=state.nativeRightPoseCandidates,
+    nativeLeftSelectedGripPose=state.nativeLeftSelectedGripPose,nativeRightSelectedGripPose=state.nativeRightSelectedGripPose,
+    nativeLeftSelectedAimPose=state.nativeLeftSelectedAimPose,nativeRightSelectedAimPose=state.nativeRightSelectedAimPose,
+    nativeLeftYellowWorldCandidates=state.nativeLeftYellowWorldCandidates,nativeRightYellowWorldCandidates=state.nativeRightYellowWorldCandidates,
+    geluaAnchorUsedForYellowCandidates=state.geluaAnchorUsedForYellowCandidates,yellowCandidateFormula=yellowCandidateFormula,
+    yellowCandidateUnavailableReason=state.yellowCandidateUnavailableReason
+  }
 end
 function M.startGeluaCameraAnchorCapture()
   if geluaCapture.captureInstalled then return true end
@@ -651,6 +801,7 @@ end
 function M.getGeluaCameraAnchorCaptureState() geluaNativeCandidate(captureNow()); syncGeluaDiagnostics(); return geluaCapture end
 function M.onPreRender(dtReal,dtSim,dtRaw)
   if not sock then return end; receive(); local now=socketlib.gettime(); local cameraAnchor=beamCameraWorld()
+  pollNativeSourcePoses(now); drawNativeSourcePoses()
   if not latest or not cameraAnchor or (now-latest.received)*1000>cfg.staleAfterMs then state.leftControllerWorld.valid=false; state.rightControllerWorld.valid=false; return end
   -- Packets from older protocol-2 publishers have no hmd member and retain the
   -- previous camera-anchor behavior rather than being rejected.
@@ -748,5 +899,5 @@ function M.setDiagnosticTripodsEnabled(enabled) cfg.axisTripods.drawDiagnosticSp
 function M.setControllerTripodsEnabled(enabled) cfg.axisTripods.drawControllerTripods=enabled==true; return true end
 function M.setOriginLinesEnabled(enabled) cfg.axisTripods.drawOriginLines=enabled==true; return true end
 function M.getState() geluaNativeCandidate(captureNow()); syncGeluaDiagnostics(); return state end
-function M.onExtensionUnloaded() M.stopGeluaCameraAnchorCapture(); if sock then sock:close(); sock=nil end end
+function M.onExtensionUnloaded() M.stopGeluaCameraAnchorCapture(); M.stopNativeSourcePoseDiagnostics(); if sock then sock:close(); sock=nil end end
 return M
