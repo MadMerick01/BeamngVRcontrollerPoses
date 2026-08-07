@@ -12,6 +12,10 @@ local artificialYawRebaseCount, lastArtificialRebaseLog = 0, 0
 local movingWorldFromTracking, previousBeamngCameraAnchorPosition, lastMovingRigidCandidate=nil,nil,nil
 local baselineOrangeReferenceHmdWorldPosition=nil
 local movingArtificialYawRebaseCount=0
+local geluaCapture={captureInstalled=false,captureAvailable=false,captureFailureReason='capture not installed',setterSequence=0,pairComplete=false}
+local geluaOriginalSetter,geluaOriginalGetter,geluaSetterWrapper,geluaGetterWrapper=nil,nil,nil,nil
+local unpackValues=table.unpack or unpack
+local function packValues(...) return {n=select('#',...),...} end
 
 local function qmul(a,b) return {
   a[4]*b[1]+a[1]*b[4]+a[2]*b[3]-a[3]*b[2],
@@ -142,22 +146,46 @@ end
 local function finiteNumber(value)
   return type(value)=='number' and value==value and value~=math.huge and value~=-math.huge
 end
-local function predictedOpenXRTrackingLocalPose()
-  local getter=OpenXR and OpenXR.getCameraPosRotPredictedXYZXYZW
-  if type(getter)~='function' then return nil,nil,'predicted OpenXR tracking-local pose getter unavailable' end
-  -- The exported binding name specifies seven scalar returns: position XYZ,
-  -- followed by rotation XYZW.  Keep that API ordering explicit at this boundary.
-  local ok,px,py,pz,qx,qy,qz,qw=pcall(getter)
-  local raw={px,py,pz,qx,qy,qz,qw}
-  if not ok then return nil,raw,'predicted OpenXR tracking-local pose getter failed' end
-  for i=1,7 do
-    if not finiteNumber(raw[i]) then return nil,raw,'predicted OpenXR tracking-local pose is malformed or non-finite' end
-  end
-  local orientation=qnorm({qx,qy,qz,qw})
-  if not orientation then return nil,raw,'predicted OpenXR tracking-local quaternion has zero length' end
-  -- Live testing confirms this pose is tracking-local near the OpenXR origin.
-  -- Retain it for inspection only; it is not a BeamNG world transform.
-  return {p={px,py,pz},q=orientation},raw,nil
+local function captureNow() return socketlib and socketlib.gettime() or os.clock() end
+local function validSeven(a,b,c,d,e,f,g)
+  local values={a,b,c,d,e,f,g}
+  for i=1,7 do if not finiteNumber(values[i]) then return false end end
+  local qlen=d*d+e*e+f*f+g*g
+  return qlen>0
+end
+local function invalidateGeluaCapture(reason)
+  geluaCapture.captureAvailable=false; geluaCapture.captureFailureReason=reason
+  geluaCapture.pairComplete=false; geluaCapture.getterSequence=nil
+end
+local function geluaNativeCandidate(now)
+  local maxAgeMs=(cfg and cfg.geluaCaptureMaxAgeMs) or 100
+  geluaCapture.pairAgeMs=geluaCapture.getterTimestamp and (now-geluaCapture.getterTimestamp)*1000 or nil
+  if not geluaCapture.captureInstalled then return nil,'capture not installed' end
+  if not geluaCapture.pairComplete then return nil,geluaCapture.captureFailureReason or 'setter/getter pair incomplete' end
+  if geluaCapture.getterSequence~=geluaCapture.setterSequence then return nil,'setter/getter sequence mismatch' end
+  if not geluaCapture.setterTimestamp or not geluaCapture.getterTimestamp or geluaCapture.getterTimestamp<geluaCapture.setterTimestamp then return nil,'getter was not captured after setter' end
+  if not geluaCapture.pairAgeMs or geluaCapture.pairAgeMs>maxAgeMs then return nil,'setter/getter pair is stale' end
+  local a,p=geluaCapture.rawAnchorPosition,geluaCapture.rawPredictedPosition
+  local aq,pq=geluaCapture.rawAnchorQuaternion,geluaCapture.rawPredictedQuaternion
+  if not a or not p or not aq or not pq then return nil,'capture values unavailable' end
+  -- BeamNG gameengine.lua calls setAddXYZ(predicted position), then
+  -- setMulXYZW(predicted XYZW, anchor XYZW): Hamilton predicted * anchor.
+  local q=qnorm(qmul({pq[1],pq[2],pq[3],pq[4]},{aq[1],aq[2],aq[3],aq[4]}))
+  if not q then return nil,'composed quaternion has zero length' end
+  return {p={a[1]+p[1],a[2]+p[2],a[3]+p[3]},q=q},nil
+end
+local function syncGeluaDiagnostics()
+  local values={geluaCaptureInstalled=geluaCapture.captureInstalled,geluaCaptureAvailable=geluaCapture.captureAvailable,
+    geluaCaptureFailureReason=geluaCapture.captureFailureReason,geluaSetterSequence=geluaCapture.setterSequence,
+    geluaSetterTimestamp=geluaCapture.setterTimestamp,geluaGetterTimestamp=geluaCapture.getterTimestamp,
+    geluaPairComplete=geluaCapture.pairComplete,geluaPairAgeMs=geluaCapture.pairAgeMs,
+    geluaRawAnchorPosition=geluaCapture.rawAnchorPosition,geluaRawAnchorQuaternion=geluaCapture.rawAnchorQuaternion,
+    geluaRawPredictedPosition=geluaCapture.rawPredictedPosition,geluaRawPredictedQuaternion=geluaCapture.rawPredictedQuaternion,
+    geluaNativeFinalVrPosition=state.geluaNativeFinalVrPosition,geluaNativeFinalVrQuaternion=state.geluaNativeFinalVrQuaternion,
+    geluaNativeLeftControllerWorld=state.geluaNativeLeftControllerWorld,geluaNativeRightControllerWorld=state.geluaNativeRightControllerWorld,
+    geluaNativeDiagnosticSphereWorld=state.geluaNativeDiagnosticSphereWorld}
+  local fields={'geluaCaptureInstalled','geluaCaptureAvailable','geluaCaptureFailureReason','geluaSetterSequence','geluaSetterTimestamp','geluaGetterTimestamp','geluaPairComplete','geluaPairAgeMs','geluaRawAnchorPosition','geluaRawAnchorQuaternion','geluaRawPredictedPosition','geluaRawPredictedQuaternion','geluaNativeFinalVrPosition','geluaNativeFinalVrQuaternion','geluaNativeLeftControllerWorld','geluaNativeRightControllerWorld','geluaNativeDiagnosticSphereWorld'}
+  for _,key in ipairs(fields) do state[key]=values[key]; state.diagnostics[key]=values[key] end
 end
 local function beamCameraWorld()
   local pos=vec3ToTable(core_camera and core_camera.getPosition and core_camera.getPosition())
@@ -182,7 +210,7 @@ local function updateHand(name, raw, cameraWorld, now)
   out.position=world.p; out.orientation=world.q; out.valid=true; out.updateCounter=latest.counter; out.ageMs=(now-latest.received)*1000
   out.relative=rel; out.rawRelative=raw
 end
-local validHmdTranslationModes={beamngOnly=true,beamngPlusHmdDelta=true,beamngMinusHmdDelta=true,beamngFixedBaseHmdDelta=true,baselineRigidTracking=true,baselineRigidPositionBeamngRotation=true,baselineRigidPositionBeamngRotationRebased=true,baselineRigidPositionBeamngRotationRebasedMovingAnchor=true}
+local validHmdTranslationModes={beamngOnly=true,beamngPlusHmdDelta=true,beamngMinusHmdDelta=true,beamngFixedBaseHmdDelta=true,baselineRigidTracking=true,baselineRigidPositionBeamngRotation=true,baselineRigidPositionBeamngRotationRebased=true,baselineRigidPositionBeamngRotationRebasedMovingAnchor=true,geluaNativeCameraComposition=true}
 local function hmdCandidates(cameraAnchor, worldDelta, fixedDelta, baselineRigidCandidate)
   -- Keep these as direct calculations from the BeamNG camera.  The test
   -- alternatives must never accumulate or derive from one another.
@@ -344,14 +372,22 @@ local function actualHmdWorld(cameraAnchor, hmd)
   end
   end
   local candidates=hmdCandidates(cameraAnchor,worldDelta,fixedDelta,lastBaselineRigidCandidate)
+  local nativeCandidate,nativeFailure=geluaNativeCandidate(captureNow())
+  candidates.geluaNativeCameraComposition=nativeCandidate
   local requestedMode=cfg.hmdTranslationMode
   local mode=requestedMode
   if not validHmdTranslationModes[mode] then mode='beamngOnly'; cfg.hmdTranslationMode=mode end
   if mode=='baselineRigidPositionBeamngRotation' and not candidates.baselineRigidPositionBeamngRotation then mode='beamngOnly' end
   if mode=='baselineRigidPositionBeamngRotationRebased' and not candidates.baselineRigidPositionBeamngRotationRebased then mode='beamngOnly' end
   if mode=='baselineRigidPositionBeamngRotationRebasedMovingAnchor' and not candidates.baselineRigidPositionBeamngRotationRebasedMovingAnchor then mode='beamngOnly' end
+  state.selectedModeFallback=nil; state.selectedModeFallbackReason=nil
+  if mode=='geluaNativeCameraComposition' and not nativeCandidate then
+    if candidates.baselineRigidPositionBeamngRotationRebased then mode='baselineRigidPositionBeamngRotationRebased' else mode='beamngOnly' end
+    state.selectedModeFallback=mode; state.selectedModeFallbackReason=nativeFailure
+  end
   local selected=candidates[mode] or candidates.beamngOnly
   state.selectedHmdTranslationMode=mode
+  state.selectedMode=requestedMode
   state.baselineValid=rigidBaseline~=nil
   state.baselineResetReason=state.diagnostics.baselineResetReason
   state.baselineBeamngCameraWorld=rigidBaseline and rigidBaseline.beamngCameraWorld or nil
@@ -409,6 +445,9 @@ local function actualHmdWorld(cameraAnchor, hmd)
   }
   state.diagnostics.selectedHmdTranslationMode=mode
   state.diagnostics.requestedHmdTranslationMode=requestedMode
+  state.diagnostics.selectedMode=state.selectedMode
+  state.diagnostics.selectedModeFallback=state.selectedModeFallback
+  state.diagnostics.selectedModeFallbackReason=state.selectedModeFallbackReason
   state.diagnostics.hybridFallbackReason=(requestedMode=='baselineRigidPositionBeamngRotation' or requestedMode=='baselineRigidPositionBeamngRotationRebased' or requestedMode=='baselineRigidPositionBeamngRotationRebasedMovingAnchor') and mode=='beamngOnly' and 'valid baseline-rigid candidate unavailable' or nil
   state.diagnostics.candidateHmdWorldPositions={
     beamngOnly=candidates.beamngOnly.p,
@@ -420,6 +459,9 @@ local function actualHmdWorld(cameraAnchor, hmd)
   state.diagnostics.candidateHmdWorldPositions.baselineRigidPositionBeamngRotation=candidates.baselineRigidPositionBeamngRotation and candidates.baselineRigidPositionBeamngRotation.p or nil
   state.diagnostics.candidateHmdWorldPositions.baselineRigidPositionBeamngRotationRebased=candidates.baselineRigidPositionBeamngRotationRebased and candidates.baselineRigidPositionBeamngRotationRebased.p or nil
   state.diagnostics.candidateHmdWorldPositions.baselineRigidPositionBeamngRotationRebasedMovingAnchor=candidates.baselineRigidPositionBeamngRotationRebasedMovingAnchor and candidates.baselineRigidPositionBeamngRotationRebasedMovingAnchor.p or nil
+  state.diagnostics.candidateHmdWorldPositions.geluaNativeCameraComposition=nativeCandidate and nativeCandidate.p or nil
+  state.geluaNativeFinalVrPosition=nativeCandidate and nativeCandidate.p or nil
+  state.geluaNativeFinalVrQuaternion=nativeCandidate and nativeCandidate.q or nil
   state.diagnostics.fixedBaseCandidateHmdWorldPosition=candidates.beamngFixedBaseHmdDelta.p
   state.diagnostics.actualHmdWorldPosition=selected.p -- retained for PR #13 diagnostic consumers
   return selected,candidates
@@ -488,7 +530,9 @@ local function drawDiagnostics(candidates,hmdWorld)
     local cyan=candidates.baselineRigidPositionBeamngRotation and compose(candidates.baselineRigidPositionBeamngRotation,{p=localPos,q={0,0,0,1}}) or nil
     local orange=candidates.baselineRigidPositionBeamngRotationRebased and compose(candidates.baselineRigidPositionBeamngRotationRebased,{p=localPos,q={0,0,0,1}}) or nil
     local pink=candidates.baselineRigidPositionBeamngRotationRebasedMovingAnchor and compose(candidates.baselineRigidPositionBeamngRotationRebasedMovingAnchor,{p=localPos,q={0,0,0,1}}) or nil
-    state.diagnostics.diagnosticSphereWorldPositions={beamngOnly=red.p,beamngPlusHmdDelta=green.p,beamngMinusHmdDelta=yellow.p,beamngFixedBaseHmdDelta=white.p,baselineRigidTracking=purple and purple.p or nil,baselineRigidPositionBeamngRotation=cyan and cyan.p or nil,baselineRigidPositionBeamngRotationRebased=orange and orange.p or nil,baselineRigidPositionBeamngRotationRebasedMovingAnchor=pink and pink.p or nil}
+    local lime=candidates.geluaNativeCameraComposition and compose(candidates.geluaNativeCameraComposition,{p=localPos,q={0,0,0,1}}) or nil
+    state.diagnostics.diagnosticSphereWorldPositions={beamngOnly=red.p,beamngPlusHmdDelta=green.p,beamngMinusHmdDelta=yellow.p,beamngFixedBaseHmdDelta=white.p,baselineRigidTracking=purple and purple.p or nil,baselineRigidPositionBeamngRotation=cyan and cyan.p or nil,baselineRigidPositionBeamngRotationRebased=orange and orange.p or nil,baselineRigidPositionBeamngRotationRebasedMovingAnchor=pink and pink.p or nil,geluaNativeCameraComposition=lime and lime.p or nil}
+    state.geluaNativeDiagnosticSphereWorld=lime and lime.p or nil
     state.hybridDiagnosticSphereWorldPosition=cyan and cyan.p or nil
     state.diagnostics.hybridDiagnosticSphereWorldPosition=state.hybridDiagnosticSphereWorldPosition
     state.rebasedHybridDiagnosticSphereWorldPosition=orange and orange.p or nil
@@ -507,11 +551,13 @@ local function drawDiagnostics(candidates,hmdWorld)
     if cyan then debugDrawer:drawSphere(vec3(cyan.p),radius,ColorF(0,1,1,1)) end
     if orange then debugDrawer:drawSphere(vec3(orange.p),radius,ColorF(1,0.5,0,1)) end
     if pink then debugDrawer:drawSphere(vec3(pink.p),radius,ColorF(1,0.2,0.6,1)) end
+    if lime then debugDrawer:drawSphere(vec3(lime.p),radius,ColorF(0.5,1,0,1)) end
     local diagnosticItems={beamngOnly=red,beamngPlusHmdDelta=green,beamngMinusHmdDelta=yellow,beamngFixedBaseHmdDelta=white}
     if purple then diagnosticItems.baselineRigidTracking=purple end
     if cyan then diagnosticItems.baselineRigidPositionBeamngRotation=cyan end
     if orange then diagnosticItems.baselineRigidPositionBeamngRotationRebased=orange end
     if pink then diagnosticItems.baselineRigidPositionBeamngRotationRebasedMovingAnchor=pink end
+    if lime then diagnosticItems.geluaNativeCameraComposition=lime end
     for name,item in pairs(diagnosticItems) do
       local endpoints=tripod(item.p,item.q,tripodState.axisLength)
       tripodState.diagnostic[name]={centre=item.p,orientation=item.q,endpoints=endpoints}
@@ -546,27 +592,64 @@ function M.onExtensionLoaded()
   resetHmdBaseline('extension loaded')
   log('I','beamngVRControllerPoses','listening for pose datagrams on '..cfg.listenAddress..':'..cfg.listenPort)
 end
+function M.startGeluaCameraAnchorCapture()
+  if geluaCapture.captureInstalled then return true end
+  if type(OpenXR)~='table' then invalidateGeluaCapture('OpenXR table unavailable'); log('E','beamngVRControllerPoses',geluaCapture.captureFailureReason); return false,geluaCapture.captureFailureReason end
+  local setter,getter=OpenXR.setGeluaCameraPosRot,OpenXR.getCameraPosRotPredictedXYZXYZW
+  if type(setter)~='function' or type(getter)~='function' then invalidateGeluaCapture('required OpenXR camera functions unavailable'); log('E','beamngVRControllerPoses',geluaCapture.captureFailureReason); return false,geluaCapture.captureFailureReason end
+  if geluaOriginalSetter and (setter~=geluaOriginalSetter or getter~=geluaOriginalGetter) then invalidateGeluaCapture('OpenXR camera functions were replaced unexpectedly'); return false,geluaCapture.captureFailureReason end
+  geluaOriginalSetter,geluaOriginalGetter=setter,getter
+  geluaSetterWrapper=function(...)
+    local args={...}; geluaCapture.setterSequence=geluaCapture.setterSequence+1
+    geluaCapture.setterTimestamp=captureNow(); geluaCapture.getterTimestamp=nil; geluaCapture.pairAgeMs=nil; geluaCapture.pairComplete=false; geluaCapture.getterSequence=nil
+    if select('#',...)==7 and validSeven(unpackValues(args,1,7)) then
+      geluaCapture.rawAnchorPosition={args[1],args[2],args[3]}; geluaCapture.rawAnchorQuaternion={args[4],args[5],args[6],args[7]}
+      geluaCapture.captureAvailable=false; geluaCapture.captureFailureReason='awaiting predicted getter for sequence '..geluaCapture.setterSequence
+    else invalidateGeluaCapture('setter capture malformed or non-finite') end
+    local results=packValues(geluaOriginalSetter(...))
+    return unpackValues(results,1,results.n)
+  end
+  geluaGetterWrapper=function(...)
+    local sequence=geluaCapture.setterSequence
+    local results=packValues(geluaOriginalGetter(...))
+    local timestamp=captureNow()
+    if results.n==7 and validSeven(unpackValues(results,1,7)) and sequence>0 and sequence==geluaCapture.setterSequence and geluaCapture.setterTimestamp and timestamp>=geluaCapture.setterTimestamp then
+      geluaCapture.rawPredictedPosition={results[1],results[2],results[3]}; geluaCapture.rawPredictedQuaternion={results[4],results[5],results[6],results[7]}
+      geluaCapture.getterSequence=sequence; geluaCapture.getterTimestamp=timestamp; geluaCapture.pairComplete=true
+      geluaCapture.captureAvailable=true; geluaCapture.captureFailureReason=nil
+    else invalidateGeluaCapture('getter capture malformed, non-finite, or mismatched') end
+    return unpackValues(results,1,results.n)
+  end
+  local okSetter,errSetter=pcall(function() OpenXR.setGeluaCameraPosRot=geluaSetterWrapper end)
+  if not okSetter or OpenXR.setGeluaCameraPosRot~=geluaSetterWrapper then invalidateGeluaCapture('cannot replace OpenXR.setGeluaCameraPosRot: '..tostring(errSetter)); return false,geluaCapture.captureFailureReason end
+  local okGetter,errGetter=pcall(function() OpenXR.getCameraPosRotPredictedXYZXYZW=geluaGetterWrapper end)
+  if not okGetter or OpenXR.getCameraPosRotPredictedXYZXYZW~=geluaGetterWrapper then
+    if OpenXR.setGeluaCameraPosRot==geluaSetterWrapper then pcall(function() OpenXR.setGeluaCameraPosRot=geluaOriginalSetter end) end
+    if OpenXR.getCameraPosRotPredictedXYZXYZW==geluaGetterWrapper then pcall(function() OpenXR.getCameraPosRotPredictedXYZXYZW=geluaOriginalGetter end) end
+    invalidateGeluaCapture('cannot replace OpenXR.getCameraPosRotPredictedXYZXYZW: '..tostring(errGetter)); return false,geluaCapture.captureFailureReason
+  end
+  geluaCapture.captureInstalled=true; geluaCapture.captureAvailable=false; geluaCapture.captureFailureReason='awaiting setter/getter pair'
+  log('I','beamngVRControllerPoses','installed transparent GE Lua camera anchor capture wrappers')
+  return true
+end
+function M.stopGeluaCameraAnchorCapture()
+  if not geluaCapture.captureInstalled then syncGeluaDiagnostics(); return true end
+  if OpenXR and OpenXR.setGeluaCameraPosRot==geluaSetterWrapper then pcall(function() OpenXR.setGeluaCameraPosRot=geluaOriginalSetter end) end
+  if OpenXR and OpenXR.getCameraPosRotPredictedXYZXYZW==geluaGetterWrapper then pcall(function() OpenXR.getCameraPosRotPredictedXYZXYZW=geluaOriginalGetter end) end
+  geluaCapture.captureInstalled=false; invalidateGeluaCapture('capture stopped')
+  syncGeluaDiagnostics(); return true
+end
+function M.getGeluaCameraAnchorCaptureState() geluaNativeCandidate(captureNow()); syncGeluaDiagnostics(); return geluaCapture end
 function M.onPreRender(dtReal,dtSim,dtRaw)
   if not sock then return end; receive(); local now=socketlib.gettime(); local cameraAnchor=beamCameraWorld()
   if not latest or not cameraAnchor or (now-latest.received)*1000>cfg.staleAfterMs then state.leftControllerWorld.valid=false; state.rightControllerWorld.valid=false; return end
   -- Packets from older protocol-2 publishers have no hmd member and retain the
   -- previous camera-anchor behavior rather than being rejected.
   local beamngWorld,candidates=actualHmdWorld(cameraAnchor,latest.hmd)
-  local predictedTrackingLocal,rawPredicted,predictedError=predictedOpenXRTrackingLocalPose()
   local hmdWorld=beamngWorld
   state.selectedCameraSourceMode=cameraSourceMode
-  state.predictedOpenXRTrackingLocalPoseAvailable=predictedTrackingLocal~=nil
-  state.predictedOpenXRTrackingLocalRawValues=rawPredicted
-  state.predictedOpenXRTrackingLocalPosition=predictedTrackingLocal and predictedTrackingLocal.p or nil
-  state.predictedOpenXRTrackingLocalQuaternion=predictedTrackingLocal and predictedTrackingLocal.q or nil
-  state.predictedOpenXRTrackingLocalError=predictedError
   state.finalSelectedCameraWorldTransform=hmdWorld
   state.diagnostics.selectedCameraSourceMode=state.selectedCameraSourceMode
-  state.diagnostics.predictedOpenXRTrackingLocalPoseAvailable=state.predictedOpenXRTrackingLocalPoseAvailable
-  state.diagnostics.predictedOpenXRTrackingLocalRawValues=state.predictedOpenXRTrackingLocalRawValues
-  state.diagnostics.predictedOpenXRTrackingLocalPosition=state.predictedOpenXRTrackingLocalPosition
-  state.diagnostics.predictedOpenXRTrackingLocalQuaternion=state.predictedOpenXRTrackingLocalQuaternion
-  state.diagnostics.predictedOpenXRTrackingLocalError=state.predictedOpenXRTrackingLocalError
   state.diagnostics.finalSelectedCameraWorldTransform=state.finalSelectedCameraWorldTransform
   state.diagnostics.cameraWorld=hmdWorld
   updateHand('left',latest.left,hmdWorld,now); updateHand('right',latest.right,hmdWorld,now)
@@ -582,6 +665,8 @@ function M.onPreRender(dtReal,dtSim,dtRaw)
   state.movingHybridRightControllerWorld=candidates.baselineRigidPositionBeamngRotationRebasedMovingAnchor and diagnosticControllerWorld('right',latest.right,candidates.baselineRigidPositionBeamngRotationRebasedMovingAnchor) or nil
   state.absoluteMovingLeftControllerWorld=state.movingHybridLeftControllerWorld
   state.absoluteMovingRightControllerWorld=state.movingHybridRightControllerWorld
+  state.geluaNativeLeftControllerWorld=candidates.geluaNativeCameraComposition and diagnosticControllerWorld('left',latest.left,candidates.geluaNativeCameraComposition) or nil
+  state.geluaNativeRightControllerWorld=candidates.geluaNativeCameraComposition and diagnosticControllerWorld('right',latest.right,candidates.geluaNativeCameraComposition) or nil
   state.diagnostics.beamngOnlyLeftControllerWorld=state.beamngOnlyLeftControllerWorld
   state.diagnostics.beamngOnlyRightControllerWorld=state.beamngOnlyRightControllerWorld
   state.diagnostics.baselineRigidLeftControllerWorld=state.baselineRigidLeftControllerWorld
@@ -592,6 +677,7 @@ function M.onPreRender(dtReal,dtSim,dtRaw)
   state.diagnostics.rebasedHybridRightControllerWorld=state.rebasedHybridRightControllerWorld
   state.diagnostics.movingHybridLeftControllerWorld=state.movingHybridLeftControllerWorld
   state.diagnostics.movingHybridRightControllerWorld=state.movingHybridRightControllerWorld
+  syncGeluaDiagnostics()
   state.artificialYawRebaseThresholdDegrees=cfg.artificialYawRebaseThresholdDegrees or 0.75
   for _,field in ipairs({'artificialYawRebaseThresholdDegrees','targetWorldFromTrackingOrientation','storedWorldFromTrackingOrientationBeforeRebase','artificialAlignmentDeltaDegrees','artificialYawRebaseTriggered','artificialYawRebaseCount','lastArtificialYawRebaseReason','lastArtificialYawRebaseTime','hmdWorldPositionBeforeArtificialRebase','hmdWorldPositionAfterArtificialRebase','artificialRebasePositionDiscontinuityMetres','rebasedWorldFromTracking','rebasedHybridHmdWorld','rebasedHybridLeftControllerWorld','rebasedHybridRightControllerWorld','rebasedHybridDiagnosticSphereWorldPosition'}) do state.diagnostics[field]=state[field] end
   for _,field in ipairs({'baselineValid','baselineResetReason','baselineBeamngCameraWorld','baselineTrackingHmdRaw','baselineTrackingHmdMapped','baselineWorldFromTracking','currentTrackingHmdRaw','currentTrackingHmdMapped','baselineRigidCandidateHmdWorld','baselineRigidPositionBeamngRotationHmdWorld','baselineRigidPosition','baselineRigidTrackingOrientation','beamngLiveCameraOrientation','selectedHybridOrientation','trackingWorldRight','trackingWorldForward','trackingWorldUp'}) do state.diagnostics[field]=state[field] end
@@ -606,6 +692,7 @@ function M.onPreRender(dtReal,dtSim,dtRaw)
   state.finalLeftControllerWorldPosition=state.diagnostics.finalLeftControllerWorldPosition
   state.finalRightControllerWorldPosition=state.diagnostics.finalRightControllerWorldPosition
   drawDiagnostics(candidates,hmdWorld)
+  syncGeluaDiagnostics()
   if now-lastLog>cfg.logIntervalSeconds then
     log('I','beamngVRControllerPoses','fixed-base diagnostics='..dumps(state.diagnostics)); lastLog=now
   end
@@ -637,6 +724,11 @@ function M.setHmdTranslationMode(mode)
     log('E','beamngVRControllerPoses','invalid HMD translation mode: '..tostring(mode))
     return false
   end
+  if mode=='geluaNativeCameraComposition' and not geluaCapture.captureInstalled then
+    local reason=geluaCapture.captureFailureReason or 'capture not installed'
+    log('E','beamngVRControllerPoses','cannot select geluaNativeCameraComposition: '..reason)
+    return false,reason
+  end
   cfg.hmdTranslationMode=mode
   resetHmdBaseline('translation mode changed to '..mode)
   state.diagnostics.selectedHmdTranslationMode=mode
@@ -646,6 +738,6 @@ function M.setAxisTripodsEnabled(enabled) cfg.axisTripods.enabled=enabled==true;
 function M.setDiagnosticTripodsEnabled(enabled) cfg.axisTripods.drawDiagnosticSphereTripods=enabled==true; return true end
 function M.setControllerTripodsEnabled(enabled) cfg.axisTripods.drawControllerTripods=enabled==true; return true end
 function M.setOriginLinesEnabled(enabled) cfg.axisTripods.drawOriginLines=enabled==true; return true end
-function M.getState() return state end
-function M.onExtensionUnloaded() if sock then sock:close(); sock=nil end end
+function M.getState() geluaNativeCandidate(captureNow()); syncGeluaDiagnostics(); return state end
+function M.onExtensionUnloaded() M.stopGeluaCameraAnchorCapture(); if sock then sock:close(); sock=nil end end
 return M

@@ -131,6 +131,6 @@ def test_pr26_and_pr27_candidate_formulas_remain_present():
 def test_hot_path_and_predicted_pose_safety_remain_intact():
     lua = LUA.read_text()
     assert "sock:settimeout(0)" in lua
-    assert "predictedTrackingLocal" in lua
+    assert "local results=packValues(geluaOriginalGetter(...))" in lua
     assert "local hmdWorld=beamngWorld" in lua
     assert "openxr-layer/src/layer.cpp" not in str(LUA)

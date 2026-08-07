@@ -14,6 +14,51 @@ never changes a pose returned to BeamNG. SteamVR/OpenVR is **not required**. The
 old Python OpenVR publisher remains only as an unsupported fallback entry point,
 `beamng-vr-poses-openvr-fallback`, so the earlier work remains recoverable.
 
+## PR #33 native GE Lua camera composition (opt in)
+
+BeamNG 0.39's installed `lua/ge/extensions/core/cameraModes/gameengine.lua`
+(approximately lines 42–70) positively identifies the previously missing call site.
+It passes the clean game-world camera anchor to the exact seven-scalar API
+`OpenXR.setGeluaCameraPosRot(positionX, positionY, positionZ, quaternionX,
+quaternionY, quaternionZ, quaternionW)`, obtains the seven predicted HMD scalars
+from `OpenXR.getCameraPosRotPredictedXYZXYZW()`, and then performs:
+
+```text
+finalVrPosition = capturedAnchorPosition + capturedPredictedPosition
+finalVrRotation = normalize(capturedPredictedRotation * capturedAnchorRotation)
+controllerWorld = finalVrCameraWorld * controllerRelativeToHmd * calibrationOffset
+```
+
+This direct source evidence supersedes the earlier reconstructed moving-anchor
+attempts. The new mode adds no delta, gain, accumulation, smoothing, residual, or
+yaw rebase. Explicit start installs transactional pass-through wrappers; static
+implementation supports assigning the table fields, while actual wrappability of
+BeamNG's bound functions still requires a live runtime test. Failed assignment
+restores any field this extension changed, malformed/stale/mismatched pairs are
+rejected, stop/unload restores only wrappers still owned by this extension, and
+selection falls back per-frame to PR #28 orange (`baselineRigidPositionBeamngRotationRebased`)
+or `beamngOnly`. The default remains `beamngOnly`.
+
+First headset commands:
+
+```lua
+extensions.load('beamngVRControllerPoses')
+
+extensions.beamngVRControllerPoses.startGeluaCameraAnchorCapture()
+
+extensions.beamngVRControllerPoses.setHmdTranslationMode(
+  'geluaNativeCameraComposition'
+)
+
+dump(extensions.beamngVRControllerPoses.getGeluaCameraAnchorCaptureState())
+
+dump(extensions.beamngVRControllerPoses.getState())
+```
+
+The bright-lime sphere is the native-composition camera one metre forward. This
+diagnostic does **not** claim the translation issue is solved until the complete
+headset acceptance test in `docs/INSTALL_AND_TEST_GUIDE.md` passes.
+
 ## PR #26 stationary-world rigid-transform test
 
 `beamngOnly` remains the default. The explicitly selected
@@ -228,9 +273,9 @@ Live headset evidence confirmed that
 tracking-local pose close to the OpenXR origin (about `(-0.013, 0.009, 0.013)` in
 the observed run), not a complete BeamNG world camera pose. Directly treating it
 as world space moved the diagnostic and both blue controller spheres near the
-map origin. The validated and normalized getter is retained in `getState()` and
-logs under explicit `predictedOpenXRTrackingLocal*` diagnostic names only; it
-cannot select the controller parent and is not drawn as a magenta world sphere.
+map origin. PR #33 now intercepts that exact getter result together with the preceding clean
+anchor; raw values remain separate, and only the paired native composition can
+select the new controller parent or bright-lime diagnostic sphere.
 Tracking-space/session changes, time resets, pose discontinuities, extension
 reload, and the exposed `resetHmdBaseline()` hook safely establish a new baseline
 without adding standing height. Stale-packet rejection and the existing
