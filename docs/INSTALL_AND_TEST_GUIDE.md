@@ -228,6 +228,56 @@ The red sphere represents `beamngOnly`, green represents
 rendered simultaneously. The blue controller spheres use only the selected
 mode.
 
+Three additional spheres isolate the BeamNG camera quaternion from the HMD
+translation modes. They are composed only from the `beamngOnly` camera anchor
+and form an in-view corner one metre ahead: green is the centre marker
+(`[0,1,0]`), red is 0.3 metres camera-right of green (`[0.3,1,0]`), and blue is
+0.3 metres camera-up from green (`[0,1,0.3]`). The older translation-mode test
+spheres are disabled by default so they do not cover the green marker; set
+`cameraTestSphere.enabled` to `true` when that separate comparison is needed.
+Translate the headset at several headings and record whether either coloured
+displacement swings onto another camera axis. Their world positions are exposed
+in `diagnostics.cameraAxisSphereWorldPositions`. Configure the check with
+`cameraAxisSpheres.enabled`, `cameraAxisSpheres.distance`,
+`cameraAxisSpheres.spread`, and
+`cameraAxisSpheres.diameter` in `settings/beamngVRControllerPoses.json`.
+
+### Heading diagnostic
+
+The heading diagnostic is enabled by default and replaces the camera-axis
+spheres as the uncluttered in-headset test. It draws a small clock-style dial
+0.8 metres ahead of the camera. Green, red, yellow, and blue ticks identify
+0, 90, 180, and 270 degrees from the initial valid OpenXR heading; grey ticks
+divide the dial into 30-degree sectors. The larger white marker shows the
+current baseline-relative OpenXR heading.
+
+Face the direction where controller alignment remains perfect and run:
+
+```lua
+extensions.beamngVRControllerPoses.markCurrentHeadingAsAligned()
+```
+
+A magenta marker records that heading on the dial. After turning to another
+heading, inspect the exact values with:
+
+```lua
+dump(extensions.beamngVRControllerPoses.getState().diagnostics.heading)
+```
+
+The table reports BeamNG yaw, raw OpenXR yaw, OpenXR yaw relative to the initial
+heading, their wrapped difference, the marked aligned heading, and the current
+error from that aligned heading. Reset the zero heading with:
+
+```lua
+extensions.beamngVRControllerPoses.resetHeadingBaseline()
+```
+
+After resetting, remain still for the next valid pose to establish zero. The
+settings `headingDiagnostic.distance`, `radius`, `markerDiameter`, and
+`indicatorDiameter` control the visible dial. Set
+`cameraAxisSpheres.enabled=true` only when the separate axis-corner test is
+needed.
+
 Run this checklist in order:
 
 1. Connect the Quest 3 through Virtual Desktop.
