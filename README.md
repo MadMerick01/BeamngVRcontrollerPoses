@@ -166,15 +166,16 @@ computes `inverse(hmdInBase) * controllerInBase`. Samples are merged only when t
 session/base/time key is compatible. Protocol 2 now also carries an optional valid
 VIEW pose in that base space, its flags, sample time, and tracking-space identity;
 existing protocol-2 consumers can ignore this additive `hmd` member. The Lua
-bridge records BeamNG's predicted OpenXR pose only as optional tracking-local
-diagnostics. Headset testing showed that it is not a game-world camera transform,
-so controller placement continues to use the `beamngOnly` camera reconstruction.
+bridge now uses BeamNG's complete predicted OpenXR camera pose directly and computes
+`predictedCameraWorld * controllerRelativeToHmd * controllerCalibrationOffset`
+without adding the packet HMD delta or `core_camera.getPosition()`. The previous
+BeamNG camera reconstruction remains available as the safe `beamngOnly` fallback.
 Tracking-space/session changes, time resets,
 pose discontinuities, extension reload, and the exposed `resetHmdBaseline()` hook
 safely establish a new baseline without adding standing height. The bridge retains
-stale packet rejection and draws the existing camera diagnostics plus two
-bright-blue controller spheres. `setCameraSourceMode()` accepts only `beamngOnly`;
-the predicted getter cannot control controller placement.
+stale packet rejection, exposes both modes through `setCameraSourceMode()`, and
+draws the existing red headset diagnostic, a magenta predicted-camera sphere, and
+two bright-blue controller spheres.
 
 ## Install the BeamNG mod and test
 
@@ -201,13 +202,16 @@ VDXR, optionally confirm ordinary BeamNG Vulkan VR without the layer as a fresh
 baseline, install the unpacked mod, run the manual PowerShell launch command,
 select Vulkan in the normal BeamNG launcher, enter a map, start BeamNG VR, open
 the GE Lua console, load `extensions.load('beamngVRControllerPoses')`, then
-inspect `dump(extensions.beamngVRControllerPoses.getState())`. The corrective
-headset test observed a BeamNG world camera position of approximately
-`(913.884, 774.990, 237.515)` while the available predicted getter returned
-approximately `(-0.013, 0.009, 0.013)`. Directly treating the latter as world
-coordinates placed both the diagnostic and controllers near the map origin. It is
-therefore exposed as `predictedOpenXRTrackingLocalPose` for inspection only.
-Disabling/occluding either
+inspect `dump(extensions.beamngVRControllerPoses.getState())`. Face the known good
+map direction and confirm the magenta sphere is directly ahead. Translate the head
+left, right, forward, backward, up, and down; rotate through 90, 180, 270, and 360
+degrees; and at every heading translate left and right. Success means the magenta
+sphere stays exactly one metre ahead independent of map heading and both blue
+spheres remain aligned with the physical controllers. Keep the red core-camera
+sphere for comparison. If the magenta sphere has the same heading-dependent error,
+capture the raw predicted getter values from `getState()` and stop rather than
+adding a correction. If magenta is correct but blue is wrong, investigate the
+controller-relative composition or quaternion basis. Disabling/occluding either
 controller hides its sphere, and stopping publication hides both within
 `staleAfterMs`. Inspect
 `extensions.beamngVRControllerPoses.getState()` for the world transforms. Calibration,
