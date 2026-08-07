@@ -6,6 +6,38 @@ API layer: it must not replace `openxr_loader.dll`, it must not be registered as
 an OpenXR runtime, and it must not change the system `ActiveRuntime` registry
 value.
 
+## PR #26 acceptance procedure: stationary world only
+
+This test validates only the complete baseline tracking-to-world rigid
+transform. Park the vehicle, do not operate any in-game camera controls, and do
+not attempt to evaluate vehicle motion and room-scale motion simultaneously.
+
+1. Load the extension with
+   `extensions.load('beamngVRControllerPoses')`.
+2. Run
+   `extensions.beamngVRControllerPoses.setHmdTranslationMode('baselineRigidTracking')`.
+3. Face forward and remain still while the first valid native HMD sample creates
+   the fresh baseline.
+4. Move physically right and return, left and return, forward and return,
+   backward and return, upward and return, then downward and return.
+5. Repeat lateral and forward/back movement at the baseline heading, 90 degrees
+   left, 180 degrees, 90 degrees right, and the baseline/360-degree heading.
+6. Confirm the purple sphere remains attached one metre forward of the rendered
+   HMD, both blue controller spheres remain aligned independently, physical
+   translation directions do not change with head yaw, every return reaches the
+   baseline positions, and no drift accumulates. The red sphere remains the
+   `beamngOnly` comparison.
+7. Save `dump(extensions.beamngVRControllerPoses.getState())` and `beamng.log`.
+
+If the candidate fails, do not tune gains, smoothing, offsets, or corrections.
+Switch back immediately with
+`extensions.beamngVRControllerPoses.setHmdTranslationMode('beamngOnly')` and
+classify the evidence as a constant axis permutation, constant sign inversion,
+yaw-dependent rotation, doubled translation, or failure to return to baseline.
+Session/base changes, sample-time resets, recenter detection, extension load,
+and manual `resetHmdBaseline()` establish a new baseline; ordinary head movement
+and yaw do not.
+
 ## 1. Prerequisites
 
 Before installing the mod, prepare the Windows test machine with:

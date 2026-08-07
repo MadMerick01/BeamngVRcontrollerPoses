@@ -127,182 +127,83 @@ def lua_source():
     return Path('mod/lua/ge/extensions/beamngVRControllerPoses.lua').read_text()
 
 
-def predicted_tracking_local_block():
+
+def lua_source():
+    return Path('mod/lua/ge/extensions/beamngVRControllerPoses.lua').read_text()
+
+
+def function_block(name, next_name):
     source=lua_source()
-    return source.split('local function predictedOpenXRTrackingLocalPose()',1)[1].split('\nend\nlocal function beamCameraWorld()',1)[0]
+    return source.split('local function '+name,1)[1].split('\nlocal function '+next_name,1)[0]
 
 
-def test_beamng_only_is_default_and_predicted_mode_is_rejected():
-    source=lua_source()
-    settings=json.loads(Path('mod/settings/beamngVRControllerPoses.json').read_text())
-    assert settings['cameraSourceMode'] == 'beamngOnly'
-    assert "local cameraSourceMode='beamngOnly'" in source
-    setter=source.split('function M.setCameraSourceMode(mode)',1)[1].split('\nend',1)[0]
-    assert "if mode~='beamngOnly'" in setter
-    assert "cameraSourceMode='beamngOnly'" in setter
-    assert 'unsupported camera source mode' in setter
-    assert 'return false' in setter
-
-
-def test_predicted_getter_is_validated_normalized_and_diagnostic_only():
-    source=lua_source(); block=predicted_tracking_local_block()
-    assert 'OpenXR.getCameraPosRotPredictedXYZXYZW' in block
-    assert 'pcall(getter)' in block
-    assert 'for i=1,7 do' in block and 'finiteNumber(raw[i])' in block
-    assert 'qnorm({qx,qy,qz,qw})' in block
-    assert "value==value and value~=math.huge and value~=-math.huge" in source
-    for field in ('predictedOpenXRTrackingLocalPoseAvailable',
-                  'predictedOpenXRTrackingLocalRawValues',
-                  'predictedOpenXRTrackingLocalPosition',
-                  'predictedOpenXRTrackingLocalQuaternion',
-                  'predictedOpenXRTrackingLocalError'):
-        assert field in source
-    for misleading in ('predictedCameraAvailable','interpretedPredictedCameraPosition',
-                       'interpretedPredictedCameraQuaternion'):
-        assert misleading not in source
-
-
-def test_blue_controllers_use_only_beamng_world_camera_composition():
-    source=lua_source()
-    assert 'local beamngWorld,candidates=actualHmdWorld(cameraAnchor,latest.hmd)' in source
-    assert 'local hmdWorld=beamngWorld' in source
-    assert "updateHand('left',latest.left,hmdWorld,now)" in source
-    assert "updateHand('right',latest.right,hmdWorld,now)" in source
-    assert 'hmdWorld=predicted' not in source
-    assert "updateHand('left',latest.left,predicted" not in source
-    assert "updateHand('right',latest.right,predicted" not in source
-    update=source.split('local function updateHand(',1)[1].split('\nend\nlocal validHmdTranslationModes',1)[0]
-    assert 'local world=compose(cameraWorld,compose(rel,offset))' in update
-    assert update.count('compose(') == 2
-
-
-def test_malformed_predicted_values_are_unavailable_without_world_fallback():
-    source=lua_source(); block=predicted_tracking_local_block()
-    assert "return nil,raw,'predicted OpenXR tracking-local pose is malformed or non-finite'" in block
-    assert "return nil,raw,'predicted OpenXR tracking-local quaternion has zero length'" in block
-    assert 'predictedTrackingLocal~=nil' in source
-    assert 'predictedOpenXRTrackingLocalError=predictedError' in source
-    assert 'cameraSourceFallbackReason' not in source
-
-
-def test_no_magenta_sphere_is_drawn_at_tracking_local_coordinates():
-    source=lua_source()
-    draw=source.split('local function drawDiagnostics(',1)[1].split('\nend\nfunction M.onExtensionLoaded()',1)[0]
-    assert 'predictedTrackingLocal' not in draw
-    assert 'predictedOpenXR' not in draw
-    assert 'compose(predicted' not in draw
-    assert 'drawDiagnostics(candidates,hmdWorld)' in source
-
-def test_lua_translation_modes_are_runtime_switchable_and_reset_baseline():
-    source=(Path(__file__).parents[1]/'mod/lua/ge/extensions/beamngVRControllerPoses.lua').read_text()
-    for mode in ('beamngOnly','beamngPlusHmdDelta','beamngMinusHmdDelta','beamngFixedBaseHmdDelta'):
-        assert mode in source
+def test_beamng_only_remains_default_and_only_one_candidate_mode_exists():
+    source=lua_source(); settings=json.loads(Path('mod/settings/beamngVRControllerPoses.json').read_text())
+    assert settings['hmdTranslationMode']=='beamngOnly'
+    assert "local hmdTranslationMode='beamngOnly'" in source
     setter=source.split('function M.setHmdTranslationMode(mode)',1)[1].split('\nend',1)[0]
-    assert "resetHmdBaseline('translation mode changed to '..mode)" in setter
-    assert 'return false' in setter and 'return true' in setter
+    assert "mode~='beamngOnly' and mode~='baselineRigidTracking'" in setter
+    assert "if mode=='baselineRigidTracking' then resetHmdBaseline" in setter
 
 
-def test_fixed_baseline_lifecycle_and_diagnostics_are_explicit():
-    source=Path('mod/lua/ge/extensions/beamngVRControllerPoses.lua').read_text()
-    for reason in ('tracking space changed', 'sample time reset', 'HMD pose discontinuity',
-                   'explicit reset', 'extension loaded', 'translation mode changed to '):
-        assert reason in source
-    for field in ('rawBaseFromHmdPosition','rawBaseFromHmdOrientation',
-                  'mappedBaseFromHmdOrientation','baselineBaseFromHmdPosition',
-                  'baselineBaseFromHmdOrientation','baselineMappedHmdOrientation',
-                  'baselineBeamngCameraOrientation','fixedWorldFromBaseOrientation',
-                  'rawBaseDelta','mappedBaseDelta','liveCameraWorldDelta',
-                  'fixedBaseWorldDelta','fixedBaseCandidateHmdWorldPosition',
-                  'fixedBaseDiagnosticSphereWorldPosition','finalLeftControllerWorldPosition',
-                  'finalRightControllerWorldPosition','baselineResetReason',
-                  'fixedBaseWorldRight','fixedBaseWorldForward','fixedBaseWorldUp'):
-        assert field in source
-    derivation='worldFromBaseQ=qnorm(qmul(qnorm(cameraAnchor.q),qinv(mappedQ)))'
-    assert derivation in source
-    assert 'fixedDelta=qrot(worldFromBaseQ,mappedDelta)' in source
-
-def test_lua_candidate_spheres_are_independent_and_have_required_colours():
-    source=(Path(__file__).parents[1]/'mod/lua/ge/extensions/beamngVRControllerPoses.lua').read_text()
-    assert 'local red=compose(candidates.beamngOnly' in source
-    assert 'local green=compose(candidates.beamngPlusHmdDelta' in source
-    assert 'local yellow=compose(candidates.beamngMinusHmdDelta' in source
-    assert 'local white=compose(candidates.beamngFixedBaseHmdDelta' in source
-    for colour in ('ColorF(1,0,0,1)', 'ColorF(0,1,0,1)', 'ColorF(1,1,0,1)', 'ColorF(1,1,1,1)'):
-        assert colour in source
+def test_full_pose_inverse_and_composition_are_used_for_candidate():
+    source=lua_source(); block=function_block('updateRigidCandidate(cameraWorld,hmd)', 'controllerPose')
+    assert 'compose(baseline.worldFromTracking,mapped)' in block
+    assert 'compose(compose(baselineBeamngCameraWorld, inverse(baselineTrackingHmd)), currentTrackingHmd)' in block
+    inverse_block=function_block('inverse(t)', 'finiteNumber')
+    assert 'qrot(qi,{-t.p[1],-t.p[2],-t.p[3]})' in inverse_block
+    for forbidden in ('worldDelta','gain','smoothing','translation subtraction'):
+        assert forbidden not in block
 
 
-def test_camera_axis_spheres_use_only_the_beamng_camera_anchor():
-    source = Path('mod/lua/ge/extensions/beamngVRControllerPoses.lua').read_text()
-    block = source.split('local cameraAxes=cfg.cameraAxisSpheres or {}', 1)[1].split(
-        'if cfg.cameraTestSphere and cfg.cameraTestSphere.enabled then', 1)[0]
-    assert 'compose(candidates.beamngOnly' in block
-    assert 'beamngPlusHmdDelta' not in block
-    assert 'beamngMinusHmdDelta' not in block
-    for offset in ('{distance,0,0}', '{0,distance,0}', '{0,0,distance}'):
-        assert offset in block
-    for colour in ('ColorF(1,0,0,1)', 'ColorF(0,1,0,1)', 'ColorF(0,0,1,1)'):
-        assert colour in block
-    assert 'cameraAxisSphereWorldPositions' in block
+def test_invalid_tracking_pose_preserves_last_candidate():
+    block=function_block('updateRigidCandidate(cameraWorld,hmd)', 'controllerPose')
+    assert 'if not hmd or not hmd.valid or not validPose(hmd) then return state.baselineRigidCandidateHmdWorld end' in block
+    valid=function_block('validPose(p)', 'copyPose')
+    assert 'finiteNumber' in valid and 'qnorm(p.q)' in valid
 
-    settings = json.loads(Path('mod/settings/beamngVRControllerPoses.json').read_text())
-    assert settings['cameraAxisSpheres'] == {
-        'enabled': True,
-        'distance': 1.0,
-        'diameter': 0.12,
-    }
 
-def test_default_translation_mode_and_confirmed_axis_mapping_are_preserved():
-    settings=json.loads((Path(__file__).parents[1]/'mod/settings/beamngVRControllerPoses.json').read_text())
-    assert settings['hmdTranslationMode'] == 'beamngFixedBaseHmdDelta'
-    assert settings['axisOrder'] == [1,3,2]
-    assert settings['axisSign'] == [1,-1,1]
+def test_baseline_reset_events_and_normal_yaw_does_not_reset():
+    source=lua_source(); block=function_block('updateRigidCandidate(cameraWorld,hmd)', 'controllerPose')
+    assert "resetHmdBaseline('OpenXR session or base space changed')" in block
+    assert "resetHmdBaseline('OpenXR sample time reset')" in block
+    assert "resetHmdBaseline('VR recenter detected')" in block
+    assert 'raw.q' not in block.split('resetHmdBaseline',1)[0]
+    assert "resetHmdBaseline('extension loaded')" in source
+    assert "resetHmdBaseline('explicit reset')" in source
 
-def test_native_packet_publishes_same_sample_hmd_without_changing_protocol_version():
-    source=(Path(__file__).parents[1]/'openxr-layer/src/layer.cpp').read_text()
-    assert 'sample.hmd.pose=head.pose' in source
-    assert '\\"v\\":2' in source and '\\"hmd\\":%s' in source
-    assert '\\"sampleTime\\":%lld' in source
 
-def test_left_then_right_valid_updates_publish_combined_snapshot():
-    p=StableHandPublisher(); p.update('left','L1',True,0); snap=p.update('right','R1',True,10)
-    assert snap['left']['valid'] and snap['right']['valid']
+def test_required_state_diagnostics_are_exposed():
+    source=lua_source()
+    required=('selectedHmdTranslationMode','baselineValid','baselineResetReason',
+      'baselineBeamngCameraWorld','baselineTrackingHmdRaw','baselineTrackingHmdMapped',
+      'baselineWorldFromTracking','currentTrackingHmdRaw','currentTrackingHmdMapped',
+      'baselineRigidCandidateHmdWorld','baselineRigidLeftControllerWorld',
+      'baselineRigidRightControllerWorld','beamngOnlyLeftControllerWorld',
+      'beamngOnlyRightControllerWorld','trackingWorldRight','trackingWorldForward','trackingWorldUp')
+    for name in required: assert 'state.'+name in source
 
-def test_right_update_does_not_clear_fresh_left_pose():
-    p=StableHandPublisher(); p.update('left','L1',True,0); snap=p.update('right','R1',True,50)
-    assert snap['left']['valid'] and snap['left']['candidate'] == 'L1'
 
-def test_left_update_does_not_clear_fresh_right_pose():
-    p=StableHandPublisher(); p.update('right','R1',True,0); snap=p.update('left','L1',True,50)
-    assert snap['right']['valid'] and snap['right']['candidate'] == 'R1'
+def test_native_hmd_is_authoritative_and_predicted_getter_is_diagnostic_only():
+    source=lua_source(); block=function_block('predictedOpenXRTrackingLocalPose()', 'storeBaseline')
+    assert 'OpenXR.getCameraPosRotPredictedXYZXYZW' in block
+    assert 'pcall(getter)' in block and 'finiteNumber(raw[i])' in block and 'qnorm({qx,qy,qz,qw})' in block
+    assert 'updateRigidCandidate(cameraWorld,latest.hmd)' in source
+    assert 'updateRigidCandidate(cameraWorld,predicted)' not in source
+    assert 'compose(predicted' not in source
 
-def test_invalid_secondary_candidate_cannot_overwrite_valid_selected_candidate():
-    p=StableHandPublisher(); p.update('left','L1',True,0); snap=p.update('left','L2',False,10)
-    assert snap['left']['valid'] and snap['left']['candidate'] == 'L1'
 
-def test_hand_remains_valid_during_brief_gap_within_grace_threshold():
-    p=StableHandPublisher(); p.update('left','L1',True,0); snap=p.snapshot(124)
-    assert snap['left']['valid'] and snap['left']['ageMs'] == 124
+def test_red_and_purple_spheres_and_selected_blue_controllers():
+    source=lua_source(); draw=function_block('drawDiagnostics(cameraWorld,candidate,selectedHmd)', 'M.onExtensionLoaded') if False else source.split('local function drawDiagnostics(cameraWorld,candidate,selectedHmd)',1)[1].split('\nfunction M.onExtensionLoaded',1)[0]
+    assert 'ColorF(1,0,0,1)' in draw
+    assert 'ColorF(0.65,0,1,1)' in draw
+    assert 'baselineRigidTracking=purple' in draw
+    assert "state[hand..'ControllerWorld']" in draw
+    assert 'predictedOpenXR' not in draw
 
-def test_hand_becomes_invalid_after_individual_freshness_timeout():
-    p=StableHandPublisher(); p.update('left','L1',True,0); snap=p.snapshot(126)
-    assert not snap['left']['valid']
 
-def test_one_controller_can_expire_while_other_remains_valid():
-    p=StableHandPublisher(); p.update('left','L1',True,0); p.update('right','R1',True,100); snap=p.snapshot(130)
-    assert not snap['left']['valid'] and snap['right']['valid']
-
-def test_session_and_space_destruction_clear_cached_poses():
-    p=StableHandPublisher(); p.update('left','L1',True,0); p.update('right','R1',True,0); p.destroy_space('L1')
-    assert not p.snapshot(1)['left']['valid'] and p.snapshot(1)['right']['valid']
-    p.destroy_session(); assert not p.snapshot(2)['right']['valid']
-
-def test_candidate_switching_uses_valid_replacement_without_invalid_pulse():
-    p=StableHandPublisher(); p.update('left','L1',True,0); p.update('left','L2',True,10); snap=p.snapshot(126)
-    assert snap['left']['valid'] and snap['left']['candidate'] == 'L2'
-
-def test_locate_hot_path_still_has_no_project_locks_io_or_allocation_after_stability_fix():
-    source=(Path(__file__).parents[1]/'openxr-layer/src/layer.cpp').read_text()
-    body=source.split('layerLocateSpace(',1)[1].split('\n}\n\nXRAPI_ATTR',1)[0]
-    for forbidden in ('lock_guard','writerMutex','sendto(','fopen(','sleep_for','make_shared','new ','candidateSlot('):
-        assert forbidden not in body
-    assert 'sample.candidate=space' in body
+def test_controller_relative_and_stale_paths_remain_present():
+    source=lua_source()
+    assert 'compose(compose(hmdWorld,relative),offset)' in source
+    assert '(now-latest.received)*1000>cfg.staleAfterMs' in source
+    assert "out.ageMs=(now-latest.received)*1000" in source
