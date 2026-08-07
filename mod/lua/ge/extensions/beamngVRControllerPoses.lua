@@ -3,6 +3,7 @@ local M = {}
 local sock, socketlib, cfg, latest, lastCounter, lastLog = nil, nil, nil, nil, -1, 0
 local state = {leftControllerWorld={valid=false}, rightControllerWorld={valid=false}, diagnostics={}}
 local hmdBaseline, hmdSpaceKey, previousRawHmd, previousHmdSampleTime = nil, nil, nil, nil
+local headingBaseline, alignedHeading = nil, nil
 
 local function qmul(a,b) return {
   a[4]*b[1]+a[1]*b[4]+a[2]*b[3]-a[3]*b[2],
@@ -35,8 +36,27 @@ local function distance(a,b)
   local x,y,z=a[1]-b[1],a[2]-b[2],a[3]-b[3]
   return math.sqrt(x*x+y*y+z*z)
 end
+local function wrapDegrees180(value)
+  return (value+180)%360-180
+end
+local function headingFromForward(forward)
+  local atan2=math.atan2 or function(y,x) return math.atan(y,x) end
+  local heading=math.deg(atan2(forward[1],forward[2]))
+  return (heading%360+360)%360
+end
+local function beamngHeading(q)
+  return headingFromForward(qrot(q,{0,1,0}))
+end
+local function openXrHeading(q)
+  local forward=qrot(q,{0,0,-1})
+  -- OpenXR is x-right/y-up/-z-forward. Express clockwise yaw from -Z.
+  local atan2=math.atan2 or function(y,x) return math.atan(y,x) end
+  local heading=math.deg(atan2(forward[1],-forward[3]))
+  return (heading%360+360)%360
+end
 local function resetHmdBaseline(reason)
   hmdBaseline=nil; hmdSpaceKey=nil; previousRawHmd=nil; previousHmdSampleTime=nil
+  headingBaseline=nil; alignedHeading=nil
   state.diagnostics.hmdBaselineResetReason=reason
 end
 local function vec3ToTable(v)
@@ -113,6 +133,19 @@ local function actualHmdWorld(cameraAnchor, hmd)
   state.diagnostics.mappedHmdDelta=mappedDelta
   state.diagnostics.rotatedWorldHmdDelta=valid and worldDelta or nil
   state.diagnostics.beamngCameraAnchor=cameraAnchor
+  local beamHeading=beamngHeading(cameraAnchor.q)
+  local xrHeading=valid and hmd.q and openXrHeading(hmd.q) or nil
+  if xrHeading and not headingBaseline then headingBaseline=xrHeading end
+  local relativeHeading=xrHeading and wrapDegrees180(xrHeading-headingBaseline) or nil
+  state.diagnostics.heading={
+    beamngDegrees=beamHeading,
+    openXrDegrees=xrHeading,
+    openXrFromBaselineDegrees=relativeHeading,
+    beamngMinusOpenXrDegrees=xrHeading and wrapDegrees180(beamHeading-xrHeading) or nil,
+    baselineOpenXrDegrees=headingBaseline,
+    alignedRelativeDegrees=alignedHeading,
+    alignedErrorDegrees=relativeHeading and alignedHeading and wrapDegrees180(relativeHeading-alignedHeading) or nil
+  }
   state.diagnostics.selectedHmdTranslationMode=mode
   state.diagnostics.candidateHmdWorldPositions={
     beamngOnly=candidates.beamngOnly.p,
@@ -232,10 +265,22 @@ function M.onPreRender(dtReal,dtSim,dtRaw)
   }
   drawDiagnostics(candidates,hmdWorld)
   if now-lastLog>cfg.logIntervalSeconds then
-    log('I','beamngVRControllerPoses',string.format('counter=%d age=%.1fms mode=%s beamngCamera=%s rawHmd=%s hmdBaseline=%s rawHmdDelta=%s mappedHmdDelta=%s worldHmdDelta=%s candidateHmdWorld=%s diagnosticSpheres=%s finalControllers=%s rawLeft=%s rawRight=%s',latest.counter,(now-latest.received)*1000,cfg.hmdTranslationMode,dumps(cameraAnchor.p),dumps(state.diagnostics.rawOpenXrHmdPosition),dumps(state.diagnostics.hmdBaseline),dumps(state.diagnostics.rawHmdDelta),dumps(state.diagnostics.mappedHmdDelta),dumps(state.diagnostics.rotatedWorldHmdDelta),dumps(state.diagnostics.candidateHmdWorldPositions),dumps(state.diagnostics.diagnosticSphereWorldPositions),dumps(state.diagnostics.finalControllerWorldPositions),dumps(latest.left),dumps(latest.right))); lastLog=now
+    log('I','beamngVRControllerPoses',string.format('counter=%d age=%.1fms mode=%s heading=%s beamngCamera=%s rawHmd=%s hmdBaseline=%s rawHmdDelta=%s mappedHmdDelta=%s worldHmdDelta=%s candidateHmdWorld=%s diagnosticSpheres=%s finalControllers=%s rawLeft=%s rawRight=%s',latest.counter,(now-latest.received)*1000,cfg.hmdTranslationMode,dumps(state.diagnostics.heading),dumps(cameraAnchor.p),dumps(state.diagnostics.rawOpenXrHmdPosition),dumps(state.diagnostics.hmdBaseline),dumps(state.diagnostics.rawHmdDelta),dumps(state.diagnostics.mappedHmdDelta),dumps(state.diagnostics.rotatedWorldHmdDelta),dumps(state.diagnostics.candidateHmdWorldPositions),dumps(state.diagnostics.diagnosticSphereWorldPositions),dumps(state.diagnostics.finalControllerWorldPositions),dumps(latest.left),dumps(latest.right))); lastLog=now
   end
 end
 function M.resetHmdBaseline() resetHmdBaseline('explicit reset') end
+function M.resetHeadingBaseline()
+  headingBaseline=nil; alignedHeading=nil
+  state.diagnostics.heading=nil; state.diagnostics.headingVisual=nil
+  return true
+end
+function M.markCurrentHeadingAsAligned()
+  local heading=state.diagnostics.heading
+  if not heading or heading.openXrFromBaselineDegrees==nil then return false end
+  alignedHeading=heading.openXrFromBaselineDegrees
+  heading.alignedRelativeDegrees=alignedHeading; heading.alignedErrorDegrees=0
+  return true
+end
 function M.setHmdTranslationMode(mode)
   if not validHmdTranslationModes[mode] then
     log('E','beamngVRControllerPoses','invalid HMD translation mode: '..tostring(mode))
