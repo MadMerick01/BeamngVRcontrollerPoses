@@ -146,13 +146,19 @@ def anchor_physical_offset_to_current_camera(current_camera_position,
     return physical_offset, final_position
 
 
-def gelua_native_camera_composition(anchor: Pose, predicted: Pose) -> Pose:
-    """Mirror gameengine.lua: anchor position + predicted, predicted rotation * anchor."""
+def gelua_raw_native_view_quaternion(anchor: Pose, predicted: Pose):
+    """Preserve BeamNG's normalized predicted * anchor view quaternion."""
     values = anchor.position + anchor.orientation + predicted.position + predicted.orientation
     if not all(isfinite(value) for value in values):
         raise ValueError("GE Lua camera capture must contain finite values")
+    return qnorm(qmul(predicted.orientation, anchor.orientation))
+
+
+def gelua_native_camera_composition(anchor: Pose, predicted: Pose) -> Pose:
+    """Convert BeamNG's captured native camera from view to world exactly once."""
+    raw_native_view = gelua_raw_native_view_quaternion(anchor, predicted)
     return Pose(tuple(anchor.position[i] + predicted.position[i] for i in range(3)),
-                qnorm(qmul(predicted.orientation, anchor.orientation)))
+                quaternion_inverse(raw_native_view))
 
 
 def gelua_native_controller_world(anchor: Pose, predicted: Pose,

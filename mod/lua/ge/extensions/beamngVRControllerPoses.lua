@@ -170,9 +170,13 @@ local function geluaNativeCandidate(now)
   if not a or not p or not aq or not pq then return nil,'capture values unavailable' end
   -- BeamNG gameengine.lua calls setAddXYZ(predicted position), then
   -- setMulXYZW(predicted XYZW, anchor XYZW): Hamilton predicted * anchor.
-  local q=qnorm(qmul({pq[1],pq[2],pq[3],pq[4]},{aq[1],aq[2],aq[3],aq[4]}))
-  if not q then return nil,'composed quaternion has zero length' end
-  return {p={a[1]+p[1],a[2]+p[2],a[3]+p[3]},q=q},nil
+  local rawNativeViewQuaternion=qnorm(qmul({pq[1],pq[2],pq[3],pq[4]},{aq[1],aq[2],aq[3],aq[4]}))
+  if not rawNativeViewQuaternion then return nil,'composed quaternion has zero length' end
+  -- BeamNG's multiplication is world-to-camera/view.  Everything after this
+  -- boundary consumes camera-to-world, so conjugate the normalized result once.
+  local nativeCameraToWorldQuaternion=qinv(rawNativeViewQuaternion)
+  return {p={a[1]+p[1],a[2]+p[2],a[3]+p[3]},q=nativeCameraToWorldQuaternion,
+    rawNativeViewQuaternion=rawNativeViewQuaternion},nil
 end
 local function syncGeluaDiagnostics()
   local values={geluaCaptureInstalled=geluaCapture.captureInstalled,geluaCaptureAvailable=geluaCapture.captureAvailable,
@@ -182,9 +186,12 @@ local function syncGeluaDiagnostics()
     geluaRawAnchorPosition=geluaCapture.rawAnchorPosition,geluaRawAnchorQuaternion=geluaCapture.rawAnchorQuaternion,
     geluaRawPredictedPosition=geluaCapture.rawPredictedPosition,geluaRawPredictedQuaternion=geluaCapture.rawPredictedQuaternion,
     geluaNativeFinalVrPosition=state.geluaNativeFinalVrPosition,geluaNativeFinalVrQuaternion=state.geluaNativeFinalVrQuaternion,
+    geluaRawNativeViewQuaternion=state.geluaRawNativeViewQuaternion,
+    geluaNativeCameraToWorldQuaternion=state.geluaNativeCameraToWorldQuaternion,
+    geluaQuaternionBoundaryConversion='raw normalize(predicted * anchor), then inverse view-to-world',
     geluaNativeLeftControllerWorld=state.geluaNativeLeftControllerWorld,geluaNativeRightControllerWorld=state.geluaNativeRightControllerWorld,
     geluaNativeDiagnosticSphereWorld=state.geluaNativeDiagnosticSphereWorld}
-  local fields={'geluaCaptureInstalled','geluaCaptureAvailable','geluaCaptureFailureReason','geluaSetterSequence','geluaSetterTimestamp','geluaGetterTimestamp','geluaPairComplete','geluaPairAgeMs','geluaRawAnchorPosition','geluaRawAnchorQuaternion','geluaRawPredictedPosition','geluaRawPredictedQuaternion','geluaNativeFinalVrPosition','geluaNativeFinalVrQuaternion','geluaNativeLeftControllerWorld','geluaNativeRightControllerWorld','geluaNativeDiagnosticSphereWorld'}
+  local fields={'geluaCaptureInstalled','geluaCaptureAvailable','geluaCaptureFailureReason','geluaSetterSequence','geluaSetterTimestamp','geluaGetterTimestamp','geluaPairComplete','geluaPairAgeMs','geluaRawAnchorPosition','geluaRawAnchorQuaternion','geluaRawPredictedPosition','geluaRawPredictedQuaternion','geluaRawNativeViewQuaternion','geluaNativeCameraToWorldQuaternion','geluaQuaternionBoundaryConversion','geluaNativeFinalVrPosition','geluaNativeFinalVrQuaternion','geluaNativeLeftControllerWorld','geluaNativeRightControllerWorld','geluaNativeDiagnosticSphereWorld'}
   for _,key in ipairs(fields) do state[key]=values[key]; state.diagnostics[key]=values[key] end
 end
 local function beamCameraWorld()
@@ -462,6 +469,8 @@ local function actualHmdWorld(cameraAnchor, hmd)
   state.diagnostics.candidateHmdWorldPositions.geluaNativeCameraComposition=nativeCandidate and nativeCandidate.p or nil
   state.geluaNativeFinalVrPosition=nativeCandidate and nativeCandidate.p or nil
   state.geluaNativeFinalVrQuaternion=nativeCandidate and nativeCandidate.q or nil
+  state.geluaRawNativeViewQuaternion=nativeCandidate and nativeCandidate.rawNativeViewQuaternion or nil
+  state.geluaNativeCameraToWorldQuaternion=nativeCandidate and nativeCandidate.q or nil
   state.diagnostics.fixedBaseCandidateHmdWorldPosition=candidates.beamngFixedBaseHmdDelta.p
   state.diagnostics.actualHmdWorldPosition=selected.p -- retained for PR #13 diagnostic consumers
   return selected,candidates
@@ -551,7 +560,7 @@ local function drawDiagnostics(candidates,hmdWorld)
     if cyan then debugDrawer:drawSphere(vec3(cyan.p),radius,ColorF(0,1,1,1)) end
     if orange then debugDrawer:drawSphere(vec3(orange.p),radius,ColorF(1,0.5,0,1)) end
     if pink then debugDrawer:drawSphere(vec3(pink.p),radius,ColorF(1,0.2,0.6,1)) end
-    if lime then debugDrawer:drawSphere(vec3(lime.p),radius,ColorF(0.5,1,0,1)) end
+    if lime then debugDrawer:drawSphere(vec3(lime.p),radius,ColorF(0.55,0.1,1,1)) end
     local diagnosticItems={beamngOnly=red,beamngPlusHmdDelta=green,beamngMinusHmdDelta=yellow,beamngFixedBaseHmdDelta=white}
     if purple then diagnosticItems.baselineRigidTracking=purple end
     if cyan then diagnosticItems.baselineRigidPositionBeamngRotation=cyan end

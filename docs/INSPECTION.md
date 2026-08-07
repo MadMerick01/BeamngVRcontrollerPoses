@@ -36,7 +36,10 @@ assignment error if unsupported.
   placed the magenta diagnostic sphere and both blue controller spheres near the
   map origin. PR #33 captures the exact getter return from BeamNG’s own call, pairs it with the
   immediately preceding setter anchor, and preserves the seven raw scalars. Only
-  the opt-in native-composition mode uses the copied, normalized composition; the
+  the opt-in native-composition mode preserves the copied, normalized composition
+  diagnostically as a world-to-camera/view quaternion. PR #34 inverts that result
+  exactly once at the operational boundary because pose composition and `qrotate`
+  require camera-to-world; the
   default remains `beamngOnly`. This restores visible behavior;
   it does not establish that the original yaw-dependent translation problem is
   solved.
