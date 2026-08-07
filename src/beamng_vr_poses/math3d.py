@@ -1,6 +1,6 @@
 """Rigid-transform math. Quaternions are (x, y, z, w), composed parent * child."""
 from dataclasses import dataclass
-from math import acos, degrees, sqrt
+from math import acos, degrees, isfinite, sqrt
 
 
 @dataclass(frozen=True)
@@ -125,6 +125,37 @@ def pivot_preserving_world_from_tracking_rebase(world_from_tracking: Pose,
     rebased_transform = Pose(position, orientation)
     after = compose(rebased_transform, mapped_tracking_hmd)
     return rebased_transform, before, after
+
+
+def translate_world_from_tracking(world_from_tracking: Pose, beamng_anchor_delta) -> Pose:
+    """Translate a tracking attachment by an unrotated BeamNG-world delta."""
+    delta = tuple(float(value) for value in beamng_anchor_delta)
+    if len(delta) != 3 or not all(isfinite(value) for value in delta):
+        raise ValueError("BeamNG anchor delta must contain three finite values")
+    return Pose(tuple(world_from_tracking.position[i] + delta[i] for i in range(3)),
+                world_from_tracking.orientation)
+
+
+def moving_anchor_update(world_from_tracking: Pose, previous_anchor, current_anchor,
+                         mapped_tracking_hmd: Pose, camera_orientation,
+                         jump_metres=5.0, yaw_threshold_degrees=.75):
+    """Apply world translation, then PR #28's pivot-preserving yaw rebase."""
+    from math import dist, isfinite
+    previous, current = tuple(previous_anchor), tuple(current_anchor)
+    if len(previous) != 3 or len(current) != 3 or not all(
+            isfinite(value) for value in previous + current):
+        raise ValueError("BeamNG anchor positions must be finite vec3 values")
+    delta = tuple(current[i] - previous[i] for i in range(3))
+    if dist(delta, (0., 0., 0.)) > jump_metres:
+        return world_from_tracking, delta, True, False
+    moved = translate_world_from_tracking(world_from_tracking, delta)
+    target = target_world_from_tracking_orientation(camera_orientation,
+                                                    mapped_tracking_hmd.orientation)
+    rebased = quaternion_angular_difference_degrees(moved.orientation, target) > yaw_threshold_degrees
+    if rebased:
+        moved, _, _ = pivot_preserving_world_from_tracking_rebase(
+            moved, mapped_tracking_hmd, target)
+    return moved, delta, False, rebased
 
 
 def fixed_world_from_base(world_from_hmd, base_from_hmd):

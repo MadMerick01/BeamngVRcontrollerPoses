@@ -6,6 +6,7 @@
   "hmdRecenterJumpMetres": 0.35,
   "hmdTranslationMode": "beamngOnly",
   "artificialYawRebaseThresholdDegrees": 0.75,
+  "beamngAnchorJumpMetres": 5.0,
   "metresToBeamNGUnit": 1.0,
   "axisOrder": [
     1,
