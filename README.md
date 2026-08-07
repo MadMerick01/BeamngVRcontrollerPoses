@@ -14,7 +14,7 @@ never changes a pose returned to BeamNG. SteamVR/OpenVR is **not required**. The
 old Python OpenVR publisher remains only as an unsupported fallback entry point,
 `beamng-vr-poses-openvr-fallback`, so the earlier work remains recoverable.
 
-## PR #33 native GE Lua camera composition (opt in)
+## PR #34 native GE Lua camera quaternion boundary correction (opt in)
 
 BeamNG 0.39's installed `lua/ge/extensions/core/cameraModes/gameengine.lua`
 (approximately lines 42–70) positively identifies the previously missing call site.
@@ -25,7 +25,8 @@ from `OpenXR.getCameraPosRotPredictedXYZXYZW()`, and then performs:
 
 ```text
 finalVrPosition = capturedAnchorPosition + capturedPredictedPosition
-finalVrRotation = normalize(capturedPredictedRotation * capturedAnchorRotation)
+rawNativeViewRotation = normalize(capturedPredictedRotation * capturedAnchorRotation)
+nativeCameraToWorldRotation = inverse(rawNativeViewRotation)
 controllerWorld = finalVrCameraWorld * controllerRelativeToHmd * calibrationOffset
 ```
 
@@ -55,9 +56,16 @@ dump(extensions.beamngVRControllerPoses.getGeluaCameraAnchorCaptureState())
 dump(extensions.beamngVRControllerPoses.getState())
 ```
 
-The bright-lime sphere is the native-composition camera one metre forward. This
-diagnostic does **not** claim the translation issue is solved until the complete
-headset acceptance test in `docs/INSTALL_AND_TEST_GUIDE.md` passes.
+PR #33's transparent capture, pairing, freshness, fallback, and direct position
+addition were proven in live VR and remain unchanged. PR #34 only corrects the
+quaternion convention: BeamNG's raw `predicted * anchor` result is retained as
+`geluaRawNativeViewQuaternion`, then inverted exactly once into
+`geluaNativeCameraToWorldQuaternion`. The compatibility field
+`geluaNativeFinalVrQuaternion` contains that corrected operational camera-to-world
+value. The vivid electric-violet sphere is the native-composition camera one
+metre forward, rotated by the corrected quaternion. Static tests do **not** claim
+complete success until the PR #34 artifact passes the live headset acceptance
+test in `docs/INSTALL_AND_TEST_GUIDE.md`.
 
 ## PR #26 stationary-world rigid-transform test
 
@@ -275,7 +283,7 @@ the observed run), not a complete BeamNG world camera pose. Directly treating it
 as world space moved the diagnostic and both blue controller spheres near the
 map origin. PR #33 now intercepts that exact getter result together with the preceding clean
 anchor; raw values remain separate, and only the paired native composition can
-select the new controller parent or bright-lime diagnostic sphere.
+select the new controller parent or vivid electric-violet diagnostic sphere.
 Tracking-space/session changes, time resets, pose discontinuities, extension
 reload, and the exposed `resetHmdBaseline()` hook safely establish a new baseline
 without adding standing height. Stale-packet rejection and the existing

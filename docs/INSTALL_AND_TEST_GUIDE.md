@@ -416,7 +416,7 @@ extensions.beamngVRControllerPoses.setOriginLinesEnabled(false)
 ```
 
 
-## PR #33 native GE Lua camera composition headset acceptance
+## PR #34 corrected native GE Lua camera composition headset acceptance
 
 Run this exact first test:
 
@@ -435,18 +435,19 @@ dump(extensions.beamngVRControllerPoses.getState())
 ```
 
 1. Recenter VR while facing forward.
-2. Confirm the bright-lime sphere is visible and centred one metre forward.
-3. Confirm both blue spheres match the real controllers.
-4. Translate the head left/right, forward/back, and up/down.
-5. Rotate the head naturally through different headings.
-6. Rotate the game camera with the controller stick.
-7. Walk using controller-stick locomotion.
-8. Combine physical head translation and stick locomotion.
-9. Change vehicle/camera position if practical.
-10. Confirm lime and blue follow without double translation, yaw-dependent drift, or separation.
+2. Confirm capture is installed/available, the pair is complete, and setter sequence is positive.
+3. Identify the vivid electric-violet native sphere one metre forward.
+4. Turn left/right, look up/down, and tilt for roll; confirm violet follows rather than moving inversely.
+5. Confirm both blue spheres remain aligned with the real controllers.
+6. Translate left/right, forward/back, and up/down.
+7. Rotate the game camera with the controller stick.
+8. Walk using controller-stick locomotion.
+9. Combine physical movement and stick movement.
+10. Confirm no inverse rotation, double translation, or yaw-dependent drift.
 11. Confirm PR #28 orange remains available with `setHmdTranslationMode('baselineRigidPositionBeamngRotationRebased')`.
 12. Save `getState()`, capture state, and relevant logs; then call `stopGeluaCameraAnchorCapture()`.
 
-A successful static/CI test does not establish that BeamNG permits replacement of
-the bound OpenXR fields or that the translation issue is permanently solved. Record
-the exact `geluaCaptureFailureReason` if wrapper installation fails.
+PR #33 live testing already established wrapper replacement, capture pairing, and
+the exact `anchor + predicted` position. A successful static/CI test still does
+not establish that PR #34's corrected artifact behaves properly in a headset; do
+not claim complete success before this acceptance test passes.

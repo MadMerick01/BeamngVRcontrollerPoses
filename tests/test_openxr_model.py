@@ -152,12 +152,12 @@ def test_blue_controllers_use_selected_camera_once():
     assert "updateHand('right',latest.right,hmdWorld,now)" in source
 
 
-def test_native_capture_is_fail_closed_and_lime_diagnostic_is_present():
+def test_native_capture_is_fail_closed_and_violet_diagnostic_is_present():
     source=lua_source()
     for text in ('cannot replace OpenXR.setGeluaCameraPosRot',
                  'cannot replace OpenXR.getCameraPosRotPredictedXYZXYZW',
                  "captureInstalled=false", "pairComplete=false",
-                 "ColorF(0.5,1,0,1)"):
+                 "ColorF(0.55,0.1,1,1)"):
         assert text in source
 
 
