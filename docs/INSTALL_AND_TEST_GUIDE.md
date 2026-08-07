@@ -414,3 +414,39 @@ extensions.beamngVRControllerPoses.setDiagnosticTripodsEnabled(false)
 extensions.beamngVRControllerPoses.setControllerTripodsEnabled(false)
 extensions.beamngVRControllerPoses.setOriginLinesEnabled(false)
 ```
+
+
+## PR #33 native GE Lua camera composition headset acceptance
+
+Run this exact first test:
+
+```lua
+extensions.load('beamngVRControllerPoses')
+
+extensions.beamngVRControllerPoses.startGeluaCameraAnchorCapture()
+
+extensions.beamngVRControllerPoses.setHmdTranslationMode(
+  'geluaNativeCameraComposition'
+)
+
+dump(extensions.beamngVRControllerPoses.getGeluaCameraAnchorCaptureState())
+
+dump(extensions.beamngVRControllerPoses.getState())
+```
+
+1. Recenter VR while facing forward.
+2. Confirm the bright-lime sphere is visible and centred one metre forward.
+3. Confirm both blue spheres match the real controllers.
+4. Translate the head left/right, forward/back, and up/down.
+5. Rotate the head naturally through different headings.
+6. Rotate the game camera with the controller stick.
+7. Walk using controller-stick locomotion.
+8. Combine physical head translation and stick locomotion.
+9. Change vehicle/camera position if practical.
+10. Confirm lime and blue follow without double translation, yaw-dependent drift, or separation.
+11. Confirm PR #28 orange remains available with `setHmdTranslationMode('baselineRigidPositionBeamngRotationRebased')`.
+12. Save `getState()`, capture state, and relevant logs; then call `stopGeluaCameraAnchorCapture()`.
+
+A successful static/CI test does not establish that BeamNG permits replacement of
+the bound OpenXR fields or that the translation issue is permanently solved. Record
+the exact `geluaCaptureFailureReason` if wrapper installation fails.

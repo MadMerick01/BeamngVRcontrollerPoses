@@ -9,6 +9,21 @@ covered camera/VR/OpenXR, scene/SimObject, debug drawing, Lua, sockets, ray cast
 and native/extension terms. The dump records names and traced calls, not C++/Lua
 signatures or semantic guarantees.
 
+
+## Positively identified BeamNG 0.39 GE Lua camera call site
+
+The installed stock file `lua/ge/extensions/core/cameraModes/gameengine.lua`
+(approximately lines 42–70) supplies evidence unavailable in the repository API
+dumps. It calls `OpenXR.setGeluaCameraPosRot(positionX, positionY, positionZ,
+quaternionX, quaternionY, quaternionZ, quaternionW)`, calls
+`OpenXR.getCameraPosRotPredictedXYZXYZW()` once, directly adds predicted XYZ to
+the anchor XYZ, and evaluates `setMulXYZW(predicted XYZW, anchor XYZW)`. The
+project's Hamilton XYZW implementation therefore uses `predicted * anchor`. This
+supersedes the dump-only assumption that no dynamic setter call site was known;
+the stock file itself is not modified. Runtime assignment of the bound table
+fields remains a headset/BeamNG test item and fails closed with the exact Lua
+assignment error if unsupported.
+
 ## Findings
 
 * Global camera bindings include `getCameraTransform`, `getCameraPosition`,
@@ -19,11 +34,10 @@ signatures or semantic guarantees.
   `(913.884, 774.990, 237.515)`: it is a tracking-local pose close to the OpenXR
   origin, not a complete BeamNG world camera transform. Direct world-space use
   placed the magenta diagnostic sphere and both blue controller spheres near the
-  map origin. The consumer still calls the getter safely, validates all seven
-  scalars, and normalizes its XYZW quaternion, but exposes it only through
-  `predictedOpenXRTrackingLocal*` diagnostics. It is never a controller parent and
-  is not drawn directly in BeamNG world coordinates. BeamNG camera reconstruction
-  remains the active controller world transform. This restores visible behavior;
+  map origin. PR #33 captures the exact getter return from BeamNG’s own call, pairs it with the
+  immediately preceding setter anchor, and preserves the seven raw scalars. Only
+  the opt-in native-composition mode uses the copied, normalized composition; the
+  default remains `beamngOnly`. This restores visible behavior;
   it does not establish that the original yaw-dependent translation problem is
   solved.
 * `createObject`, `SimObject`, `scenetree`, `TSStatic`, `StaticShapeData`, and

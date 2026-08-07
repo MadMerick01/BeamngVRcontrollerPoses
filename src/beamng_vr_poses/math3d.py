@@ -146,6 +146,23 @@ def anchor_physical_offset_to_current_camera(current_camera_position,
     return physical_offset, final_position
 
 
+def gelua_native_camera_composition(anchor: Pose, predicted: Pose) -> Pose:
+    """Mirror gameengine.lua: anchor position + predicted, predicted rotation * anchor."""
+    values = anchor.position + anchor.orientation + predicted.position + predicted.orientation
+    if not all(isfinite(value) for value in values):
+        raise ValueError("GE Lua camera capture must contain finite values")
+    return Pose(tuple(anchor.position[i] + predicted.position[i] for i in range(3)),
+                qnorm(qmul(predicted.orientation, anchor.orientation)))
+
+
+def gelua_native_controller_world(anchor: Pose, predicted: Pose,
+                                  controller_relative_to_hmd: Pose,
+                                  calibration_offset: Pose) -> Pose:
+    """Apply the native final VR camera exactly once as the controller parent."""
+    return compose(gelua_native_camera_composition(anchor, predicted),
+                   compose(controller_relative_to_hmd, calibration_offset))
+
+
 def fixed_world_from_base(world_from_hmd, base_from_hmd):
     """Derive the fixed BeamNG world-from-OpenXR-base rotation at baseline."""
     mapped = map_openxr_orientation(base_from_hmd)
