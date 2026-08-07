@@ -1,4 +1,5 @@
 {
+  "cameraSourceMode": "predictedOpenXR",
   "listenAddress": "127.0.0.1",
   "listenPort": 44441,
   "staleAfterMs": 150,
