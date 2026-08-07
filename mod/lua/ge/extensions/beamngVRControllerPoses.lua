@@ -2,6 +2,7 @@
 local M = {}
 local sock, socketlib, cfg, latest, lastCounter, lastLog = nil, nil, nil, nil, -1, 0
 local state = {leftControllerWorld={valid=false}, rightControllerWorld={valid=false}, diagnostics={}}
+local cameraSourceMode='beamngOnly'
 local hmdBaseline, hmdSpaceKey, previousRawHmd, previousHmdSampleTime = nil, nil, nil, nil
 local worldFromBaseQ=nil
 local headingBaseline, alignedHeading = nil, nil
@@ -71,6 +72,25 @@ local function quatToXYZW(q)
   -- BeamNG's core_camera.getQuat()/getQuatXYZW convention is explicitly XYZW; keep project-internal XYZW.
   if type(q)=='table' then return {q.x or q[1], q.y or q[2], q.z or q[3], q.w or q[4]} end
   return {q.x, q.y, q.z, q.w}
+end
+local function finiteNumber(value)
+  return type(value)=='number' and value==value and value~=math.huge and value~=-math.huge
+end
+local function predictedOpenXRTrackingLocalPose()
+  local getter=OpenXR and OpenXR.getCameraPosRotPredictedXYZXYZW
+  if type(getter)~='function' then return nil,nil,'predicted OpenXR camera getter unavailable' end
+  -- The exported binding name specifies seven scalar returns: position XYZ,
+  -- followed by rotation XYZW.  Keep that API ordering explicit at this boundary.
+  local ok,px,py,pz,qx,qy,qz,qw=pcall(getter)
+  local raw={px,py,pz,qx,qy,qz,qw}
+  if not ok then return nil,raw,'predicted OpenXR camera getter failed' end
+  for i=1,7 do
+    if not finiteNumber(raw[i]) then return nil,raw,'predicted OpenXR camera pose is malformed or non-finite' end
+  end
+  local orientation=qnorm({qx,qy,qz,qw})
+  if not orientation then return nil,raw,'predicted OpenXR camera quaternion has zero length' end
+  -- No dump evidence says this pose is world-to-camera, so do not invert it.
+  return {p={px,py,pz},q=orientation},raw,nil
 end
 local function beamCameraWorld()
   local pos=vec3ToTable(core_camera and core_camera.getPosition and core_camera.getPosition())
@@ -284,6 +304,8 @@ end
 function M.onExtensionLoaded()
   cfg=jsonReadFile('settings/beamngVRControllerPoses.json') or jsonReadFile('/settings/beamngVRControllerPoses.json')
   if not cfg then log('E','beamngVRControllerPoses','configuration not found'); return false end
+  cameraSourceMode='beamngOnly'
+  state.selectedCameraSourceMode=cameraSourceMode
   socketlib=require('socket'); sock=socketlib.udp(); sock:settimeout(0); assert(sock:setsockname(cfg.listenAddress,cfg.listenPort))
   resetHmdBaseline('extension loaded')
   log('I','beamngVRControllerPoses','listening for pose datagrams on '..cfg.listenAddress..':'..cfg.listenPort)
@@ -293,7 +315,25 @@ function M.onPreRender(dtReal,dtSim,dtRaw)
   if not latest or not cameraAnchor or (now-latest.received)*1000>cfg.staleAfterMs then state.leftControllerWorld.valid=false; state.rightControllerWorld.valid=false; return end
   -- Packets from older protocol-2 publishers have no hmd member and retain the
   -- previous camera-anchor behavior rather than being rejected.
-  local hmdWorld,candidates=actualHmdWorld(cameraAnchor,latest.hmd)
+  local beamngWorld,candidates=actualHmdWorld(cameraAnchor,latest.hmd)
+  -- Headset testing proved this getter is tracking-local (near the OpenXR
+  -- origin), not a BeamNG world transform.  Capture it for diagnostics only.
+  local predictedTrackingLocal,rawPredicted,predictedError=predictedOpenXRTrackingLocalPose()
+  local hmdWorld=beamngWorld
+  state.selectedCameraSourceMode=cameraSourceMode
+  state.predictedCameraAvailable=predictedTrackingLocal~=nil
+  state.predictedOpenXRTrackingLocalPoseRawValues=rawPredicted
+  state.predictedOpenXRTrackingLocalPose=predictedTrackingLocal
+  state.predictedOpenXRTrackingLocalPoseError=predictedError
+  state.finalSelectedCameraWorldTransform=hmdWorld
+  state.cameraSourceFallbackReason=nil
+  state.diagnostics.selectedCameraSourceMode=state.selectedCameraSourceMode
+  state.diagnostics.predictedCameraAvailable=state.predictedCameraAvailable
+  state.diagnostics.predictedOpenXRTrackingLocalPoseRawValues=state.predictedOpenXRTrackingLocalPoseRawValues
+  state.diagnostics.predictedOpenXRTrackingLocalPose=state.predictedOpenXRTrackingLocalPose
+  state.diagnostics.predictedOpenXRTrackingLocalPoseError=state.predictedOpenXRTrackingLocalPoseError
+  state.diagnostics.finalSelectedCameraWorldTransform=state.finalSelectedCameraWorldTransform
+  state.diagnostics.cameraSourceFallbackReason=state.cameraSourceFallbackReason
   state.diagnostics.cameraWorld=hmdWorld
   updateHand('left',latest.left,hmdWorld,now); updateHand('right',latest.right,hmdWorld,now)
   state.diagnostics.finalControllerWorldPositions={
@@ -302,10 +342,21 @@ function M.onPreRender(dtReal,dtSim,dtRaw)
   }
   state.diagnostics.finalLeftControllerWorldPosition=state.diagnostics.finalControllerWorldPositions.left
   state.diagnostics.finalRightControllerWorldPosition=state.diagnostics.finalControllerWorldPositions.right
+  state.finalLeftControllerWorldPosition=state.diagnostics.finalLeftControllerWorldPosition
+  state.finalRightControllerWorldPosition=state.diagnostics.finalRightControllerWorldPosition
   drawDiagnostics(candidates,hmdWorld)
   if now-lastLog>cfg.logIntervalSeconds then
     log('I','beamngVRControllerPoses','fixed-base diagnostics='..dumps(state.diagnostics)); lastLog=now
   end
+end
+function M.setCameraSourceMode(mode)
+  if mode~='beamngOnly' then
+    log('E','beamngVRControllerPoses','invalid camera source mode: '..tostring(mode))
+    return false
+  end
+  cameraSourceMode=mode
+  state.selectedCameraSourceMode=mode
+  return true
 end
 function M.resetHmdBaseline() resetHmdBaseline('explicit reset') end
 function M.resetHeadingBaseline()

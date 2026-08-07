@@ -166,15 +166,15 @@ computes `inverse(hmdInBase) * controllerInBase`. Samples are merged only when t
 session/base/time key is compatible. Protocol 2 now also carries an optional valid
 VIEW pose in that base space, its flags, sample time, and tracking-space identity;
 existing protocol-2 consumers can ignore this additive `hmd` member. The Lua
-bridge baselines its translation, maps `(x,y,z)` to `(x,-z,y)`, rotates the delta
-into game-world space, and supplements the anchor from `core_camera.getPosition()`.
-It then computes `actualHmdWorld * controllerRelativeToHmd` while retaining the
-corrected `core_camera.getQuat()` direction. Tracking-space/session changes, time resets,
+bridge records BeamNG's predicted OpenXR pose only as optional tracking-local
+diagnostics. Headset testing showed that it is not a game-world camera transform,
+so controller placement continues to use the `beamngOnly` camera reconstruction.
+Tracking-space/session changes, time resets,
 pose discontinuities, extension reload, and the exposed `resetHmdBaseline()` hook
 safely establish a new baseline without adding standing height. The bridge retains
-stale packet rejection; `OpenXR.getCameraPosRotPredictedXYZXYZW()` is deliberately
-not used as the game-world camera transform, exposes `getState()`, and draws the
-red headset diagnostic plus two bright-blue controller spheres.
+stale packet rejection and draws the existing camera diagnostics plus two
+bright-blue controller spheres. `setCameraSourceMode()` accepts only `beamngOnly`;
+the predicted getter cannot control controller placement.
 
 ## Install the BeamNG mod and test
 
@@ -201,15 +201,15 @@ VDXR, optionally confirm ordinary BeamNG Vulkan VR without the layer as a fresh
 baseline, install the unpacked mod, run the manual PowerShell launch command,
 select Vulkan in the normal BeamNG launcher, enter a map, start BeamNG VR, open
 the GE Lua console, load `extensions.load('beamngVRControllerPoses')`, then
-inspect `dump(extensions.beamngVRControllerPoses.getState())` and
-`dump(core_camera.getPosition())`. Verify the red camera diagnostic sphere is
-approximately one metre from the camera, the bright-blue spheres follow the
-controllers, controller world positions are near the non-zero BeamNG camera
-position rather than `(0,0,0)`, each controller moves independently, and the
-spheres remain correctly positioned during head rotation, vehicle movement, and
-VR recentering. Verify head turns, vehicle movement and VR
-recenter do not introduce offsets; disabling/occluding either controller hides its
-sphere, and stopping publication hides both within `staleAfterMs`. Inspect
+inspect `dump(extensions.beamngVRControllerPoses.getState())`. The corrective
+headset test observed a BeamNG world camera position of approximately
+`(913.884, 774.990, 237.515)` while the available predicted getter returned
+approximately `(-0.013, 0.009, 0.013)`. Directly treating the latter as world
+coordinates placed both the diagnostic and controllers near the map origin. It is
+therefore exposed as `predictedOpenXRTrackingLocalPose` for inspection only.
+Disabling/occluding either
+controller hides its sphere, and stopping publication hides both within
+`staleAfterMs`. Inspect
 `extensions.beamngVRControllerPoses.getState()` for the world transforms. Calibration,
 sphere size/colour, port, stale threshold and log cadence remain in
 `mod/settings/beamngVRControllerPoses.json`.

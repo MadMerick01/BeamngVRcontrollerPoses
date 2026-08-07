@@ -123,20 +123,73 @@ def test_valid_candidate_not_overwritten_by_later_invalid_candidate_source():
     assert 'if(incoming.valid)' in source
     assert 'without latching stale ghost controllers indefinitely' in source
 
-def test_lua_uses_beamng_camera_world_transform_and_diagnostics():
+def test_lua_uses_predicted_openxr_camera_world_transform_and_diagnostics():
     source=(Path(__file__).parents[1]/'mod/lua/ge/extensions/beamngVRControllerPoses.lua').read_text()
     assert 'core_camera.getPosition' in source
     assert 'core_camera.getQuat' in source
     assert 'getCameraPosition' not in source
     assert 'getCameraQuat' not in source
-    assert 'getCameraPosRotPredictedXYZXYZW' not in source
+    assert 'OpenXR.getCameraPosRotPredictedXYZXYZW' in source
     assert 'cameraTestSphereWorld' in source
     for diagnostic in ('beamngCameraPosition','rawOpenXrHmdPosition','rawHmdPose','hmdBaseline',
                        'rawHmdDelta','mappedHmdDelta','rotatedWorldHmdDelta',
                        'selectedHmdTranslationMode','candidateHmdWorldPositions',
                        'diagnosticSphereWorldPositions','finalControllerWorldPositions'):
         assert diagnostic in source
-    assert "local hmdWorld,candidates=actualHmdWorld(cameraAnchor,latest.hmd)" in source
+    assert "local beamngWorld,candidates=actualHmdWorld(cameraAnchor,latest.hmd)" in source
+
+
+def predicted_camera_block():
+    source=Path('mod/lua/ge/extensions/beamngVRControllerPoses.lua').read_text()
+    return source.split('local function predictedOpenXRTrackingLocalPose()',1)[1].split('\nend\nlocal function beamCameraWorld()',1)[0]
+
+
+def test_valid_predicted_pose_is_diagnostic_and_quaternion_is_normalized():
+    source=Path('mod/lua/ge/extensions/beamngVRControllerPoses.lua').read_text()
+    block=predicted_camera_block()
+    assert 'pcall(getter)' in block
+    assert 'qnorm({qx,qy,qz,qw})' in block
+    assert 'return {p={px,py,pz},q=orientation},raw,nil' in block
+    assert 'predictedOpenXRTrackingLocalPose=predictedTrackingLocal' in source
+
+
+def test_invalid_or_missing_predicted_getter_falls_back_safely():
+    source=Path('mod/lua/ge/extensions/beamngVRControllerPoses.lua').read_text()
+    block=predicted_camera_block()
+    assert "type(getter)~='function'" in block
+    assert 'for i=1,7 do' in block and 'finiteNumber(raw[i])' in block
+    assert "value==value and value~=math.huge and value~=-math.huge" in source
+    assert 'local hmdWorld=beamngWorld' in source
+    assert 'predictedOpenXRTrackingLocalPoseError=predictedError' in source
+    assert 'cameraSourceFallbackReason=nil' in source
+
+
+def test_predicted_camera_does_not_add_packet_hmd_delta_and_composes_controller_once():
+    source=Path('mod/lua/ge/extensions/beamngVRControllerPoses.lua').read_text()
+    block=predicted_camera_block()
+    for forbidden in ('latest.hmd','rawDelta','worldDelta','core_camera','qrot(cameraAnchor'):
+        assert forbidden not in block
+    update=source.split('local function updateHand(',1)[1].split('\nend\nlocal validHmdTranslationModes',1)[0]
+    assert 'local world=compose(cameraWorld,compose(rel,offset))' in update
+    assert update.count('compose(') == 2
+
+
+def test_camera_source_mode_defaults_to_and_only_accepts_beamng_only():
+    source=Path('mod/lua/ge/extensions/beamngVRControllerPoses.lua').read_text()
+    settings=json.loads(Path('mod/settings/beamngVRControllerPoses.json').read_text())
+    assert settings['cameraSourceMode'] == 'beamngOnly'
+    setter=source.split('function M.setCameraSourceMode(mode)',1)[1].split('\nend',1)[0]
+    assert "mode~='beamngOnly'" in setter
+    assert 'return false' in setter and 'return true' in setter
+
+
+def test_tracking_local_predicted_pose_is_never_selected_as_world_camera_transform():
+    source=Path('mod/lua/ge/extensions/beamngVRControllerPoses.lua').read_text()
+    selection=source.split('local beamngWorld,candidates=',1)[1].split('state.diagnostics.cameraWorld=',1)[0]
+    assert 'local hmdWorld=beamngWorld' in selection
+    assert 'hmdWorld=predictedTrackingLocal' not in selection
+    update=source.split("updateHand('left'",1)[1].split('drawDiagnostics(',1)[0]
+    assert 'predictedTrackingLocal' not in update
 
 def test_lua_translation_modes_are_runtime_switchable_and_reset_baseline():
     source=(Path(__file__).parents[1]/'mod/lua/ge/extensions/beamngVRControllerPoses.lua').read_text()
