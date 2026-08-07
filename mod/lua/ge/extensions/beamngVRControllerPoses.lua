@@ -46,15 +46,15 @@ local function vec3ToTable(v)
 end
 local function quatToXYZW(q)
   if not q then return nil end
-  -- BeamNG's getCameraQuat()/getQuatXYZW convention is explicitly XYZW; keep project-internal XYZW.
+  -- BeamNG's core_camera.getQuat()/getQuatXYZW convention is explicitly XYZW; keep project-internal XYZW.
   if type(q)=='table' then return {q.x or q[1], q.y or q[2], q.z or q[3], q.w or q[4]} end
   return {q.x, q.y, q.z, q.w}
 end
 local function beamCameraWorld()
-  local pos=vec3ToTable(getCameraPosition and getCameraPosition())
-  local rawRot=quatToXYZW(getCameraQuat and getCameraQuat())
+  local pos=vec3ToTable(core_camera and core_camera.getPosition and core_camera.getPosition())
+  local rawRot=quatToXYZW(core_camera and core_camera.getQuat and core_camera.getQuat())
   if not pos or not rawRot or not rawRot[4] then return nil end
-  -- getCameraQuat() is the world-to-camera/view rotation.  The rigid-transform
+  -- core_camera.getQuat() is the world-to-camera/view rotation.  The rigid-transform
   -- helpers consume camera-to-world rotations, so normalize and invert once at
   -- the BeamNG API boundary.  Controller-relative rotations are not inverted.
   local cameraToWorld=qnorm(rawRot)

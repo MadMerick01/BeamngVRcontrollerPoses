@@ -167,9 +167,9 @@ session/base/time key is compatible. Protocol 2 now also carries an optional val
 VIEW pose in that base space, its flags, sample time, and tracking-space identity;
 existing protocol-2 consumers can ignore this additive `hmd` member. The Lua
 bridge baselines its translation, maps `(x,y,z)` to `(x,-z,y)`, rotates the delta
-into game-world space, and supplements the anchor from `getCameraPosition()`.
+into game-world space, and supplements the anchor from `core_camera.getPosition()`.
 It then computes `actualHmdWorld * controllerRelativeToHmd` while retaining the
-corrected `getCameraQuat()` direction. Tracking-space/session changes, time resets,
+corrected `core_camera.getQuat()` direction. Tracking-space/session changes, time resets,
 pose discontinuities, extension reload, and the exposed `resetHmdBaseline()` hook
 safely establish a new baseline without adding standing height. The bridge retains
 stale packet rejection; `OpenXR.getCameraPosRotPredictedXYZXYZW()` is deliberately
@@ -202,7 +202,7 @@ baseline, install the unpacked mod, run the manual PowerShell launch command,
 select Vulkan in the normal BeamNG launcher, enter a map, start BeamNG VR, open
 the GE Lua console, load `extensions.load('beamngVRControllerPoses')`, then
 inspect `dump(extensions.beamngVRControllerPoses.getState())` and
-`dump(getCameraPosition())`. Verify the red camera diagnostic sphere is
+`dump(core_camera.getPosition())`. Verify the red camera diagnostic sphere is
 approximately one metre from the camera, the bright-blue spheres follow the
 controllers, controller world positions are near the non-zero BeamNG camera
 position rather than `(0,0,0)`, each controller moves independently, and the
@@ -227,4 +227,4 @@ primary installation or test route.
 
 The first real headset test used package `C:\BeamNGVRcontrollerPosesTest`, BeamNG `D:\SteamLibrary\steamapps\common\BeamNG.drive`, launcher `D:\SteamLibrary\steamapps\common\BeamNG.drive\BeamNG.drive.exe`, direct Bin64 executable that must not be used for this VR test `D:\SteamLibrary\steamapps\common\BeamNG.drive\Bin64\BeamNG.drive.x64.exe`, and user folder `C:\Users\fenci\AppData\Local\BeamNG\BeamNG.drive\current`. VDXR was active from `HKLM:\SOFTWARE\Khronos\OpenXR\1` with `ActiveRuntime=C:\Program Files\Virtual Desktop Streamer\OpenXR\virtualdesktop-openxr.json`.
 
-Confirmed working: Vulkan launch through the BeamNG launcher, VDXR chaining, explicit API-layer load, Quest controller pose capture, protocol-2 UDP to `127.0.0.1:44441`, GE Lua receipt, approximately 0.0--0.5 ms packet age, continuously increasing counters, and valid positions/orientations for both controllers. The remaining Stage 1 isolation point is rendering: if blue controller spheres and the red camera test sphere have world coordinates near `getCameraPosition()` but are still invisible in VR, treat that as evidence that `debugDrawer:drawSphere` is not submitted to BeamNG's stereoscopic VR pass. The smallest next BeamNG-native fallback should be a pair of transient scene objects or TSStatic/debug mesh objects updated from the same Lua world poses, not a protocol or API-layer redesign.
+Confirmed working: Vulkan launch through the BeamNG launcher, VDXR chaining, explicit API-layer load, Quest controller pose capture, protocol-2 UDP to `127.0.0.1:44441`, GE Lua receipt, approximately 0.0--0.5 ms packet age, continuously increasing counters, and valid positions/orientations for both controllers. The remaining Stage 1 isolation point is rendering: if blue controller spheres and the red camera test sphere have world coordinates near `core_camera.getPosition()` but are still invisible in VR, treat that as evidence that `debugDrawer:drawSphere` is not submitted to BeamNG's stereoscopic VR pass. The smallest next BeamNG-native fallback should be a pair of transient scene objects or TSStatic/debug mesh objects updated from the same Lua world poses, not a protocol or API-layer redesign.

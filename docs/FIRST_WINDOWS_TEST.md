@@ -121,7 +121,7 @@ VDXR as the active OpenXR runtime.
 
     ```lua
     dump(extensions.beamngVRControllerPoses.getState())
-    dump(getCameraPosition())
+    dump(core_camera.getPosition())
     ```
 
 12. Check that the red camera diagnostic sphere is approximately one metre from
