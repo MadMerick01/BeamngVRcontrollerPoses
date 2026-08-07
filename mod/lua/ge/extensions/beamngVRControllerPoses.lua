@@ -6,6 +6,7 @@ local cameraSourceMode='beamngOnly'
 local hmdBaseline, hmdSpaceKey, previousRawHmd, previousHmdSampleTime = nil, nil, nil, nil
 local worldFromBaseQ=nil
 local headingBaseline, alignedHeading = nil, nil
+local rigidBaseline, lastBaselineRigidCandidate = nil, nil
 
 local function qmul(a,b) return {
   a[4]*b[1]+a[1]*b[4]+a[2]*b[3]-a[3]*b[2],
@@ -25,6 +26,10 @@ local function tripod(p,q,length)
   return {x=vaddScaled(p,qrot(q,{1,0,0}),length),y=vaddScaled(p,qrot(q,{0,1,0}),length),z=vaddScaled(p,qrot(q,{0,0,1}),length)}
 end
 local function compose(a,b) local p=qrot(a.q,b.p); return {p={a.p[1]+p[1],a.p[2]+p[2],a.p[3]+p[3]},q=qmul(a.q,b.q)} end
+local function inversePose(t)
+  local qi=qinv(t.q)
+  return {p=qrot(qi,{-t.p[1],-t.p[2],-t.p[3]}),q=qi}
+end
 local function mappedPosition(p)
   local o,s=cfg.axisOrder,cfg.axisSign
   return {p[o[1]]*s[1]*cfg.metresToBeamNGUnit,p[o[2]]*s[2]*cfg.metresToBeamNGUnit,p[o[3]]*s[3]*cfg.metresToBeamNGUnit}
@@ -33,6 +38,13 @@ local function mappedPose(p)
   local v=mappedPosition(p.p)
   local b=cfg.quaternionBasis
   return {p=v,q=qmul(qmul(b,p.q),qinv(b))}
+end
+local function mappedTrackingHmdPose(p,q)
+  -- The confirmed (x,y,z)->(x,-z,y) conversion is one +90-degree X basis
+  -- change, applied consistently to both components of this complete pose.
+  local root=math.sqrt(0.5)
+  local basis={root,0,0,root}
+  return {p=mappedPosition(p),q=qnorm(qmul(qmul(basis,q),qinv(basis)))}
 end
 local function distance(a,b)
   local x,y,z=a[1]-b[1],a[2]-b[2],a[3]-b[3]
@@ -59,6 +71,8 @@ end
 local function resetHmdBaseline(reason)
   hmdBaseline=nil; hmdSpaceKey=nil; previousRawHmd=nil; previousHmdSampleTime=nil; worldFromBaseQ=nil
   headingBaseline=nil; alignedHeading=nil
+  rigidBaseline=nil; lastBaselineRigidCandidate=nil
+  state.baselineValid=false
   state.diagnostics.hmdBaselineResetReason=reason
   state.diagnostics.baselineResetReason=reason
 end
@@ -114,21 +128,32 @@ local function updateHand(name, raw, cameraWorld, now)
   out.position=world.p; out.orientation=world.q; out.valid=true; out.updateCounter=latest.counter; out.ageMs=(now-latest.received)*1000
   out.relative=rel; out.rawRelative=raw
 end
-local validHmdTranslationModes={beamngOnly=true,beamngPlusHmdDelta=true,beamngMinusHmdDelta=true,beamngFixedBaseHmdDelta=true}
-local function hmdCandidates(cameraAnchor, worldDelta, fixedDelta)
+local validHmdTranslationModes={beamngOnly=true,beamngPlusHmdDelta=true,beamngMinusHmdDelta=true,beamngFixedBaseHmdDelta=true,baselineRigidTracking=true}
+local function hmdCandidates(cameraAnchor, worldDelta, fixedDelta, baselineRigidCandidate)
   -- Keep these as direct calculations from the BeamNG camera.  The test
   -- alternatives must never accumulate or derive from one another.
   return {
     beamngOnly={p={cameraAnchor.p[1],cameraAnchor.p[2],cameraAnchor.p[3]},q=cameraAnchor.q},
     beamngPlusHmdDelta={p={cameraAnchor.p[1]+worldDelta[1],cameraAnchor.p[2]+worldDelta[2],cameraAnchor.p[3]+worldDelta[3]},q=cameraAnchor.q},
     beamngMinusHmdDelta={p={cameraAnchor.p[1]-worldDelta[1],cameraAnchor.p[2]-worldDelta[2],cameraAnchor.p[3]-worldDelta[3]},q=cameraAnchor.q},
-    beamngFixedBaseHmdDelta={p={cameraAnchor.p[1]+fixedDelta[1],cameraAnchor.p[2]+fixedDelta[2],cameraAnchor.p[3]+fixedDelta[3]},q=cameraAnchor.q}
+    beamngFixedBaseHmdDelta={p={cameraAnchor.p[1]+fixedDelta[1],cameraAnchor.p[2]+fixedDelta[2],cameraAnchor.p[3]+fixedDelta[3]},q=cameraAnchor.q},
+    baselineRigidTracking=baselineRigidCandidate
   }
+end
+local function diagnosticControllerWorld(name,raw,hmdWorld)
+  if not raw or not raw.valid then return nil end
+  local rel=mappedPose(raw)
+  local offset={p=cfg[name..'PositionOffset'],q=cfg[name..'RotationOffset']}
+  return compose(hmdWorld,compose(rel,offset))
 end
 local function actualHmdWorld(cameraAnchor, hmd)
   local rawDelta,mappedDelta,worldDelta,fixedDelta=nil,nil,{0,0,0},{0,0,0}
   local rawQ,mappedQ=nil,nil
   local valid=hmd and hmd.valid and hmd.p and hmd.q
+  if valid then
+    for i=1,3 do if not finiteNumber(hmd.p[i]) then valid=false end end
+    for i=1,4 do if not finiteNumber(hmd.q[i]) then valid=false end end
+  end
   if valid then
   local key=tostring(hmd.session or '')..':'..tostring(hmd.base or '')
   local jump=cfg.hmdRecenterJumpMetres or 0.35
@@ -139,7 +164,10 @@ local function actualHmdWorld(cameraAnchor, hmd)
   rawQ=qnorm(hmd.q)
   local root=math.sqrt(0.5)
   local basis={root,0,0,root}
-  mappedQ=qnorm(qmul(qmul(basis,rawQ),qinv(basis)))
+  if rawQ then mappedQ=qnorm(qmul(qmul(basis,rawQ),qinv(basis))) end
+  if not rawQ or not mappedQ then valid=false end
+  if valid then
+  local mappedTrackingHmd=mappedTrackingHmdPose(hmd.p,rawQ)
   if not hmdBaseline then
     worldFromBaseQ=qnorm(qmul(qnorm(cameraAnchor.q),qinv(mappedQ)))
     hmdBaseline={
@@ -148,6 +176,14 @@ local function actualHmdWorld(cameraAnchor, hmd)
       session=hmd.session,base=hmd.base,sampleTime=hmd.sampleTime
     }
     hmdSpaceKey=key
+    local baselineBeamngCameraWorld={p={cameraAnchor.p[1],cameraAnchor.p[2],cameraAnchor.p[3]},q=qnorm(cameraAnchor.q)}
+    rigidBaseline={
+      beamngCameraWorld=baselineBeamngCameraWorld,
+      trackingHmdRaw={p={hmd.p[1],hmd.p[2],hmd.p[3]},q=rawQ},
+      trackingHmdMapped=mappedTrackingHmd
+    }
+    -- Complete rigid transform: baseline camera world * inverse(mapped tracking HMD).
+    rigidBaseline.worldFromTracking=compose(baselineBeamngCameraWorld,inversePose(mappedTrackingHmd))
   end
   previousRawHmd={hmd.p[1],hmd.p[2],hmd.p[3]}; previousHmdSampleTime=hmd.sampleTime
 
@@ -158,11 +194,27 @@ local function actualHmdWorld(cameraAnchor, hmd)
   mappedDelta=mappedPosition(rawDelta)
   worldDelta=qrot(cameraAnchor.q,mappedDelta)
   fixedDelta=qrot(worldFromBaseQ,mappedDelta)
+  -- Complete current pose composition. No position delta is independently added.
+  lastBaselineRigidCandidate=compose(rigidBaseline.worldFromTracking,mappedTrackingHmd)
   end
-  local candidates=hmdCandidates(cameraAnchor,worldDelta,fixedDelta)
+  end
+  local candidates=hmdCandidates(cameraAnchor,worldDelta,fixedDelta,lastBaselineRigidCandidate)
   local mode=cfg.hmdTranslationMode
   if not validHmdTranslationModes[mode] then mode='beamngOnly'; cfg.hmdTranslationMode=mode end
-  local selected=candidates[mode]
+  local selected=candidates[mode] or candidates.beamngOnly
+  state.selectedHmdTranslationMode=mode
+  state.baselineValid=rigidBaseline~=nil
+  state.baselineResetReason=state.diagnostics.baselineResetReason
+  state.baselineBeamngCameraWorld=rigidBaseline and rigidBaseline.beamngCameraWorld or nil
+  state.baselineTrackingHmdRaw=rigidBaseline and rigidBaseline.trackingHmdRaw or nil
+  state.baselineTrackingHmdMapped=rigidBaseline and rigidBaseline.trackingHmdMapped or nil
+  state.baselineWorldFromTracking=rigidBaseline and rigidBaseline.worldFromTracking or nil
+  state.currentTrackingHmdRaw=valid and {p={hmd.p[1],hmd.p[2],hmd.p[3]},q=rawQ} or state.currentTrackingHmdRaw
+  state.currentTrackingHmdMapped=valid and mappedTrackingHmdPose(hmd.p,rawQ) or state.currentTrackingHmdMapped
+  state.baselineRigidCandidateHmdWorld=lastBaselineRigidCandidate
+  state.trackingWorldRight=rigidBaseline and qrot(rigidBaseline.worldFromTracking.q,{1,0,0}) or nil
+  state.trackingWorldForward=rigidBaseline and qrot(rigidBaseline.worldFromTracking.q,{0,1,0}) or nil
+  state.trackingWorldUp=rigidBaseline and qrot(rigidBaseline.worldFromTracking.q,{0,0,1}) or nil
   state.diagnostics.beamngCameraPosition={cameraAnchor.p[1],cameraAnchor.p[2],cameraAnchor.p[3]}
   state.diagnostics.rawOpenXrHmdPosition=valid and {hmd.p[1],hmd.p[2],hmd.p[3]} or nil
   state.diagnostics.rawHmdPose=hmd
@@ -206,6 +258,7 @@ local function actualHmdWorld(cameraAnchor, hmd)
     beamngMinusHmdDelta=candidates.beamngMinusHmdDelta.p,
     beamngFixedBaseHmdDelta=candidates.beamngFixedBaseHmdDelta.p
   }
+  state.diagnostics.candidateHmdWorldPositions.baselineRigidTracking=candidates.baselineRigidTracking and candidates.baselineRigidTracking.p or nil
   state.diagnostics.fixedBaseCandidateHmdWorldPosition=candidates.beamngFixedBaseHmdDelta.p
   state.diagnostics.actualHmdWorldPosition=selected.p -- retained for PR #13 diagnostic consumers
   return selected,candidates
@@ -270,7 +323,8 @@ local function drawDiagnostics(candidates,hmdWorld)
     local green=compose(candidates.beamngPlusHmdDelta,{p=localPos,q={0,0,0,1}})
     local yellow=compose(candidates.beamngMinusHmdDelta,{p=localPos,q={0,0,0,1}})
     local white=compose(candidates.beamngFixedBaseHmdDelta,{p=localPos,q={0,0,0,1}})
-    state.diagnostics.diagnosticSphereWorldPositions={beamngOnly=red.p,beamngPlusHmdDelta=green.p,beamngMinusHmdDelta=yellow.p,beamngFixedBaseHmdDelta=white.p}
+    local purple=candidates.baselineRigidTracking and compose(candidates.baselineRigidTracking,{p=localPos,q={0,0,0,1}}) or nil
+    state.diagnostics.diagnosticSphereWorldPositions={beamngOnly=red.p,beamngPlusHmdDelta=green.p,beamngMinusHmdDelta=yellow.p,beamngFixedBaseHmdDelta=white.p,baselineRigidTracking=purple and purple.p or nil}
     state.diagnostics.fixedBaseDiagnosticSphereWorldPosition=white.p
     state.diagnostics.cameraTestSphereWorld=red.p -- backward-compatible name
     local radius=(cfg.cameraTestSphere.diameter or cfg.sphereDiameter)/2
@@ -278,7 +332,10 @@ local function drawDiagnostics(candidates,hmdWorld)
     debugDrawer:drawSphere(vec3(green.p),radius,ColorF(0,1,0,1))
     debugDrawer:drawSphere(vec3(yellow.p),radius,ColorF(1,1,0,1))
     debugDrawer:drawSphere(vec3(white.p),radius,ColorF(1,1,1,1))
-    for name,item in pairs({beamngOnly=red,beamngPlusHmdDelta=green,beamngMinusHmdDelta=yellow,beamngFixedBaseHmdDelta=white}) do
+    if purple then debugDrawer:drawSphere(vec3(purple.p),radius,ColorF(0.65,0,1,1)) end
+    local diagnosticItems={beamngOnly=red,beamngPlusHmdDelta=green,beamngMinusHmdDelta=yellow,beamngFixedBaseHmdDelta=white}
+    if purple then diagnosticItems.baselineRigidTracking=purple end
+    for name,item in pairs(diagnosticItems) do
       local endpoints=tripod(item.p,item.q,tripodState.axisLength)
       tripodState.diagnostic[name]={centre=item.p,orientation=item.q,endpoints=endpoints}
       tripodState.originLines[name]={start=candidates[name].p,endpoint=item.p}
@@ -336,6 +393,15 @@ function M.onPreRender(dtReal,dtSim,dtRaw)
   state.diagnostics.finalSelectedCameraWorldTransform=state.finalSelectedCameraWorldTransform
   state.diagnostics.cameraWorld=hmdWorld
   updateHand('left',latest.left,hmdWorld,now); updateHand('right',latest.right,hmdWorld,now)
+  state.beamngOnlyLeftControllerWorld=diagnosticControllerWorld('left',latest.left,candidates.beamngOnly)
+  state.beamngOnlyRightControllerWorld=diagnosticControllerWorld('right',latest.right,candidates.beamngOnly)
+  state.baselineRigidLeftControllerWorld=candidates.baselineRigidTracking and diagnosticControllerWorld('left',latest.left,candidates.baselineRigidTracking) or nil
+  state.baselineRigidRightControllerWorld=candidates.baselineRigidTracking and diagnosticControllerWorld('right',latest.right,candidates.baselineRigidTracking) or nil
+  state.diagnostics.beamngOnlyLeftControllerWorld=state.beamngOnlyLeftControllerWorld
+  state.diagnostics.beamngOnlyRightControllerWorld=state.beamngOnlyRightControllerWorld
+  state.diagnostics.baselineRigidLeftControllerWorld=state.baselineRigidLeftControllerWorld
+  state.diagnostics.baselineRigidRightControllerWorld=state.baselineRigidRightControllerWorld
+  for _,field in ipairs({'baselineValid','baselineResetReason','baselineBeamngCameraWorld','baselineTrackingHmdRaw','baselineTrackingHmdMapped','baselineWorldFromTracking','currentTrackingHmdRaw','currentTrackingHmdMapped','baselineRigidCandidateHmdWorld','trackingWorldRight','trackingWorldForward','trackingWorldUp'}) do state.diagnostics[field]=state[field] end
   state.diagnostics.finalControllerWorldPositions={
     left=state.leftControllerWorld.valid and state.leftControllerWorld.position or nil,
     right=state.rightControllerWorld.valid and state.rightControllerWorld.position or nil

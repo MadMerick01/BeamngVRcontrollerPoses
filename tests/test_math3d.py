@@ -335,3 +335,87 @@ def test_fixed_delta_zero_at_baseline_on_return_and_during_full_rotation():
     for degrees in (0, 90, 180, 270, 360):
         # Orientation changes are deliberately absent from the positional formula.
         close(fixed_base_world_delta(fixed, baseline, baseline), (0., 0., 0.))
+
+# PR #26 complete baseline rigid-transform tests. These are additive to the
+# controller, native hot-path, and PR #25 safety suite above.
+from beamng_vr_poses.math3d import (
+    baseline_rigid_controller_world,
+    baseline_rigid_hmd_world,
+    baseline_world_from_tracking,
+    map_openxr_pose,
+)
+
+
+def baseline_candidate(camera, baseline_hmd, current_hmd):
+    fixed = baseline_world_from_tracking(camera, baseline_hmd)
+    return fixed, baseline_rigid_hmd_world(fixed, current_hmd)
+
+
+def test_baseline_rigid_complete_inverse_round_trip():
+    pose=Pose((3.,-4.,5.),qnorm((.2,-.3,.1,.8)))
+    identity=compose(inverse(pose),pose)
+    close(identity.position,(0.,0.,0.));close(identity.orientation,I)
+
+
+def test_pose_inverse_rotates_negative_translated_position():
+    pose=Pose((2.,-3.,4.),(0.,0.,sin(pi/4),cos(pi/4)))
+    assert inverse(pose).position != pytest.approx(tuple(-v for v in pose.position))
+    close(compose(pose,inverse(pose)).position,(0.,0.,0.))
+
+
+def test_baseline_rigid_identity_baseline():
+    fixed,current=baseline_candidate(Pose((0.,0.,0.),I),Pose((0.,0.,0.),I),Pose((0.,0.,0.),I))
+    assert fixed==Pose((0.,0.,0.),I);assert current==fixed
+
+
+def test_baseline_rigid_nonzero_tracking_hmd_baseline_position():
+    camera=Pose((10.,20.,30.),I); hmd=Pose((2.,1.7,-3.),I)
+    _,current=baseline_candidate(camera,hmd,hmd)
+    close(current.position,camera.position);close(current.orientation,camera.orientation)
+
+
+def test_baseline_rigid_nonidentity_hmd_baseline_orientation():
+    camera=Pose((10.,20.,30.),qnorm((0.,0.,.2,.9)))
+    hmd=Pose((2.,1.7,-3.),qnorm((0.,.3,0.,.8)))
+    _,current=baseline_candidate(camera,hmd,hmd)
+    close(current.position,camera.position);close(current.orientation,camera.orientation)
+
+
+@pytest.mark.parametrize('degrees',(0,90,180,270))
+def test_baseline_rigid_beamng_world_cardinal_yaws(degrees):
+    yaw=(0.,0.,sin(degrees*pi/360),cos(degrees*pi/360))
+    camera=Pose((-715.,106.,119.),yaw); baseline=Pose((0.,0.,0.),I)
+    _,moved=baseline_candidate(camera,baseline,Pose((1.,0.,0.),I))
+    expected=compose(camera,Pose((1.,0.,0.),I))
+    close(moved.position,expected.position)
+
+
+def test_same_tracking_movement_uses_fixed_baseline_not_current_hmd_yaw():
+    fixed=baseline_world_from_tracking(Pose((10.,20.,30.),qnorm((0.,0.,.2,.98))),Pose((0.,0.,0.),I))
+    results=[]
+    for degrees in (0,90,180,270):
+        current=Pose((.4,0.,0.),(0.,sin(degrees*pi/360),0.,cos(degrees*pi/360)))
+        results.append(baseline_rigid_hmd_world(fixed,current))
+    for result in results[1:]: close(result.position,results[0].position)
+    assert results[1].orientation != pytest.approx(results[0].orientation)
+
+
+def test_baseline_rigid_left_and_right_controllers_are_independent():
+    hmd=Pose((5.,6.,7.),I); offset=Pose((0.,0.,0.),I)
+    left=baseline_rigid_controller_world(hmd,Pose((-.4,1.,0.),I),offset)
+    right=baseline_rigid_controller_world(hmd,Pose((.4,1.,0.),I),offset)
+    close(left.position,(4.6,7.,7.));close(right.position,(5.4,7.,7.))
+
+
+def test_zero_hmd_movement_exactly_reproduces_nonzero_camera_world():
+    camera=Pose((-715.,106.,119.),qnorm((.1,-.2,.3,.9)))
+    baseline=Pose((2.,1.7,-3.),qnorm((0.,.3,0.,.8)))
+    _,current=baseline_candidate(camera,baseline,baseline)
+    close(current.position,camera.position);close(current.orientation,camera.orientation)
+
+
+def test_complete_openxr_pose_uses_one_basis_for_position_and_orientation():
+    mapped=map_openxr_pose(Pose((0.,1.,-2.),(0.,sin(pi/4),0.,cos(pi/4))))
+    close(mapped.position,(0.,2.,1.))
+    assert abs(mapped.orientation[2])==pytest.approx(sin(pi/4))
+    assert abs(mapped.orientation[0])<1e-6 and abs(mapped.orientation[1])<1e-6

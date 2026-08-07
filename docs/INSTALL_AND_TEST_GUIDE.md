@@ -6,6 +6,29 @@ API layer: it must not replace `openxr_loader.dll`, it must not be registered as
 an OpenXR runtime, and it must not change the system `ActiveRuntime` registry
 value.
 
+## PR #26 stationary-world acceptance test
+
+Park the vehicle and do not move the game camera controls. Load the extension,
+then run:
+
+```lua
+extensions.beamngVRControllerPoses.setHmdTranslationMode('baselineRigidTracking')
+```
+
+Face forward and remain still for the fresh baseline. Move the headset right,
+left, forward, backward, up, and down, returning after each movement. Repeat
+lateral and forward/back movement at the baseline heading, 90 degrees left,
+180 degrees, 90 degrees right, and 360 degrees/baseline. Success means the
+purple sphere remains attached to the rendered HMD, blue spheres remain aligned
+with independent physical controllers, movement directions do not change with
+head yaw, all positions return to baseline, and no drift accumulates.
+
+Save `dump(extensions.beamngVRControllerPoses.getState())` and `beamng.log`. On
+failure, do not tune gains, smoothing, or offsets; report constant axis
+permutation, constant sign inversion, yaw-dependent rotation, doubled
+translation, or failure to return. Restore PR #25 immediately with
+`extensions.beamngVRControllerPoses.setHmdTranslationMode('beamngOnly')`.
+
 ## 1. Prerequisites
 
 Before installing the mod, prepare the Windows test machine with:

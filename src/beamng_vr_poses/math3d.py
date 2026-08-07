@@ -76,6 +76,31 @@ def map_openxr_orientation(orientation):
     return qnorm(qmul(qmul(basis, qnorm(orientation)), quaternion_inverse(basis)))
 
 
+def map_openxr_pose(pose: Pose) -> Pose:
+    """Map a complete OpenXR pose with one shared change of basis."""
+    return Pose(map_openxr_position(pose.position),
+                map_openxr_orientation(pose.orientation))
+
+
+def baseline_world_from_tracking(beamng_camera_world: Pose,
+                                 baseline_tracking_hmd: Pose) -> Pose:
+    """Return the complete, fixed BeamNG-world-from-tracking transform."""
+    return compose(beamng_camera_world,
+                   inverse(map_openxr_pose(baseline_tracking_hmd)))
+
+
+def baseline_rigid_hmd_world(world_from_tracking: Pose,
+                             current_tracking_hmd: Pose) -> Pose:
+    return compose(world_from_tracking, map_openxr_pose(current_tracking_hmd))
+
+
+def baseline_rigid_controller_world(candidate_hmd_world: Pose,
+                                    controller_relative_to_hmd: Pose,
+                                    calibration_offset: Pose) -> Pose:
+    return compose(candidate_hmd_world,
+                   compose(controller_relative_to_hmd, calibration_offset))
+
+
 def fixed_world_from_base(world_from_hmd, base_from_hmd):
     """Derive the fixed BeamNG world-from-OpenXR-base rotation at baseline."""
     mapped = map_openxr_orientation(base_from_hmd)

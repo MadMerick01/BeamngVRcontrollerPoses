@@ -14,6 +14,33 @@ never changes a pose returned to BeamNG. SteamVR/OpenVR is **not required**. The
 old Python OpenVR publisher remains only as an unsupported fallback entry point,
 `beamng-vr-poses-openvr-fallback`, so the earlier work remains recoverable.
 
+## PR #26 stationary-world rigid-transform test
+
+`beamngOnly` remains the default. The explicitly selected
+`baselineRigidTracking` candidate captures complete BeamNG-camera-world and
+mapped native-HMD tracking-local poses, then evaluates:
+
+```text
+baselineWorldFromTracking = baselineBeamngCameraWorld * inverse(baselineTrackingHmdMapped)
+candidateHmdWorld = baselineWorldFromTracking * currentTrackingHmdMapped
+candidateControllerWorld = candidateHmdWorld * controllerRelativeToHmd * controllerCalibrationOffset
+```
+
+The native packet HMD is authoritative because it shares the controller base
+space and sample time. The predicted OpenXR getter remains diagnostic-only.
+This first test requires a stationary vehicle and stationary game camera; it
+does not attempt to solve camera-anchor motion and room-scale motion together.
+
+```lua
+extensions.beamngVRControllerPoses.setHmdTranslationMode('baselineRigidTracking')
+-- Immediate PR #25 fallback:
+extensions.beamngVRControllerPoses.setHmdTranslationMode('beamngOnly')
+```
+
+Selecting the candidate establishes a fresh baseline. Existing red, green,
+yellow, and white diagnostics remain; purple is the new complete-pose candidate
+one metre forward. Blue controller spheres follow the selected mode.
+
 ## Choose an installation route
 
 Use a Windows x64 artifact from a successful post-documentation `Windows x64 layer` workflow run for

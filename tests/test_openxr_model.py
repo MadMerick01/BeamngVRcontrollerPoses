@@ -253,7 +253,7 @@ def test_camera_axis_spheres_use_only_the_beamng_camera_anchor():
 
 def test_default_translation_mode_and_confirmed_axis_mapping_are_preserved():
     settings=json.loads((Path(__file__).parents[1]/'mod/settings/beamngVRControllerPoses.json').read_text())
-    assert settings['hmdTranslationMode'] == 'beamngFixedBaseHmdDelta'
+    assert settings['hmdTranslationMode'] == 'beamngOnly'
     assert settings['axisOrder'] == [1,3,2]
     assert settings['axisSign'] == [1,-1,1]
 
@@ -306,3 +306,56 @@ def test_locate_hot_path_still_has_no_project_locks_io_or_allocation_after_stabi
     for forbidden in ('lock_guard','writerMutex','sendto(','fopen(','sleep_for','make_shared','new ','candidateSlot('):
         assert forbidden not in body
     assert 'sample.candidate=space' in body
+
+
+def test_pr26_mode_is_additive_and_beamng_only_remains_available():
+    source=lua_source()
+    modes=source.split('local validHmdTranslationModes=',1)[1].split('\n',1)[0]
+    for mode in ('beamngOnly','beamngPlusHmdDelta','beamngMinusHmdDelta','beamngFixedBaseHmdDelta','baselineRigidTracking'):
+        assert mode+'=true' in modes
+    assert "if mode=='baselineRigidTracking'" not in source  # existing setter reset applies uniformly
+
+
+def test_pr26_uses_complete_pose_inverse_and_composition():
+    source=lua_source()
+    inverse_block=source.split('local function inversePose(t)',1)[1].split('\nend',1)[0]
+    assert 'qrot(qi,{-t.p[1],-t.p[2],-t.p[3]})' in inverse_block
+    assert 'compose(baselineBeamngCameraWorld,inversePose(mappedTrackingHmd))' in source
+    assert 'compose(rigidBaseline.worldFromTracking,mappedTrackingHmd)' in source
+
+
+def test_pr26_required_state_and_basis_diagnostics_are_additive():
+    source=lua_source()
+    for field in ('selectedHmdTranslationMode','baselineValid','baselineResetReason',
+      'baselineBeamngCameraWorld','baselineTrackingHmdRaw','baselineTrackingHmdMapped',
+      'baselineWorldFromTracking','currentTrackingHmdRaw','currentTrackingHmdMapped',
+      'baselineRigidCandidateHmdWorld','baselineRigidLeftControllerWorld',
+      'baselineRigidRightControllerWorld','beamngOnlyLeftControllerWorld',
+      'beamngOnlyRightControllerWorld','trackingWorldRight','trackingWorldForward','trackingWorldUp'):
+        assert 'state.'+field in source
+
+
+def test_pr26_invalid_hmd_does_not_replace_last_rigid_candidate():
+    source=lua_source(); block=source.split('local function actualHmdWorld',1)[1].split('\nlocal function receive',1)[0]
+    assert 'lastBaselineRigidCandidate=compose' in block
+    assert 'hmdCandidates(cameraAnchor,worldDelta,fixedDelta,lastBaselineRigidCandidate)' in block
+    assert 'finiteNumber(hmd.p[i])' in block and 'finiteNumber(hmd.q[i])' in block
+
+
+def test_pr26_preserves_all_existing_diagnostic_spheres_and_adds_purple():
+    source=lua_source(); draw=source.split('local function drawDiagnostics',1)[1].split('\nfunction M.onExtensionLoaded',1)[0]
+    for candidate in ('beamngOnly','beamngPlusHmdDelta','beamngMinusHmdDelta','beamngFixedBaseHmdDelta'):
+        assert candidate in draw
+    assert 'baselineRigidTracking=purple' in draw
+    assert 'ColorF(0.65,0,1,1)' in draw
+    assert 'cameraAxisSphereWorldPositions' in draw
+    assert 'drawTripod' in draw and 'drawSphereStick' in draw
+
+
+def test_pr26_reset_paths_include_existing_space_time_recenter_and_manual_rules():
+    source=lua_source(); block=source.split('local function actualHmdWorld',1)[1].split('\nlocal function receive',1)[0]
+    assert "resetHmdBaseline('tracking space changed')" in block
+    assert "resetHmdBaseline('sample time reset')" in block
+    assert "resetHmdBaseline('HMD pose discontinuity')" in block
+    assert "resetHmdBaseline('extension loaded')" in source
+    assert "resetHmdBaseline('explicit reset')" in source
