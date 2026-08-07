@@ -166,16 +166,23 @@ computes `inverse(hmdInBase) * controllerInBase`. Samples are merged only when t
 session/base/time key is compatible. Protocol 2 now also carries an optional valid
 VIEW pose in that base space, its flags, sample time, and tracking-space identity;
 existing protocol-2 consumers can ignore this additive `hmd` member. The Lua
-bridge now uses BeamNG's complete predicted OpenXR camera pose directly and computes
-`predictedCameraWorld * controllerRelativeToHmd * controllerCalibrationOffset`
-without adding the packet HMD delta or `core_camera.getPosition()`. The previous
-BeamNG camera reconstruction remains available as the safe `beamngOnly` fallback.
-Tracking-space/session changes, time resets,
-pose discontinuities, extension reload, and the exposed `resetHmdBaseline()` hook
-safely establish a new baseline without adding standing height. The bridge retains
-stale packet rejection, exposes both modes through `setCameraSourceMode()`, and
-draws the existing red headset diagnostic, a magenta predicted-camera sphere, and
-two bright-blue controller spheres.
+bridge uses the reconstructed BeamNG world camera as the controller parent and
+computes `beamngWorld * controllerRelativeToHmd * controllerCalibrationOffset`.
+Live headset evidence confirmed that
+`OpenXR.getCameraPosRotPredictedXYZXYZW()` is available, but its values are a
+tracking-local pose close to the OpenXR origin (about `(-0.013, 0.009, 0.013)` in
+the observed run), not a complete BeamNG world camera pose. Directly treating it
+as world space moved the diagnostic and both blue controller spheres near the
+map origin. The validated and normalized getter is retained in `getState()` and
+logs under explicit `predictedOpenXRTrackingLocal*` diagnostic names only; it
+cannot select the controller parent and is not drawn as a magenta world sphere.
+Tracking-space/session changes, time resets, pose discontinuities, extension
+reload, and the exposed `resetHmdBaseline()` hook safely establish a new baseline
+without adding standing height. Stale-packet rejection and the existing
+red/green/yellow/white diagnostics, controller tripods, and origin lines remain.
+This restoration does not claim to solve the original yaw-dependent translation
+problem; it restores the last visible BeamNG-camera behavior after the predicted
+pose experiment.
 
 ## Install the BeamNG mod and test
 
@@ -202,19 +209,17 @@ VDXR, optionally confirm ordinary BeamNG Vulkan VR without the layer as a fresh
 baseline, install the unpacked mod, run the manual PowerShell launch command,
 select Vulkan in the normal BeamNG launcher, enter a map, start BeamNG VR, open
 the GE Lua console, load `extensions.load('beamngVRControllerPoses')`, then
-inspect `dump(extensions.beamngVRControllerPoses.getState())`. Face the known good
-map direction and confirm the magenta sphere is directly ahead. Translate the head
-left, right, forward, backward, up, and down; rotate through 90, 180, 270, and 360
-degrees; and at every heading translate left and right. Success means the magenta
-sphere stays exactly one metre ahead independent of map heading and both blue
-spheres remain aligned with the physical controllers. Keep the red core-camera
-sphere for comparison. If the magenta sphere has the same heading-dependent error,
-capture the raw predicted getter values from `getState()` and stop rather than
-adding a correction. If magenta is correct but blue is wrong, investigate the
-controller-relative composition or quaternion basis. Disabling/occluding either
-controller hides its sphere, and stopping publication hides both within
-`staleAfterMs`. Inspect
-`extensions.beamngVRControllerPoses.getState()` for the world transforms. Calibration,
+inspect `dump(extensions.beamngVRControllerPoses.getState())`. Confirm the red,
+green, yellow, and white camera diagnostics remain visible and both bright-blue
+spheres follow the physical controllers. The
+`predictedOpenXRTrackingLocalPosition` field may remain near the OpenXR origin;
+it is raw diagnostic evidence and is intentionally never drawn or used as a
+world transform. Translate and rotate through the existing test matrix to gather
+evidence, but do not interpret this corrective restoration as a fix for the
+original yaw-dependent translation issue. Disabling/occluding either controller
+hides its sphere, and stopping publication hides both within `staleAfterMs`.
+Inspect `extensions.beamngVRControllerPoses.getState()` for the world transforms.
+Calibration,
 sphere size/colour, port, stale threshold and log cadence remain in
 `mod/settings/beamngVRControllerPoses.json`.
 
