@@ -73,6 +73,17 @@ local function resetHmdBaseline(reason)
   headingBaseline=nil; alignedHeading=nil
   rigidBaseline=nil; lastBaselineRigidCandidate=nil
   state.baselineValid=false
+  state.baselineRigidCandidateHmdWorld=nil
+  state.baselineRigidPositionBeamngRotationHmdWorld=nil
+  state.baselineRigidPosition=nil; state.baselineRigidTrackingOrientation=nil
+  state.selectedHybridOrientation=nil
+  state.hybridLeftControllerWorld=nil; state.hybridRightControllerWorld=nil
+  state.hybridDiagnosticSphereWorldPosition=nil
+  state.diagnostics.baselineRigidPositionBeamngRotationHmdWorld=nil
+  state.diagnostics.baselineRigidPosition=nil; state.diagnostics.baselineRigidTrackingOrientation=nil
+  state.diagnostics.selectedHybridOrientation=nil
+  state.diagnostics.hybridLeftControllerWorld=nil; state.diagnostics.hybridRightControllerWorld=nil
+  state.diagnostics.hybridDiagnosticSphereWorldPosition=nil
   state.diagnostics.hmdBaselineResetReason=reason
   state.diagnostics.baselineResetReason=reason
 end
@@ -128,16 +139,23 @@ local function updateHand(name, raw, cameraWorld, now)
   out.position=world.p; out.orientation=world.q; out.valid=true; out.updateCounter=latest.counter; out.ageMs=(now-latest.received)*1000
   out.relative=rel; out.rawRelative=raw
 end
-local validHmdTranslationModes={beamngOnly=true,beamngPlusHmdDelta=true,beamngMinusHmdDelta=true,beamngFixedBaseHmdDelta=true,baselineRigidTracking=true}
+local validHmdTranslationModes={beamngOnly=true,beamngPlusHmdDelta=true,beamngMinusHmdDelta=true,beamngFixedBaseHmdDelta=true,baselineRigidTracking=true,baselineRigidPositionBeamngRotation=true}
 local function hmdCandidates(cameraAnchor, worldDelta, fixedDelta, baselineRigidCandidate)
   -- Keep these as direct calculations from the BeamNG camera.  The test
   -- alternatives must never accumulate or derive from one another.
+  local hybridCandidate=baselineRigidCandidate and {
+    -- Deliberately preserve the complete PR #26 candidate position verbatim,
+    -- while using the already-corrected live BeamNG camera-to-world rotation.
+    p={baselineRigidCandidate.p[1],baselineRigidCandidate.p[2],baselineRigidCandidate.p[3]},
+    q=qnorm(cameraAnchor.q)
+  } or nil
   return {
     beamngOnly={p={cameraAnchor.p[1],cameraAnchor.p[2],cameraAnchor.p[3]},q=cameraAnchor.q},
     beamngPlusHmdDelta={p={cameraAnchor.p[1]+worldDelta[1],cameraAnchor.p[2]+worldDelta[2],cameraAnchor.p[3]+worldDelta[3]},q=cameraAnchor.q},
     beamngMinusHmdDelta={p={cameraAnchor.p[1]-worldDelta[1],cameraAnchor.p[2]-worldDelta[2],cameraAnchor.p[3]-worldDelta[3]},q=cameraAnchor.q},
     beamngFixedBaseHmdDelta={p={cameraAnchor.p[1]+fixedDelta[1],cameraAnchor.p[2]+fixedDelta[2],cameraAnchor.p[3]+fixedDelta[3]},q=cameraAnchor.q},
-    baselineRigidTracking=baselineRigidCandidate
+    baselineRigidTracking=baselineRigidCandidate,
+    baselineRigidPositionBeamngRotation=hybridCandidate
   }
 end
 local function diagnosticControllerWorld(name,raw,hmdWorld)
@@ -199,8 +217,10 @@ local function actualHmdWorld(cameraAnchor, hmd)
   end
   end
   local candidates=hmdCandidates(cameraAnchor,worldDelta,fixedDelta,lastBaselineRigidCandidate)
-  local mode=cfg.hmdTranslationMode
+  local requestedMode=cfg.hmdTranslationMode
+  local mode=requestedMode
   if not validHmdTranslationModes[mode] then mode='beamngOnly'; cfg.hmdTranslationMode=mode end
+  if mode=='baselineRigidPositionBeamngRotation' and not candidates.baselineRigidPositionBeamngRotation then mode='beamngOnly' end
   local selected=candidates[mode] or candidates.beamngOnly
   state.selectedHmdTranslationMode=mode
   state.baselineValid=rigidBaseline~=nil
@@ -212,6 +232,11 @@ local function actualHmdWorld(cameraAnchor, hmd)
   state.currentTrackingHmdRaw=valid and {p={hmd.p[1],hmd.p[2],hmd.p[3]},q=rawQ} or state.currentTrackingHmdRaw
   state.currentTrackingHmdMapped=valid and mappedTrackingHmdPose(hmd.p,rawQ) or state.currentTrackingHmdMapped
   state.baselineRigidCandidateHmdWorld=lastBaselineRigidCandidate
+  state.baselineRigidPositionBeamngRotationHmdWorld=candidates.baselineRigidPositionBeamngRotation
+  state.baselineRigidPosition=lastBaselineRigidCandidate and lastBaselineRigidCandidate.p or nil
+  state.baselineRigidTrackingOrientation=lastBaselineRigidCandidate and lastBaselineRigidCandidate.q or nil
+  state.beamngLiveCameraOrientation=qnorm(cameraAnchor.q)
+  state.selectedHybridOrientation=candidates.baselineRigidPositionBeamngRotation and candidates.baselineRigidPositionBeamngRotation.q or nil
   state.trackingWorldRight=rigidBaseline and qrot(rigidBaseline.worldFromTracking.q,{1,0,0}) or nil
   state.trackingWorldForward=rigidBaseline and qrot(rigidBaseline.worldFromTracking.q,{0,1,0}) or nil
   state.trackingWorldUp=rigidBaseline and qrot(rigidBaseline.worldFromTracking.q,{0,0,1}) or nil
@@ -252,6 +277,8 @@ local function actualHmdWorld(cameraAnchor, hmd)
     alignedErrorDegrees=relativeHeading and alignedHeading and wrapDegrees180(relativeHeading-alignedHeading) or nil
   }
   state.diagnostics.selectedHmdTranslationMode=mode
+  state.diagnostics.requestedHmdTranslationMode=requestedMode
+  state.diagnostics.hybridFallbackReason=requestedMode=='baselineRigidPositionBeamngRotation' and mode=='beamngOnly' and 'valid baseline-rigid candidate unavailable' or nil
   state.diagnostics.candidateHmdWorldPositions={
     beamngOnly=candidates.beamngOnly.p,
     beamngPlusHmdDelta=candidates.beamngPlusHmdDelta.p,
@@ -259,6 +286,7 @@ local function actualHmdWorld(cameraAnchor, hmd)
     beamngFixedBaseHmdDelta=candidates.beamngFixedBaseHmdDelta.p
   }
   state.diagnostics.candidateHmdWorldPositions.baselineRigidTracking=candidates.baselineRigidTracking and candidates.baselineRigidTracking.p or nil
+  state.diagnostics.candidateHmdWorldPositions.baselineRigidPositionBeamngRotation=candidates.baselineRigidPositionBeamngRotation and candidates.baselineRigidPositionBeamngRotation.p or nil
   state.diagnostics.fixedBaseCandidateHmdWorldPosition=candidates.beamngFixedBaseHmdDelta.p
   state.diagnostics.actualHmdWorldPosition=selected.p -- retained for PR #13 diagnostic consumers
   return selected,candidates
@@ -324,7 +352,10 @@ local function drawDiagnostics(candidates,hmdWorld)
     local yellow=compose(candidates.beamngMinusHmdDelta,{p=localPos,q={0,0,0,1}})
     local white=compose(candidates.beamngFixedBaseHmdDelta,{p=localPos,q={0,0,0,1}})
     local purple=candidates.baselineRigidTracking and compose(candidates.baselineRigidTracking,{p=localPos,q={0,0,0,1}}) or nil
-    state.diagnostics.diagnosticSphereWorldPositions={beamngOnly=red.p,beamngPlusHmdDelta=green.p,beamngMinusHmdDelta=yellow.p,beamngFixedBaseHmdDelta=white.p,baselineRigidTracking=purple and purple.p or nil}
+    local cyan=candidates.baselineRigidPositionBeamngRotation and compose(candidates.baselineRigidPositionBeamngRotation,{p=localPos,q={0,0,0,1}}) or nil
+    state.diagnostics.diagnosticSphereWorldPositions={beamngOnly=red.p,beamngPlusHmdDelta=green.p,beamngMinusHmdDelta=yellow.p,beamngFixedBaseHmdDelta=white.p,baselineRigidTracking=purple and purple.p or nil,baselineRigidPositionBeamngRotation=cyan and cyan.p or nil}
+    state.hybridDiagnosticSphereWorldPosition=cyan and cyan.p or nil
+    state.diagnostics.hybridDiagnosticSphereWorldPosition=state.hybridDiagnosticSphereWorldPosition
     state.diagnostics.fixedBaseDiagnosticSphereWorldPosition=white.p
     state.diagnostics.cameraTestSphereWorld=red.p -- backward-compatible name
     local radius=(cfg.cameraTestSphere.diameter or cfg.sphereDiameter)/2
@@ -333,8 +364,10 @@ local function drawDiagnostics(candidates,hmdWorld)
     debugDrawer:drawSphere(vec3(yellow.p),radius,ColorF(1,1,0,1))
     debugDrawer:drawSphere(vec3(white.p),radius,ColorF(1,1,1,1))
     if purple then debugDrawer:drawSphere(vec3(purple.p),radius,ColorF(0.65,0,1,1)) end
+    if cyan then debugDrawer:drawSphere(vec3(cyan.p),radius,ColorF(0,1,1,1)) end
     local diagnosticItems={beamngOnly=red,beamngPlusHmdDelta=green,beamngMinusHmdDelta=yellow,beamngFixedBaseHmdDelta=white}
     if purple then diagnosticItems.baselineRigidTracking=purple end
+    if cyan then diagnosticItems.baselineRigidPositionBeamngRotation=cyan end
     for name,item in pairs(diagnosticItems) do
       local endpoints=tripod(item.p,item.q,tripodState.axisLength)
       tripodState.diagnostic[name]={centre=item.p,orientation=item.q,endpoints=endpoints}
@@ -397,11 +430,15 @@ function M.onPreRender(dtReal,dtSim,dtRaw)
   state.beamngOnlyRightControllerWorld=diagnosticControllerWorld('right',latest.right,candidates.beamngOnly)
   state.baselineRigidLeftControllerWorld=candidates.baselineRigidTracking and diagnosticControllerWorld('left',latest.left,candidates.baselineRigidTracking) or nil
   state.baselineRigidRightControllerWorld=candidates.baselineRigidTracking and diagnosticControllerWorld('right',latest.right,candidates.baselineRigidTracking) or nil
+  state.hybridLeftControllerWorld=candidates.baselineRigidPositionBeamngRotation and diagnosticControllerWorld('left',latest.left,candidates.baselineRigidPositionBeamngRotation) or nil
+  state.hybridRightControllerWorld=candidates.baselineRigidPositionBeamngRotation and diagnosticControllerWorld('right',latest.right,candidates.baselineRigidPositionBeamngRotation) or nil
   state.diagnostics.beamngOnlyLeftControllerWorld=state.beamngOnlyLeftControllerWorld
   state.diagnostics.beamngOnlyRightControllerWorld=state.beamngOnlyRightControllerWorld
   state.diagnostics.baselineRigidLeftControllerWorld=state.baselineRigidLeftControllerWorld
   state.diagnostics.baselineRigidRightControllerWorld=state.baselineRigidRightControllerWorld
-  for _,field in ipairs({'baselineValid','baselineResetReason','baselineBeamngCameraWorld','baselineTrackingHmdRaw','baselineTrackingHmdMapped','baselineWorldFromTracking','currentTrackingHmdRaw','currentTrackingHmdMapped','baselineRigidCandidateHmdWorld','trackingWorldRight','trackingWorldForward','trackingWorldUp'}) do state.diagnostics[field]=state[field] end
+  state.diagnostics.hybridLeftControllerWorld=state.hybridLeftControllerWorld
+  state.diagnostics.hybridRightControllerWorld=state.hybridRightControllerWorld
+  for _,field in ipairs({'baselineValid','baselineResetReason','baselineBeamngCameraWorld','baselineTrackingHmdRaw','baselineTrackingHmdMapped','baselineWorldFromTracking','currentTrackingHmdRaw','currentTrackingHmdMapped','baselineRigidCandidateHmdWorld','baselineRigidPositionBeamngRotationHmdWorld','baselineRigidPosition','baselineRigidTrackingOrientation','beamngLiveCameraOrientation','selectedHybridOrientation','trackingWorldRight','trackingWorldForward','trackingWorldUp'}) do state.diagnostics[field]=state[field] end
   state.diagnostics.finalControllerWorldPositions={
     left=state.leftControllerWorld.valid and state.leftControllerWorld.position or nil,
     right=state.rightControllerWorld.valid and state.rightControllerWorld.position or nil
