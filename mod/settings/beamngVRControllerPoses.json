@@ -52,12 +52,18 @@
   ],
   "logIntervalSeconds": 5.0,
   "cameraTestSphere": {
-    "enabled": true,
+    "enabled": false,
     "offset": [
       0,
       1,
       0
     ],
+    "diameter": 0.12
+  },
+  "cameraAxisSpheres": {
+    "enabled": true,
+    "distance": 1.0,
+    "spread": 0.3,
     "diameter": 0.12
   },
   "axisTripods": {
