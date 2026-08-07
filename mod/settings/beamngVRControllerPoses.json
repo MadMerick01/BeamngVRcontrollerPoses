@@ -55,6 +55,15 @@
     1.0
   ],
   "logIntervalSeconds": 5.0,
+  "nativeSourcePoseDiagnostics": {
+    "enabled": false,
+    "pollIntervalSeconds": 0.0,
+    "logIntervalSeconds": 1.0,
+    "gripSphereDiameter": 0.07,
+    "aimSphereDiameter": 0.05,
+    "otherSphereDiameter": 0.03,
+    "maxVisibleCandidatesPerHand": 8
+  },
   "cameraTestSphere": {
     "enabled": true,
     "offset": [
