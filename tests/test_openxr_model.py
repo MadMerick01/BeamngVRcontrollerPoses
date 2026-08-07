@@ -140,18 +140,39 @@ def test_lua_uses_beamng_camera_world_transform_and_diagnostics():
 
 def test_lua_translation_modes_are_runtime_switchable_and_reset_baseline():
     source=(Path(__file__).parents[1]/'mod/lua/ge/extensions/beamngVRControllerPoses.lua').read_text()
-    for mode in ('beamngOnly','beamngPlusHmdDelta','beamngMinusHmdDelta'):
+    for mode in ('beamngOnly','beamngPlusHmdDelta','beamngMinusHmdDelta','beamngFixedBaseHmdDelta'):
         assert mode in source
     setter=source.split('function M.setHmdTranslationMode(mode)',1)[1].split('\nend',1)[0]
     assert "resetHmdBaseline('translation mode changed to '..mode)" in setter
     assert 'return false' in setter and 'return true' in setter
+
+
+def test_fixed_baseline_lifecycle_and_diagnostics_are_explicit():
+    source=Path('mod/lua/ge/extensions/beamngVRControllerPoses.lua').read_text()
+    for reason in ('tracking space changed', 'sample time reset', 'HMD pose discontinuity',
+                   'explicit reset', 'extension loaded', 'translation mode changed to '):
+        assert reason in source
+    for field in ('rawBaseFromHmdPosition','rawBaseFromHmdOrientation',
+                  'mappedBaseFromHmdOrientation','baselineBaseFromHmdPosition',
+                  'baselineBaseFromHmdOrientation','baselineMappedHmdOrientation',
+                  'baselineBeamngCameraOrientation','fixedWorldFromBaseOrientation',
+                  'rawBaseDelta','mappedBaseDelta','liveCameraWorldDelta',
+                  'fixedBaseWorldDelta','fixedBaseCandidateHmdWorldPosition',
+                  'fixedBaseDiagnosticSphereWorldPosition','finalLeftControllerWorldPosition',
+                  'finalRightControllerWorldPosition','baselineResetReason',
+                  'fixedBaseWorldRight','fixedBaseWorldForward','fixedBaseWorldUp'):
+        assert field in source
+    derivation='worldFromBaseQ=qnorm(qmul(qnorm(cameraAnchor.q),qinv(mappedQ)))'
+    assert derivation in source
+    assert 'fixedDelta=qrot(worldFromBaseQ,mappedDelta)' in source
 
 def test_lua_candidate_spheres_are_independent_and_have_required_colours():
     source=(Path(__file__).parents[1]/'mod/lua/ge/extensions/beamngVRControllerPoses.lua').read_text()
     assert 'local red=compose(candidates.beamngOnly' in source
     assert 'local green=compose(candidates.beamngPlusHmdDelta' in source
     assert 'local yellow=compose(candidates.beamngMinusHmdDelta' in source
-    for colour in ('ColorF(1,0,0,1)', 'ColorF(0,1,0,1)', 'ColorF(1,1,0,1)'):
+    assert 'local white=compose(candidates.beamngFixedBaseHmdDelta' in source
+    for colour in ('ColorF(1,0,0,1)', 'ColorF(0,1,0,1)', 'ColorF(1,1,0,1)', 'ColorF(1,1,1,1)'):
         assert colour in source
 
 
@@ -177,7 +198,7 @@ def test_camera_axis_spheres_use_only_the_beamng_camera_anchor():
 
 def test_default_translation_mode_and_confirmed_axis_mapping_are_preserved():
     settings=json.loads((Path(__file__).parents[1]/'mod/settings/beamngVRControllerPoses.json').read_text())
-    assert settings['hmdTranslationMode'] == 'beamngOnly'
+    assert settings['hmdTranslationMode'] == 'beamngFixedBaseHmdDelta'
     assert settings['axisOrder'] == [1,3,2]
     assert settings['axisSign'] == [1,-1,1]
 

@@ -3,7 +3,7 @@
   "listenPort": 44441,
   "staleAfterMs": 150,
   "hmdRecenterJumpMetres": 0.35,
-  "hmdTranslationMode": "beamngOnly",
+  "hmdTranslationMode": "beamngFixedBaseHmdDelta",
   "metresToBeamNGUnit": 1.0,
   "axisOrder": [
     1,
@@ -52,7 +52,7 @@
   ],
   "logIntervalSeconds": 5.0,
   "cameraTestSphere": {
-    "enabled": false,
+    "enabled": true,
     "offset": [
       0,
       1,

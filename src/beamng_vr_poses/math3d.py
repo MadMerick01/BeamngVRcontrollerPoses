@@ -67,6 +67,26 @@ def map_openxr_position(position):
     return (x, -z, y)
 
 
+OPENXR_TO_BEAMNG_BASIS = (sqrt(0.5), 0.0, 0.0, sqrt(0.5))
+
+
+def map_openxr_orientation(orientation):
+    """Change an OpenXR orientation into the (x, -z, y) BeamNG basis."""
+    basis = qnorm(OPENXR_TO_BEAMNG_BASIS)
+    return qnorm(qmul(qmul(basis, qnorm(orientation)), quaternion_inverse(basis)))
+
+
+def fixed_world_from_base(world_from_hmd, base_from_hmd):
+    """Derive the fixed BeamNG world-from-OpenXR-base rotation at baseline."""
+    mapped = map_openxr_orientation(base_from_hmd)
+    return qnorm(qmul(qnorm(world_from_hmd), quaternion_inverse(mapped)))
+
+
+def fixed_base_world_delta(world_from_base, current_position, baseline_position):
+    raw = tuple(current_position[i] - baseline_position[i] for i in range(3))
+    return qrotate(world_from_base, map_openxr_position(raw))
+
+
 def actual_hmd_world(camera_anchor: Pose, hmd_in_base: Pose, baseline):
     """Supplement BeamNG's anchor with baseline-relative room-scale motion."""
     raw_delta = tuple(hmd_in_base.position[i] - baseline[i] for i in range(3))
@@ -80,14 +100,18 @@ HMD_TRANSLATION_MODES = (
     "beamngOnly",
     "beamngPlusHmdDelta",
     "beamngMinusHmdDelta",
+    "beamngFixedBaseHmdDelta",
 )
 
 
-def hmd_translation_candidates(camera_anchor: Pose, hmd_in_base: Pose | None, baseline):
-    """Return the three independently calculated Lua diagnostic candidates."""
+def hmd_translation_candidates(camera_anchor: Pose, hmd_in_base: Pose | None, baseline,
+                               world_from_base=None):
+    """Return independently calculated Lua diagnostic candidates."""
     raw_delta = ((0.0, 0.0, 0.0) if hmd_in_base is None or baseline is None else
                  tuple(hmd_in_base.position[i] - baseline[i] for i in range(3)))
     world_delta = qrotate(camera_anchor.orientation, map_openxr_position(raw_delta))
+    fixed_delta = ((0.0, 0.0, 0.0) if world_from_base is None else
+                   qrotate(world_from_base, map_openxr_position(raw_delta)))
     return {
         "beamngOnly": Pose(tuple(camera_anchor.position[i] for i in range(3)),
                            camera_anchor.orientation),
@@ -97,11 +121,15 @@ def hmd_translation_candidates(camera_anchor: Pose, hmd_in_base: Pose | None, ba
         "beamngMinusHmdDelta": Pose(
             tuple(camera_anchor.position[i] - world_delta[i] for i in range(3)),
             camera_anchor.orientation),
+        "beamngFixedBaseHmdDelta": Pose(
+            tuple(camera_anchor.position[i] + fixed_delta[i] for i in range(3)),
+            camera_anchor.orientation),
     }
 
 
 def select_hmd_translation(camera_anchor: Pose, hmd_in_base: Pose | None, baseline,
-                           mode: str) -> Pose:
+                           mode: str, world_from_base=None) -> Pose:
     if mode not in HMD_TRANSLATION_MODES:
         raise ValueError(f"invalid HMD translation mode: {mode}")
-    return hmd_translation_candidates(camera_anchor, hmd_in_base, baseline)[mode]
+    return hmd_translation_candidates(camera_anchor, hmd_in_base, baseline,
+                                      world_from_base)[mode]

@@ -163,3 +163,46 @@ Select-String `
 Close BeamNG and either run `scripts\Disable-BeamNGVRPoses.ps1` or close the
 launching PowerShell. Start BeamNG from its normal launcher to confirm recovery.
 No loader DLL needs restoration because the package does not replace it.
+
+## Fixed tracking-base HMD translation acceptance test
+
+This test answers only whether the 360-degree yaw dependence has been removed.
+If unrelated scale or vertical issues appear, record them separately; do not
+conceal them with gains.
+
+1. Download a fresh post-PR Windows artifact.
+2. Extract it into a new empty folder.
+3. Install the updated Lua and settings files.
+4. Launch BeamNG through the established manual PowerShell procedure above.
+5. Enter a map and enable VR.
+6. Face the previously identified perfect map direction.
+7. Load the extension and remain still while the baseline is established.
+8. Confirm the selected mode with:
+
+   ```lua
+   dump(
+     extensions.beamngVRControllerPoses.getState()
+       .diagnostics.selectedHmdTranslationMode
+   )
+   ```
+
+   The expected value is `beamngFixedBaseHmdDelta`.
+9. Confirm the white sphere and blue controller spheres begin correctly.
+10. Translate the headset right/left, forward/backward and up/down.
+11. Turn approximately 90 degrees without recentering and repeat.
+12. Repeat at 180, 270 and 360 degrees.
+13. At every heading, translate the headset laterally and hold still.
+14. The correction succeeds if lateral movement no longer becomes depth
+    movement; the result no longer depends on map-facing direction; the white
+    sphere remains rigidly attached to the physical headset; blue spheres remain
+    aligned with the physical controllers; 180 degrees no longer reverses
+    translation; and returning to 360 degrees produces no discontinuity.
+15. Repeat after BeamNG VR recenter.
+16. Repeat from a different spawn position in the same map.
+17. Repeat in a second map.
+
+Restore the previous camera-only baseline immediately, if needed, with:
+
+```lua
+extensions.beamngVRControllerPoses.setHmdTranslationMode('beamngOnly')
+```
