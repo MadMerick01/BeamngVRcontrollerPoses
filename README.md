@@ -41,6 +41,34 @@ Selecting the candidate establishes a fresh baseline. Existing red, green,
 yellow, and white diagnostics remain; purple is the new complete-pose candidate
 one metre forward. Blue controller spheres follow the selected mode.
 
+## PR #27 baseline-rigid position with live BeamNG rotation
+
+The additive `baselineRigidPositionBeamngRotation` mode deliberately combines
+two independently headset-verified sources: HMD world position comes unchanged
+from the PR #26 baseline-rigid tracking calculation, while HMD world orientation
+comes from the corrected live BeamNG camera-to-world orientation
+(`cameraAnchor.q`). The camera quaternion is normalized but is **not** inverted
+again. The mode neither adds nor rotates another translation delta.
+
+This remains a stationary-vehicle, stationary-game-camera test and does not yet
+claim vehicle-motion support. Select it explicitly; selection clears the old
+rigid baseline so the next valid native HMD sample establishes a fresh one:
+
+```lua
+extensions.load('beamngVRControllerPoses')
+extensions.beamngVRControllerPoses.setHmdTranslationMode(
+  'baselineRigidPositionBeamngRotation'
+)
+```
+
+Remain still and face forward briefly, then translate on all three axes and
+physically turn through approximately 90 and 180 degrees. Repeat translation at
+each heading, return to the original pose, use BeamNG VR recenter, and repeat.
+The cyan sphere is the hybrid candidate one metre forward; the purple PR #26
+candidate remains available for comparison, and blue controller spheres follow
+the selected hybrid. If a valid rigid candidate is unavailable, selection falls
+back safely to `beamngOnly` for that frame rather than creating an origin pose.
+
 ## Choose an installation route
 
 Use a Windows x64 artifact from a successful post-documentation `Windows x64 layer` workflow run for
