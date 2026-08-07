@@ -322,15 +322,16 @@ and after rebase, discontinuity, rebased transform, hybrid HMD/controllers, and
 orange-sphere position. Rebase event logs are throttled; ordinary render frames
 do not emit an event log.
 
-## Moving camera anchor with room-scale motion subtraction
+## Absolute moving camera anchor with corrected physical offset
 
-The `baselineRigidPositionBeamngRotationRebasedMovingAnchor` mode extends the
-proven rebased transform for stick-controlled walking. Because BeamNG's core
-camera delta includes both locomotion and physical HMD translation, this mode
-first subtracts the physical world movement already supplied by the current
-OpenXR tracking-local HMD pose. Only the remaining game-locomotion delta moves
-the tracking-world attachment; the raw core-camera delta is never applied
-directly. Artificial-yaw rebasing then runs around the translated HMD pivot.
+The `baselineRigidPositionBeamngRotationRebasedMovingAnchor` mode anchors the
+PR #28 orange reference's baseline-relative physical displacement to the
+current absolute BeamNG camera position. Every frame computes `camera position
++ (current orange reference - baseline orange reference)` directly and uses
+the corrected BeamNG camera quaternion for orientation. Camera motion is not
+accumulated, and physical motion is neither subtracted nor reconstructed.
+Artificial-yaw rebasing remains pivot-preserving, so the existing offset stays
+continuous while later room-scale translation follows the new heading.
 
 The existing pink diagnostic sphere remains assigned to this corrected mode,
 while orange continues to show the unchanged PR #28 candidate. Enable it with
@@ -345,7 +346,8 @@ extensions.beamngVRControllerPoses.setHmdTranslationMode(
 
 Remain still briefly to establish the baseline. Test physical translation,
 natural and artificial rotation, stick walking, and simultaneous physical plus
-stick movement. Diagnostics report raw core-camera, physical tracking, residual
-game-locomotion and reconstruction-error vectors and magnitudes. Discontinuities
-in either the raw or residual delta establish a fresh baseline. `beamngOnly`
-remains the configured default.
+stick movement. Diagnostics report the baseline/current orange reference,
+physical offset, current absolute anchor, final HMD/controller poses, reference
+transform, yaw rebase information, source labels, and reset/jump state. A large
+camera step is used only to detect a discontinuity and establish a fresh
+baseline. `beamngOnly` remains the configured default.

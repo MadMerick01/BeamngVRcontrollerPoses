@@ -127,55 +127,23 @@ def pivot_preserving_world_from_tracking_rebase(world_from_tracking: Pose,
     return rebased_transform, before, after
 
 
-def translate_world_from_tracking(world_from_tracking: Pose, beamng_anchor_delta) -> Pose:
-    """Translate a tracking attachment by an unrotated BeamNG-world delta."""
-    delta = tuple(float(value) for value in beamng_anchor_delta)
-    if len(delta) != 3 or not all(isfinite(value) for value in delta):
-        raise ValueError("BeamNG anchor delta must contain three finite values")
-    return Pose(tuple(world_from_tracking.position[i] + delta[i] for i in range(3)),
-                world_from_tracking.orientation)
+def anchor_physical_offset_to_current_camera(current_camera_position,
+                                             baseline_reference_hmd_position,
+                                             current_reference_hmd_position):
+    """Anchor an absolute PR #28 physical displacement to today's camera pose.
 
-
-def separate_camera_motion(raw_core_camera_delta, physical_tracking_world_delta):
-    """Remove room-scale HMD motion already represented by the OpenXR pose."""
-    raw = tuple(float(value) for value in raw_core_camera_delta)
-    physical = tuple(float(value) for value in physical_tracking_world_delta)
-    if (len(raw) != 3 or len(physical) != 3 or
-            not all(isfinite(value) for value in raw + physical)):
-        raise ValueError("camera motion components must be finite vec3 values")
-    return tuple(raw[i] - physical[i] for i in range(3))
-
-
-def moving_anchor_update(world_from_tracking: Pose, previous_anchor, current_anchor,
-                         mapped_tracking_hmd: Pose, previous_final_hmd_position,
-                         camera_orientation,
-                         jump_metres=5.0, yaw_threshold_degrees=.75):
-    """Apply only game locomotion, then PR #28's pivot-preserving yaw rebase."""
-    from math import dist, isfinite
-    previous, current = tuple(previous_anchor), tuple(current_anchor)
-    if len(previous) != 3 or len(current) != 3 or not all(
-            isfinite(value) for value in previous + current):
-        raise ValueError("BeamNG anchor positions must be finite vec3 values")
-    prior_final = tuple(previous_final_hmd_position)
-    if len(prior_final) != 3 or not all(isfinite(value) for value in prior_final):
-        raise ValueError("previous final HMD position must be a finite vec3")
-    pre_anchor = compose(world_from_tracking, mapped_tracking_hmd)
-    physical = tuple(pre_anchor.position[i] - prior_final[i] for i in range(3))
-    raw = tuple(current[i] - previous[i] for i in range(3))
-    residual = separate_camera_motion(raw, physical)
-    if (dist(raw, (0., 0., 0.)) > jump_metres or
-            dist(residual, (0., 0., 0.)) > jump_metres):
-        return (world_from_tracking, raw, physical, residual, True, False,
-                pre_anchor, pre_anchor)
-    moved = translate_world_from_tracking(world_from_tracking, residual)
-    target = target_world_from_tracking_orientation(camera_orientation,
-                                                    mapped_tracking_hmd.orientation)
-    rebased = quaternion_angular_difference_degrees(moved.orientation, target) > yaw_threshold_degrees
-    if rebased:
-        moved, _, _ = pivot_preserving_world_from_tracking_rebase(
-            moved, mapped_tracking_hmd, target)
-    final = compose(moved, mapped_tracking_hmd)
-    return moved, raw, physical, residual, False, rebased, pre_anchor, final
+    No previous-frame camera position is accepted: both outputs are calculated
+    directly from the three current/baseline absolute positions.
+    """
+    camera = tuple(float(value) for value in current_camera_position)
+    baseline = tuple(float(value) for value in baseline_reference_hmd_position)
+    current = tuple(float(value) for value in current_reference_hmd_position)
+    if (len(camera) != 3 or len(baseline) != 3 or len(current) != 3 or
+            not all(isfinite(value) for value in camera + baseline + current)):
+        raise ValueError("camera and reference HMD positions must be finite vec3 values")
+    physical_offset = tuple(current[i] - baseline[i] for i in range(3))
+    final_position = tuple(camera[i] + physical_offset[i] for i in range(3))
+    return physical_offset, final_position
 
 
 def fixed_world_from_base(world_from_hmd, base_from_hmd):

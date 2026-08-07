@@ -1,4 +1,9 @@
-"""PR #30 moving BeamNG camera-anchor motion-separation tests."""
+"""PR #31 absolute moving-anchor tests.
+
+These replace PR #29's accumulated camera-delta and PR #30's physical/residual
+separation assertions. Live headset evidence disproved both models: the current
+camera is the absolute anchor and PR #28 orange supplies the physical offset.
+"""
 import json
 from math import cos, inf, pi, sin
 from pathlib import Path
@@ -6,8 +11,9 @@ from pathlib import Path
 import pytest
 
 from beamng_vr_poses.math3d import (
-    Pose, baseline_rigid_controller_world, compose, moving_anchor_update,
-    pivot_preserving_world_from_tracking_rebase, separate_camera_motion,
+    Pose, anchor_physical_offset_to_current_camera,
+    baseline_rigid_controller_world, compose,
+    pivot_preserving_world_from_tracking_rebase,
 )
 
 I = (0., 0., 0., 1.)
@@ -20,159 +26,128 @@ def yaw(degrees):
     return (0., 0., sin(angle), cos(angle))
 
 
-def update(attachment, previous_anchor, current_anchor, tracking_hmd,
-           previous_final, camera_q=I, jump=5.):
-    return moving_anchor_update(attachment, previous_anchor, current_anchor,
-                                tracking_hmd, previous_final, camera_q, jump)
+def anchored(camera, baseline, current, orientation=I):
+    offset, final = anchor_physical_offset_to_current_camera(camera, baseline, current)
+    return offset, Pose(final, orientation)
 
 
-def test_physical_only_motion_is_not_applied_twice():
-    result = update(Pose((0., 0., 0.), I), (0., 0., 0.), (1., 2., 3.),
-                    Pose((1., 2., 3.), I), (0., 0., 0.))
-    moved, raw, physical, residual, jump, _, _, final = result
-    assert not jump
-    assert raw == physical == (1., 2., 3.)
-    assert residual == pytest.approx((0., 0., 0.))
-    assert moved.position == (0., 0., 0.)
+def test_baseline_is_zero_and_final_equals_current_anchor():
+    offset, final = anchored((10., 20., 30.), (2., 3., 4.), (2., 3., 4.))
+    assert offset == (0., 0., 0.)
+    assert final.position == (10., 20., 30.)
+
+
+def test_physical_only_uses_orange_offset_once():
+    offset, final = anchored((10., 20., 30.), (2., 3., 4.), (2.5, 2., 6.))
+    assert offset == (.5, -1., 2.)
+    assert final.position == (10.5, 19., 32.)
+
+
+def test_stick_walking_only_follows_absolute_current_anchor():
+    offset, final = anchored((99., -4., 8.), (1., 2., 3.), (1., 2., 3.))
+    assert offset == (0., 0., 0.)
+    assert final.position == (99., -4., 8.)
+
+
+def test_simultaneous_movement_includes_each_component_once():
+    offset, final = anchored((5., 7., 9.), (1., 1., 1.), (3., 0., 1.5))
+    assert offset == (2., -1., .5)
+    assert final.position == (7., 6., 9.5)
+
+
+def test_natural_yaw_uses_camera_orientation_without_rotating_offset():
+    offset, final = anchored((0., 0., 0.), (0., 0., 0.), (1., 2., 3.), yaw(90))
+    assert offset == (1., 2., 3.)
     assert final.position == (1., 2., 3.)
+    assert final.orientation == yaw(90)
 
 
-def test_stick_walking_only_applies_raw_core_delta():
-    moved, raw, physical, residual, *_ = update(
-        Pose((4., 5., 6.), I), (1., 1., 1.), (3., 0., 1.),
-        Pose((0., 0., 0.), I), (4., 5., 6.))
-    assert raw == residual == (2., -1., 0.)
-    assert physical == (0., 0., 0.)
-    assert moved.position == (6., 4., 6.)
-
-
-def test_simultaneous_physical_and_stick_motion_are_each_applied_once():
-    result = update(Pose((0., 0., 0.), I), (0., 0., 0.), (1.25, 2.5, 0.),
-                    Pose((.25, .5, 0.), I), (0., 0., 0.))
-    moved, raw, physical, residual, *_, final = result
-    assert raw == (1.25, 2.5, 0.) and physical == (.25, .5, 0.)
-    assert residual == (1., 2., 0.)
-    assert moved.position == (1., 2., 0.)
-    assert final.position == (1.25, 2.5, 0.)
-
-
-@pytest.mark.parametrize("natural_yaw", [0, 45, 90, 180, 270])
-def test_physical_translation_at_natural_yaws_has_no_residual(natural_yaw):
-    physical = (0.3, -0.2, 0.1)
-    result = update(Pose((0., 0., 0.), I), (0., 0., 0.), physical,
-                    Pose(physical, yaw(natural_yaw)), (0., 0., 0.), yaw(natural_yaw))
-    assert result[3] == pytest.approx((0., 0., 0.))
-
-
-def test_physical_translation_after_ninety_degree_artificial_turn_remains_once():
-    attachment, _, _ = pivot_preserving_world_from_tracking_rebase(
-        Pose((0., 0., 0.), I), Pose((0., 0., 0.), I), yaw(90))
+def test_artificial_yaw_rebase_preserves_existing_offset_and_rotates_later_axes():
     tracking = Pose((1., 0., 0.), I)
-    pre = compose(attachment, tracking)
-    result = update(attachment, (0., 0., 0.), pre.position, tracking,
-                    (0., 0., 0.), yaw(90))
-    assert result[3] == pytest.approx((0., 0., 0.))
-    assert result[-1].position == pytest.approx(pre.position)
+    transform, before, after = pivot_preserving_world_from_tracking_rebase(
+        Pose((0., 0., 0.), I), tracking, yaw(90))
+    assert after.position == pytest.approx(before.position)
+    baseline = (0., 0., 0.)
+    assert anchored((4., 5., 6.), baseline, after.position)[1].position == pytest.approx((5., 5., 6.))
+    later = compose(transform, Pose((2., 0., 0.), I))
+    assert later.position != pytest.approx(after.position)
 
 
-def test_stick_walking_after_ninety_degree_turn_uses_world_delta():
-    attachment, _, _ = pivot_preserving_world_from_tracking_rebase(
-        Pose((0., 0., 0.), I), Pose((0., 0., 0.), I), yaw(90))
-    result = update(attachment, (0., 0., 0.), (0., 2., 0.),
-                    Pose((0., 0., 0.), I), (0., 0., 0.), yaw(90))
-    assert result[3] == (0., 2., 0.)
-    assert result[0].position == pytest.approx((0., 2., 0.))
+@pytest.mark.parametrize("degrees", [180, 360])
+def test_large_artificial_yaw_has_no_pivot_drift(degrees):
+    tracking = Pose((.3, -.8, 1.6), I)
+    _, before, after = pivot_preserving_world_from_tracking_rebase(
+        Pose((4., 7., -2.), I), tracking, yaw(degrees))
+    assert after.position == pytest.approx(before.position)
 
 
-def test_snap_turn_and_translation_same_frame_preserve_position():
-    result = update(Pose((3., 4., 1.), I), (0., 0., 0.), (1., -2., 0.),
-                    Pose((.2, .3, 1.6), I), (3.2, 4.3, 2.6), yaw(90))
-    assert result[5]
-    assert result[-1].position == pytest.approx((4.2, 2.3, 2.6))
+def test_recenter_and_later_camera_motion_are_absolute():
+    leaned = (3., 4., 5.)
+    assert anchored((20., 30., 40.), leaned, leaned)[1].position == (20., 30., 40.)
+    assert anchored((24., 29., 42.), leaned, leaned)[1].position == (24., 29., 42.)
 
 
-def test_smooth_turn_while_walking_does_not_duplicate_physical_motion():
-    attachment, anchor, final = Pose((0., 0., 0.), I), (0., 0., 0.), (0., 0., 0.)
-    for angle in (1., 2., 3., 4.):
-        tracking = Pose((angle / 100., 0., 0.), I)
-        current = (angle / 100. + .25, 0., 0.)
-        result = update(attachment, anchor, current, tracking, final, yaw(angle))
-        attachment, anchor, final = result[0], current, result[-1].position
-    assert final == pytest.approx((.29, 0., 0.))
+def test_returning_camera_has_no_accumulated_error():
+    baseline = current = (1., 1., 1.)
+    anchored((50., 0., 0.), baseline, current)
+    assert anchored((0., 0., 0.), baseline, current)[1].position == (0., 0., 0.)
 
 
-def test_physical_return_to_start_returns_candidate():
-    attachment = Pose((10., 20., 30.), I)
-    first = update(attachment, (0., 0., 0.), (1., 0., 0.), Pose((1., 0., 0.), I), attachment.position)
-    second = update(first[0], (1., 0., 0.), (0., 0., 0.), Pose((0., 0., 0.), I), first[-1].position)
-    assert second[-1].position == pytest.approx(attachment.position)
-
-
-def test_equal_forward_backward_game_deltas_return_attachment():
-    attachment = Pose((10., 20., 30.), I)
-    forward = update(attachment, (0., 0., 0.), (2., 0., 0.), Pose((0., 0., 0.), I), attachment.position)
-    backward = update(forward[0], (2., 0., 0.), (0., 0., 0.), Pose((0., 0., 0.), I), forward[-1].position)
-    assert backward[0].position == pytest.approx(attachment.position)
-
-
-def test_both_controllers_receive_combined_motion_once():
-    result = update(Pose((0., 0., 0.), I), (0., 0., 0.), (1.5, 0., 0.),
-                    Pose((.5, 0., 0.), I), (0., 0., 0.))
-    hmd = result[-1]
-    for x in (-.2, .2):
-        controller = baseline_rigid_controller_world(hmd, Pose((x, .3, 0.), I), Pose((0., 0., 0.), I))
-        assert controller.position == pytest.approx((1.5 + x, .3, 0.))
+def test_controllers_share_final_hmd_and_remain_independent():
+    hmd = anchored((10., 20., 30.), (0., 0., 0.), (.5, 0., 0.))[1]
+    left = baseline_rigid_controller_world(hmd, Pose((-.2, .3, 0.), I), Pose((0., 0., 0.), I))
+    right = baseline_rigid_controller_world(hmd, Pose((.2, .3, 0.), I), Pose((0., 0., 0.), I))
+    assert left.position == pytest.approx((10.3, 20.3, 30.))
+    assert right.position == pytest.approx((10.7, 20.3, 30.))
 
 
 @pytest.mark.parametrize("bad", [(inf, 0., 0.), (float("nan"), 0., 0.)])
-def test_non_finite_data_is_rejected_before_state_can_advance(bad):
+def test_non_finite_inputs_are_rejected(bad):
     with pytest.raises(ValueError):
-        update(Pose((0., 0., 0.), I), (0., 0., 0.), bad,
-               Pose((0., 0., 0.), I), (0., 0., 0.))
+        anchor_physical_offset_to_current_camera(bad, (0., 0., 0.), (0., 0., 0.))
 
 
-def test_jump_clears_residual_application():
-    original = Pose((1., 2., 3.), I)
-    result = update(original, (0., 0., 0.), (5.01, 0., 0.),
-                    Pose((0., 0., 0.), I), original.position)
-    assert result[4] and result[0] == original
-
-
-def test_motion_separation_helper_validates_and_reconstructs():
-    raw, physical = (3., -1., .5), (1., .25, -.5)
-    residual = separate_camera_motion(raw, physical)
-    assert residual == (2., -1.25, 1.)
-    assert tuple(physical[i] + residual[i] for i in range(3)) == raw
-    with pytest.raises(ValueError):
-        separate_camera_motion((inf, 0., 0.), (0., 0., 0.))
-
-
-def test_lifecycle_mode_and_diagnostics_are_wired_additively():
+def test_lua_absolute_formula_reset_jump_and_diagnostics_are_wired():
     lua = LUA.read_text()
-    reset = lua.split("local function resetHmdBaseline", 1)[1].split("local function vec3ToTable", 1)[0]
-    for field in ("movingWorldFromTracking=nil", "previousBeamngCameraAnchorPosition=nil",
-                  "previousFinalMovingHmdWorldPosition=nil"):
-        assert field in reset
     assert "resetHmdBaseline('translation mode changed to '..mode)" in lua
+    assert "resetHmdBaseline('BeamNG camera anchor jump')" in lua
     assert "baselineRigidPositionBeamngRotationRebasedMovingAnchor=true" in lua
     assert "ColorF(1,0.2,0.6,1)" in lua
-    for diagnostic in ("rawCoreCameraDelta", "physicalTrackingWorldDelta",
-                       "residualGameLocomotionDelta", "movingReconstructionError"):
+    for diagnostic in (
+        "baselineOrangeReferenceHmdWorldPosition", "currentOrangeReferenceHmdWorldPosition",
+        "physicalOffsetFromRecenter", "physicalOffsetFromRecenterMagnitude",
+        "currentBeamngCameraAnchorPosition", "absoluteMovingHmdWorldPosition",
+        "absoluteMovingHmdWorldOrientation", "absoluteMovingHybridHmdWorld",
+        "absoluteMovingLeftControllerWorld", "absoluteMovingRightControllerWorld",
+        "absoluteMovingDiagnosticSphereWorldPosition", "movingReferenceWorldFromTracking",
+        "movingArtificialYawAlignmentDeltaDegrees", "movingArtificialYawRebaseCount",
+        "movingAnchorResetReason", "movingAnchorJumpDetected",
+    ):
         assert diagnostic in lua
+    assert "currentAnchor[1]+physicalOffsetFromRecenter[1]" in lua
 
 
-def test_previous_candidate_formulas_and_default_remain_unchanged():
+def test_disproven_operational_models_are_absent():
     lua = LUA.read_text()
+    for obsolete in (
+        "rawCoreCameraDelta", "residualGameLocomotionDelta",
+        "accumulatedBeamngAnchorTranslation", "physicalMotionSubtracted",
+        "movingReconstructionError", "previousFinalMovingHmdWorldPosition",
+    ):
+        assert obsolete not in lua
+    assert "anchorStepMagnitude" in lua  # discontinuity detection only
+
+
+def test_sources_previous_formulas_and_default_remain_unchanged():
+    lua = LUA.read_text()
+    assert "anchorSource='core_camera.getPosition'" in lua
+    assert "physicalOffsetSource='PR28 orange reference from native OpenXR HMD'" in lua
+    assert "orientationSource='corrected core_camera.getQuat'" in lua
     assert "lastBaselineRigidCandidate=compose(rigidBaseline.worldFromTracking,mappedTrackingHmd)" in lua
     assert "lastRebasedRigidCandidate=compose(rebasedWorldFromTracking,mappedTrackingHmd)" in lua
     settings = json.loads((ROOT / "mod/settings/beamngVRControllerPoses.json").read_text())
     assert settings["hmdTranslationMode"] == "beamngOnly"
 
 
-def test_lua_subtracts_physical_motion_and_never_applies_raw_delta_directly():
-    lua = LUA.read_text()
-    block = lua.split("local preAnchorHmdWorld=", 1)[1].split("local movingTargetQ=", 1)[0]
-    assert "rawCoreCameraDelta[1]-physicalTrackingWorldDelta[1]" in block
-    assert "movingWorldFromTracking.p[1]+residualGameLocomotionDelta[1]" in block
-    assert "movingWorldFromTracking.p[1]+rawCoreCameraDelta[1]" not in block
-    assert "qrot(rawCoreCameraDelta" not in block
+def test_helper_has_no_previous_frame_arguments():
+    assert anchor_physical_offset_to_current_camera.__code__.co_argcount == 3
