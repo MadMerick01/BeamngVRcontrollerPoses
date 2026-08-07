@@ -158,6 +158,24 @@ local function drawDiagnostics(candidates,hmdWorld)
     drawDiagnosticSphereTripods=settings.drawDiagnosticSphereTripods==true,
     drawControllerTripods=settings.drawControllerTripods==true,drawOriginLines=settings.drawOriginLines==true,
     diagnostic={},controllers={},originLines={}}
+  local cameraAxes=cfg.cameraAxisSpheres or {}
+  if cameraAxes.enabled==true then
+    local distance=cameraAxes.distance or 1.0
+    local diameter=cameraAxes.diameter or cfg.sphereDiameter
+    local axes={
+      right={offset={distance,0,0},colour=ColorF(1,0,0,1)},
+      forward={offset={0,distance,0},colour=ColorF(0,1,0,1)},
+      up={offset={0,0,distance},colour=ColorF(0,0,1,1)}
+    }
+    state.diagnostics.cameraAxisSphereWorldPositions={}
+    for name,axis in pairs(axes) do
+      local sphere=compose(candidates.beamngOnly,{p=axis.offset,q={0,0,0,1}})
+      state.diagnostics.cameraAxisSphereWorldPositions[name]=sphere.p
+      debugDrawer:drawSphere(vec3(sphere.p),diameter/2,axis.colour)
+    end
+  else
+    state.diagnostics.cameraAxisSphereWorldPositions=nil
+  end
   if cfg.cameraTestSphere and cfg.cameraTestSphere.enabled then
     local localPos=cfg.cameraTestSphere.offset or {0,1,0}
     local red=compose(candidates.beamngOnly,{p=localPos,q={0,0,0,1}})
