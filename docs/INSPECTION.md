@@ -16,8 +16,14 @@ signatures or semantic guarantees.
   table specifically exposes `getCameraPosRotPredictedXYZXYZW`,
   `setGeluaCameraPosRot`, centering and enable/state functions. The OpenXR-named
   predicted pose is therefore the best candidate for the final tracked HMD render
-  pose; the dump cannot establish its units, multiplication convention, prediction
-  time, or whether it is eye-centre versus another head reference. Generic camera
+  pose. Its binding name is the available signature evidence: seven scalar returns,
+  position `X,Y,Z` followed by quaternion `X,Y,Z,W`. The adjacent
+  `setGeluaCameraPosRot` binding and the name establish that the complete value is
+  a camera pose, but neither dump says that its quaternion is a view/world-to-camera
+  rotation. The consumer consequently preserves the returned rotation direction
+  rather than speculatively inverting it. The dump cannot establish its units,
+  multiplication convention, prediction time, or whether it is eye-centre versus
+  another head reference. Generic camera
   getters may describe the already-composed render camera, but cannot be proven to
   be the tracked HMD rather than its game/vehicle anchor.
 * `createObject`, `SimObject`, `scenetree`, `TSStatic`, `StaticShapeData`, and
@@ -60,10 +66,9 @@ session, injection, offsets, render hooks, or BeamNG thread blocking are involve
 
 ## Unknowns requiring the first live test
 
-The static dumps cannot prove `OpenXR.getCameraPosRotPredictedXYZXYZW` return
-semantics, OpenVR/BeamNG basis alignment, BeamNG unit scale, quaternion handedness,
+The static dumps cannot prove the predicted getter's units, quaternion direction,
+OpenVR/BeamNG basis alignment, BeamNG unit scale, quaternion handedness,
 the debug sphere method/signature/lifetime/stereo behaviour, which reference-space
 reset events correspond to BeamNG recentering, SteamVR availability alongside the
 user's selected OpenXR runtime, or callbacks permitted in a packed mod. Logs and a
 fresh API dump with controllers enabled should be returned if any assumption fails.
-

@@ -2,6 +2,7 @@
 local M = {}
 local sock, socketlib, cfg, latest, lastCounter, lastLog = nil, nil, nil, nil, -1, 0
 local state = {leftControllerWorld={valid=false}, rightControllerWorld={valid=false}, diagnostics={}}
+local cameraSourceMode='predictedOpenXR'
 local hmdBaseline, hmdSpaceKey, previousRawHmd, previousHmdSampleTime = nil, nil, nil, nil
 local worldFromBaseQ=nil
 local headingBaseline, alignedHeading = nil, nil
@@ -71,6 +72,25 @@ local function quatToXYZW(q)
   -- BeamNG's core_camera.getQuat()/getQuatXYZW convention is explicitly XYZW; keep project-internal XYZW.
   if type(q)=='table' then return {q.x or q[1], q.y or q[2], q.z or q[3], q.w or q[4]} end
   return {q.x, q.y, q.z, q.w}
+end
+local function finiteNumber(value)
+  return type(value)=='number' and value==value and value~=math.huge and value~=-math.huge
+end
+local function predictedOpenXRCameraWorld()
+  local getter=OpenXR and OpenXR.getCameraPosRotPredictedXYZXYZW
+  if type(getter)~='function' then return nil,nil,'predicted OpenXR camera getter unavailable' end
+  -- The exported binding name specifies seven scalar returns: position XYZ,
+  -- followed by rotation XYZW.  Keep that API ordering explicit at this boundary.
+  local ok,px,py,pz,qx,qy,qz,qw=pcall(getter)
+  local raw={px,py,pz,qx,qy,qz,qw}
+  if not ok then return nil,raw,'predicted OpenXR camera getter failed' end
+  for i=1,7 do
+    if not finiteNumber(raw[i]) then return nil,raw,'predicted OpenXR camera pose is malformed or non-finite' end
+  end
+  local orientation=qnorm({qx,qy,qz,qw})
+  if not orientation then return nil,raw,'predicted OpenXR camera quaternion has zero length' end
+  -- No dump evidence says this pose is world-to-camera, so do not invert it.
+  return {p={px,py,pz},q=orientation},raw,nil
 end
 local function beamCameraWorld()
   local pos=vec3ToTable(core_camera and core_camera.getPosition and core_camera.getPosition())
@@ -216,7 +236,7 @@ local function drawTripod(centre,endpoints,settings)
     debugDrawer:drawSphere(vec3(endpoints[axis]),settings.endpointDiameter/2,colours[axis])
   end
 end
-local function drawDiagnostics(candidates,hmdWorld)
+local function drawDiagnostics(candidates,hmdWorld,predictedCamera)
   local settings=cfg.axisTripods or {}
   settings.axisLength=settings.axisLength or 0.25
   settings.endpointDiameter=settings.endpointDiameter or 0.025
@@ -257,6 +277,14 @@ local function drawDiagnostics(candidates,hmdWorld)
     debugDrawer:drawSphere(vec3(green.p),radius,ColorF(0,1,0,1))
     debugDrawer:drawSphere(vec3(yellow.p),radius,ColorF(1,1,0,1))
     debugDrawer:drawSphere(vec3(white.p),radius,ColorF(1,1,1,1))
+    if predictedCamera then
+      local magenta=compose(predictedCamera,{p=localPos,q={0,0,0,1}})
+      state.diagnostics.diagnosticSphereWorldPositions.predictedOpenXR=magenta.p
+      state.diagnostics.predictedCameraDiagnosticSphereWorldPosition=magenta.p
+      debugDrawer:drawSphere(vec3(magenta.p),radius,ColorF(1,0,1,1))
+    else
+      state.diagnostics.predictedCameraDiagnosticSphereWorldPosition=nil
+    end
     for name,item in pairs({beamngOnly=red,beamngPlusHmdDelta=green,beamngMinusHmdDelta=yellow,beamngFixedBaseHmdDelta=white}) do
       local endpoints=tripod(item.p,item.q,tripodState.axisLength)
       tripodState.diagnostic[name]={centre=item.p,orientation=item.q,endpoints=endpoints}
@@ -284,6 +312,8 @@ end
 function M.onExtensionLoaded()
   cfg=jsonReadFile('settings/beamngVRControllerPoses.json') or jsonReadFile('/settings/beamngVRControllerPoses.json')
   if not cfg then log('E','beamngVRControllerPoses','configuration not found'); return false end
+  cameraSourceMode=cfg.cameraSourceMode=='beamngOnly' and 'beamngOnly' or 'predictedOpenXR'
+  state.selectedCameraSourceMode=cameraSourceMode
   socketlib=require('socket'); sock=socketlib.udp(); sock:settimeout(0); assert(sock:setsockname(cfg.listenAddress,cfg.listenPort))
   resetHmdBaseline('extension loaded')
   log('I','beamngVRControllerPoses','listening for pose datagrams on '..cfg.listenAddress..':'..cfg.listenPort)
@@ -293,7 +323,27 @@ function M.onPreRender(dtReal,dtSim,dtRaw)
   if not latest or not cameraAnchor or (now-latest.received)*1000>cfg.staleAfterMs then state.leftControllerWorld.valid=false; state.rightControllerWorld.valid=false; return end
   -- Packets from older protocol-2 publishers have no hmd member and retain the
   -- previous camera-anchor behavior rather than being rejected.
-  local hmdWorld,candidates=actualHmdWorld(cameraAnchor,latest.hmd)
+  local beamngWorld,candidates=actualHmdWorld(cameraAnchor,latest.hmd)
+  local predictedCamera,rawPredicted,predictedError=predictedOpenXRCameraWorld()
+  local hmdWorld=beamngWorld
+  local fallbackReason=nil
+  if cameraSourceMode=='predictedOpenXR' then
+    if predictedCamera then hmdWorld=predictedCamera else fallbackReason=predictedError end
+  end
+  state.selectedCameraSourceMode=cameraSourceMode
+  state.predictedCameraAvailable=predictedCamera~=nil
+  state.rawPredictedGetterValues=rawPredicted
+  state.interpretedPredictedCameraPosition=predictedCamera and predictedCamera.p or nil
+  state.interpretedPredictedCameraQuaternion=predictedCamera and predictedCamera.q or nil
+  state.finalSelectedCameraWorldTransform=hmdWorld
+  state.cameraSourceFallbackReason=fallbackReason
+  state.diagnostics.selectedCameraSourceMode=state.selectedCameraSourceMode
+  state.diagnostics.predictedCameraAvailable=state.predictedCameraAvailable
+  state.diagnostics.rawPredictedGetterValues=state.rawPredictedGetterValues
+  state.diagnostics.interpretedPredictedCameraPosition=state.interpretedPredictedCameraPosition
+  state.diagnostics.interpretedPredictedCameraQuaternion=state.interpretedPredictedCameraQuaternion
+  state.diagnostics.finalSelectedCameraWorldTransform=state.finalSelectedCameraWorldTransform
+  state.diagnostics.cameraSourceFallbackReason=state.cameraSourceFallbackReason
   state.diagnostics.cameraWorld=hmdWorld
   updateHand('left',latest.left,hmdWorld,now); updateHand('right',latest.right,hmdWorld,now)
   state.diagnostics.finalControllerWorldPositions={
@@ -302,10 +352,21 @@ function M.onPreRender(dtReal,dtSim,dtRaw)
   }
   state.diagnostics.finalLeftControllerWorldPosition=state.diagnostics.finalControllerWorldPositions.left
   state.diagnostics.finalRightControllerWorldPosition=state.diagnostics.finalControllerWorldPositions.right
-  drawDiagnostics(candidates,hmdWorld)
+  state.finalLeftControllerWorldPosition=state.diagnostics.finalLeftControllerWorldPosition
+  state.finalRightControllerWorldPosition=state.diagnostics.finalRightControllerWorldPosition
+  drawDiagnostics(candidates,hmdWorld,predictedCamera)
   if now-lastLog>cfg.logIntervalSeconds then
     log('I','beamngVRControllerPoses','fixed-base diagnostics='..dumps(state.diagnostics)); lastLog=now
   end
+end
+function M.setCameraSourceMode(mode)
+  if mode~='predictedOpenXR' and mode~='beamngOnly' then
+    log('E','beamngVRControllerPoses','invalid camera source mode: '..tostring(mode))
+    return false
+  end
+  cameraSourceMode=mode
+  state.selectedCameraSourceMode=mode
+  return true
 end
 function M.resetHmdBaseline() resetHmdBaseline('explicit reset') end
 function M.resetHeadingBaseline()

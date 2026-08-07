@@ -166,15 +166,16 @@ computes `inverse(hmdInBase) * controllerInBase`. Samples are merged only when t
 session/base/time key is compatible. Protocol 2 now also carries an optional valid
 VIEW pose in that base space, its flags, sample time, and tracking-space identity;
 existing protocol-2 consumers can ignore this additive `hmd` member. The Lua
-bridge baselines its translation, maps `(x,y,z)` to `(x,-z,y)`, rotates the delta
-into game-world space, and supplements the anchor from `core_camera.getPosition()`.
-It then computes `actualHmdWorld * controllerRelativeToHmd` while retaining the
-corrected `core_camera.getQuat()` direction. Tracking-space/session changes, time resets,
+bridge now uses BeamNG's complete predicted OpenXR camera pose directly and computes
+`predictedCameraWorld * controllerRelativeToHmd * controllerCalibrationOffset`
+without adding the packet HMD delta or `core_camera.getPosition()`. The previous
+BeamNG camera reconstruction remains available as the safe `beamngOnly` fallback.
+Tracking-space/session changes, time resets,
 pose discontinuities, extension reload, and the exposed `resetHmdBaseline()` hook
 safely establish a new baseline without adding standing height. The bridge retains
-stale packet rejection; `OpenXR.getCameraPosRotPredictedXYZXYZW()` is deliberately
-not used as the game-world camera transform, exposes `getState()`, and draws the
-red headset diagnostic plus two bright-blue controller spheres.
+stale packet rejection, exposes both modes through `setCameraSourceMode()`, and
+draws the existing red headset diagnostic, a magenta predicted-camera sphere, and
+two bright-blue controller spheres.
 
 ## Install the BeamNG mod and test
 
@@ -201,15 +202,18 @@ VDXR, optionally confirm ordinary BeamNG Vulkan VR without the layer as a fresh
 baseline, install the unpacked mod, run the manual PowerShell launch command,
 select Vulkan in the normal BeamNG launcher, enter a map, start BeamNG VR, open
 the GE Lua console, load `extensions.load('beamngVRControllerPoses')`, then
-inspect `dump(extensions.beamngVRControllerPoses.getState())` and
-`dump(core_camera.getPosition())`. Verify the red camera diagnostic sphere is
-approximately one metre from the camera, the bright-blue spheres follow the
-controllers, controller world positions are near the non-zero BeamNG camera
-position rather than `(0,0,0)`, each controller moves independently, and the
-spheres remain correctly positioned during head rotation, vehicle movement, and
-VR recentering. Verify head turns, vehicle movement and VR
-recenter do not introduce offsets; disabling/occluding either controller hides its
-sphere, and stopping publication hides both within `staleAfterMs`. Inspect
+inspect `dump(extensions.beamngVRControllerPoses.getState())`. Face the known good
+map direction and confirm the magenta sphere is directly ahead. Translate the head
+left, right, forward, backward, up, and down; rotate through 90, 180, 270, and 360
+degrees; and at every heading translate left and right. Success means the magenta
+sphere stays exactly one metre ahead independent of map heading and both blue
+spheres remain aligned with the physical controllers. Keep the red core-camera
+sphere for comparison. If the magenta sphere has the same heading-dependent error,
+capture the raw predicted getter values from `getState()` and stop rather than
+adding a correction. If magenta is correct but blue is wrong, investigate the
+controller-relative composition or quaternion basis. Disabling/occluding either
+controller hides its sphere, and stopping publication hides both within
+`staleAfterMs`. Inspect
 `extensions.beamngVRControllerPoses.getState()` for the world transforms. Calibration,
 sphere size/colour, port, stale threshold and log cadence remain in
 `mod/settings/beamngVRControllerPoses.json`.
