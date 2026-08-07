@@ -293,6 +293,12 @@ The first real headset test used package `C:\BeamNGVRcontrollerPosesTest`, BeamN
 
 Confirmed working: Vulkan launch through the BeamNG launcher, VDXR chaining, explicit API-layer load, Quest controller pose capture, protocol-2 UDP to `127.0.0.1:44441`, GE Lua receipt, approximately 0.0--0.5 ms packet age, continuously increasing counters, and valid positions/orientations for both controllers. The remaining Stage 1 isolation point is rendering: if blue controller spheres and the red camera test sphere have world coordinates near `core_camera.getPosition()` but are still invisible in VR, treat that as evidence that `debugDrawer:drawSphere` is not submitted to BeamNG's stereoscopic VR pass. The smallest next BeamNG-native fallback should be a pair of transient scene objects or TSStatic/debug mesh objects updated from the same Lua world poses, not a protocol or API-layer redesign.
 
+## PR #32 GE Lua camera-anchor investigation
+
+The PR #32 investigation of `OpenXR.setGeluaCameraPosRot`, its fail-closed
+opt-in console API, static-evidence limits, and preserved headset procedure are
+documented in [docs/PR32_GELUA_CAMERA_ANCHOR.md](docs/PR32_GELUA_CAMERA_ANCHOR.md).
+
 ## PR #28 artificial-camera-yaw tracking rebase
 
 The additive `baselineRigidPositionBeamngRotationRebased` mode retains the PR #26
