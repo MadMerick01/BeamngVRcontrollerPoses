@@ -161,15 +161,11 @@ local function drawDiagnostics(candidates,hmdWorld)
   local cameraAxes=cfg.cameraAxisSpheres or {}
   if cameraAxes.enabled==true then
     local distance=cameraAxes.distance or 1.0
-    local spread=cameraAxes.spread or 0.3
     local diameter=cameraAxes.diameter or cfg.sphereDiameter
     local axes={
-      -- Keep all markers in front of the camera.  Their displacement from the
-      -- green centre marker identifies camera-right and camera-up without
-      -- placing either marker ninety degrees outside the headset field of view.
-      right={offset={spread,distance,0},colour=ColorF(1,0,0,1)},
+      right={offset={distance,0,0},colour=ColorF(1,0,0,1)},
       forward={offset={0,distance,0},colour=ColorF(0,1,0,1)},
-      up={offset={0,distance,spread},colour=ColorF(0,0,1,1)}
+      up={offset={0,0,distance},colour=ColorF(0,0,1,1)}
     }
     state.diagnostics.cameraAxisSphereWorldPositions={}
     for name,axis in pairs(axes) do

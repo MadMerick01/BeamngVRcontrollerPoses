@@ -229,17 +229,13 @@ rendered simultaneously. The blue controller spheres use only the selected
 mode.
 
 Three additional spheres isolate the BeamNG camera quaternion from the HMD
-translation modes. They are composed only from the `beamngOnly` camera anchor
-and form an in-view corner one metre ahead: green is the centre marker
-(`[0,1,0]`), red is 0.3 metres camera-right of green (`[0.3,1,0]`), and blue is
-0.3 metres camera-up from green (`[0,1,0.3]`). The older translation-mode test
-spheres are disabled by default so they do not cover the green marker; set
-`cameraTestSphere.enabled` to `true` when that separate comparison is needed.
-Translate the headset at several headings and record whether either coloured
-displacement swings onto another camera axis. Their world positions are exposed
-in `diagnostics.cameraAxisSphereWorldPositions`. Configure the check with
-`cameraAxisSpheres.enabled`, `cameraAxisSpheres.distance`,
-`cameraAxisSpheres.spread`, and
+translation modes. They are composed only from the `beamngOnly` camera anchor:
+red is one metre to camera-right (`[1,0,0]`), green is one metre camera-forward
+(`[0,1,0]`), and blue is one metre camera-up (`[0,0,1]`). Translate the headset
+at several headings and record whether any sphere swings onto another camera
+axis. Their world positions are exposed in
+`diagnostics.cameraAxisSphereWorldPositions`. Configure the check with
+`cameraAxisSpheres.enabled`, `cameraAxisSpheres.distance`, and
 `cameraAxisSpheres.diameter` in `settings/beamngVRControllerPoses.json`.
 
 Run this checklist in order:

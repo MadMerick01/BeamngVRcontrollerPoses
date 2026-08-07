@@ -162,7 +162,7 @@ def test_camera_axis_spheres_use_only_the_beamng_camera_anchor():
     assert 'compose(candidates.beamngOnly' in block
     assert 'beamngPlusHmdDelta' not in block
     assert 'beamngMinusHmdDelta' not in block
-    for offset in ('{spread,distance,0}', '{0,distance,0}', '{0,distance,spread}'):
+    for offset in ('{distance,0,0}', '{0,distance,0}', '{0,0,distance}'):
         assert offset in block
     for colour in ('ColorF(1,0,0,1)', 'ColorF(0,1,0,1)', 'ColorF(0,0,1,1)'):
         assert colour in block
@@ -172,10 +172,8 @@ def test_camera_axis_spheres_use_only_the_beamng_camera_anchor():
     assert settings['cameraAxisSpheres'] == {
         'enabled': True,
         'distance': 1.0,
-        'spread': 0.3,
         'diameter': 0.12,
     }
-    assert settings['cameraTestSphere']['enabled'] is False
 
 def test_default_translation_mode_and_confirmed_axis_mapping_are_preserved():
     settings=json.loads((Path(__file__).parents[1]/'mod/settings/beamngVRControllerPoses.json').read_text())

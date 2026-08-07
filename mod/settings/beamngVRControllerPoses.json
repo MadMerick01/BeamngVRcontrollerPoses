@@ -63,7 +63,6 @@
   "cameraAxisSpheres": {
     "enabled": true,
     "distance": 1.0,
-    "spread": 0.3,
     "diameter": 0.12
   },
   "axisTripods": {
