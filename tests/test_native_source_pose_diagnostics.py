@@ -61,6 +61,9 @@ def test_visible_cap_yellow_colour_and_hand_markers_are_separate():
     assert "ColorF(0,1,1,1) or ColorF(1,0,1,1)" in text
     assert "state.leftControllerWorld=" not in text
     assert "state.rightControllerWorld=" not in text
+    draw = text.split("local function drawNativeSourcePoses", 1)[1].split(
+        "local function syncGeluaDiagnostics", 1)[0]
+    assert "if diagnosticVisualProfile=='orangeVioletControllers' then return end" in draw
 
 
 def test_configuration_defaults_disabled_with_requested_sizes():

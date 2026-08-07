@@ -132,4 +132,4 @@ def test_lua_boundary_diagnostics_are_separate_and_operational_pose_is_converted
                   'geluaQuaternionBoundaryConversion'):
         assert field in lua
     assert "'raw normalize(predicted * anchor), then inverse view-to-world'" in lua
-    assert 'ColorF(0.55,0.1,1,1)' in lua
+    assert 'ColorF(0.5,0,1,1)' in lua
