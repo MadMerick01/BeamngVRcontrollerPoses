@@ -61,17 +61,9 @@
     "diameter": 0.12
   },
   "cameraAxisSpheres": {
-    "enabled": false,
-    "distance": 1.0,
-    "spread": 0.3,
-    "diameter": 0.12
-  },
-  "headingDiagnostic": {
     "enabled": true,
-    "distance": 0.8,
-    "radius": 0.18,
-    "markerDiameter": 0.025,
-    "indicatorDiameter": 0.06
+    "distance": 1.0,
+    "diameter": 0.12
   },
   "axisTripods": {
     "enabled": true,

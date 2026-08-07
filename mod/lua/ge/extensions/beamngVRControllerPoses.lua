@@ -194,15 +194,11 @@ local function drawDiagnostics(candidates,hmdWorld)
   local cameraAxes=cfg.cameraAxisSpheres or {}
   if cameraAxes.enabled==true then
     local distance=cameraAxes.distance or 1.0
-    local spread=cameraAxes.spread or 0.3
     local diameter=cameraAxes.diameter or cfg.sphereDiameter
     local axes={
-      -- Keep all markers in front of the camera.  Their displacement from the
-      -- green centre marker identifies camera-right and camera-up without
-      -- placing either marker ninety degrees outside the headset field of view.
-      right={offset={spread,distance,0},colour=ColorF(1,0,0,1)},
+      right={offset={distance,0,0},colour=ColorF(1,0,0,1)},
       forward={offset={0,distance,0},colour=ColorF(0,1,0,1)},
-      up={offset={0,distance,spread},colour=ColorF(0,0,1,1)}
+      up={offset={0,0,distance},colour=ColorF(0,0,1,1)}
     }
     state.diagnostics.cameraAxisSphereWorldPositions={}
     for name,axis in pairs(axes) do
@@ -212,37 +208,6 @@ local function drawDiagnostics(candidates,hmdWorld)
     end
   else
     state.diagnostics.cameraAxisSphereWorldPositions=nil
-  end
-  local headingSettings=cfg.headingDiagnostic or {}
-  local heading=state.diagnostics.heading
-  if headingSettings.enabled==true and heading and heading.openXrFromBaselineDegrees then
-    local distance=headingSettings.distance or 0.8
-    local dialRadius=headingSettings.radius or 0.18
-    local markerRadius=(headingSettings.markerDiameter or 0.025)/2
-    local indicatorRadius=(headingSettings.indicatorDiameter or 0.06)/2
-    local anchor=candidates.beamngOnly
-    local colours={ColorF(0,1,0,1),ColorF(0.5,0.5,0.5,1),ColorF(0.5,0.5,0.5,1),
-      ColorF(1,0,0,1),ColorF(0.5,0.5,0.5,1),ColorF(0.5,0.5,0.5,1),
-      ColorF(1,1,0,1),ColorF(0.5,0.5,0.5,1),ColorF(0.5,0.5,0.5,1),
-      ColorF(0,0,1,1),ColorF(0.5,0.5,0.5,1),ColorF(0.5,0.5,0.5,1)}
-    for index=0,11 do
-      local angle=math.rad(index*30)
-      local localPos={dialRadius*math.sin(angle),distance,dialRadius*math.cos(angle)}
-      local marker=compose(anchor,{p=localPos,q={0,0,0,1}})
-      debugDrawer:drawSphere(vec3(marker.p),markerRadius,colours[index+1])
-    end
-    local angle=math.rad(heading.openXrFromBaselineDegrees)
-    local indicator=compose(anchor,{p={dialRadius*math.sin(angle),distance,dialRadius*math.cos(angle)},q={0,0,0,1}})
-    debugDrawer:drawSphere(vec3(indicator.p),indicatorRadius,ColorF(1,1,1,1))
-    local aligned=nil
-    if heading.alignedRelativeDegrees then
-      local alignedAngle=math.rad(heading.alignedRelativeDegrees)
-      aligned=compose(anchor,{p={(dialRadius+0.05)*math.sin(alignedAngle),distance,(dialRadius+0.05)*math.cos(alignedAngle)},q={0,0,0,1}})
-      debugDrawer:drawSphere(vec3(aligned.p),markerRadius*1.5,ColorF(1,0,1,1))
-    end
-    state.diagnostics.headingVisual={indicatorWorld=indicator.p,alignedWorld=aligned and aligned.p or nil}
-  else
-    state.diagnostics.headingVisual=nil
   end
   if cfg.cameraTestSphere and cfg.cameraTestSphere.enabled then
     local localPos=cfg.cameraTestSphere.offset or {0,1,0}

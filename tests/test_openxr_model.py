@@ -162,7 +162,7 @@ def test_camera_axis_spheres_use_only_the_beamng_camera_anchor():
     assert 'compose(candidates.beamngOnly' in block
     assert 'beamngPlusHmdDelta' not in block
     assert 'beamngMinusHmdDelta' not in block
-    for offset in ('{spread,distance,0}', '{0,distance,0}', '{0,distance,spread}'):
+    for offset in ('{distance,0,0}', '{0,distance,0}', '{0,0,distance}'):
         assert offset in block
     for colour in ('ColorF(1,0,0,1)', 'ColorF(0,1,0,1)', 'ColorF(0,0,1,1)'):
         assert colour in block
@@ -170,34 +170,9 @@ def test_camera_axis_spheres_use_only_the_beamng_camera_anchor():
 
     settings = json.loads(Path('mod/settings/beamngVRControllerPoses.json').read_text())
     assert settings['cameraAxisSpheres'] == {
-        'enabled': False,
-        'distance': 1.0,
-        'spread': 0.3,
-        'diameter': 0.12,
-    }
-    assert settings['cameraTestSphere']['enabled'] is False
-
-
-def test_heading_diagnostic_tracks_both_frames_and_alignment():
-    source = Path('mod/lua/ge/extensions/beamngVRControllerPoses.lua').read_text()
-    for field in ('beamngDegrees', 'openXrDegrees', 'openXrFromBaselineDegrees',
-                  'beamngMinusOpenXrDegrees', 'alignedRelativeDegrees',
-                  'alignedErrorDegrees'):
-        assert field in source
-    assert 'function M.resetHeadingBaseline()' in source
-    assert 'function M.markCurrentHeadingAsAligned()' in source
-    assert 'for index=0,11 do' in source
-    assert 'index*30' in source
-    assert 'compose(anchor' in source
-
-    settings = json.loads(Path('mod/settings/beamngVRControllerPoses.json').read_text())
-    assert settings['cameraAxisSpheres']['enabled'] is False
-    assert settings['headingDiagnostic'] == {
         'enabled': True,
-        'distance': 0.8,
-        'radius': 0.18,
-        'markerDiameter': 0.025,
-        'indicatorDiameter': 0.06,
+        'distance': 1.0,
+        'diameter': 0.12,
     }
 
 def test_default_translation_mode_and_confirmed_axis_mapping_are_preserved():
