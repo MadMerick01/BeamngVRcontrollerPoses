@@ -13,6 +13,26 @@ local movingWorldFromTracking, previousBeamngCameraAnchorPosition, lastMovingRig
 local baselineOrangeReferenceHmdWorldPosition=nil
 local movingArtificialYawRebaseCount=0
 
+-- PR #32 intentionally does not wrap this binding.  The supplied dumps list the
+-- name, but contain neither a GE Lua call site nor evidence that native BeamNG
+-- performs a fresh lookup through the global OpenXR table on every camera update.
+-- Replacing the table member merely to discover that fact could change the
+-- camera path, which is explicitly outside this observation-only investigation.
+local geluaCaptureFailureReason=
+  'static dumps expose only the binding name; no GE Lua call site or dynamic OpenXR table lookup is proven, so safe observation is unavailable'
+local geluaCameraAnchorCapture={
+  callCounter=0,lastCallTimestamp=nil,timeSinceLastCall=nil,callsPerSecond=0,
+  completeArgumentCount=nil,completeRawArguments=nil,requiredValuesNumericFinite=nil,
+  lastSuccessfulPassthrough=nil,lastPassthroughError=nil,wrapperInstalled=false,
+  originalFunctionPreserved=true,captureAvailable=false,captureFailureReason=geluaCaptureFailureReason,
+  anyCallsObserved=false,expectedSevenScalarFormatProven=false,
+  capturedGeluaCameraPosition=nil,capturedGeluaCameraRawQuaternion=nil,
+  capturedGeluaCameraQuaternionNormalized=nil,capturedGeluaCameraQuaternionInverse=nil,
+  capturedGeluaCameraTransformAsProvided=nil,capturedGeluaCameraTransformInverted=nil,
+  comparisonSamples=nil,diagnosticDeltas=nil,visualCandidatesDrawn=false,
+  observationPoint='narrowest alternative: capture inputs at a proven BeamNG GE Lua call site before this setter, if a future dump/source exposes one'
+}
+
 local function qmul(a,b) return {
   a[4]*b[1]+a[1]*b[4]+a[2]*b[3]-a[3]*b[2],
   a[4]*b[2]-a[1]*b[3]+a[2]*b[4]+a[3]*b[1],
@@ -542,6 +562,7 @@ function M.onExtensionLoaded()
   cameraSourceMode='beamngOnly'
   cfg.cameraSourceMode='beamngOnly'
   state.selectedCameraSourceMode=cameraSourceMode
+  state.geluaCameraAnchorCapture=geluaCameraAnchorCapture
   socketlib=require('socket'); sock=socketlib.udp(); sock:settimeout(0); assert(sock:setsockname(cfg.listenAddress,cfg.listenPort))
   resetHmdBaseline('extension loaded')
   log('I','beamngVRControllerPoses','listening for pose datagrams on '..cfg.listenAddress..':'..cfg.listenPort)
@@ -646,6 +667,37 @@ function M.setAxisTripodsEnabled(enabled) cfg.axisTripods.enabled=enabled==true;
 function M.setDiagnosticTripodsEnabled(enabled) cfg.axisTripods.drawDiagnosticSphereTripods=enabled==true; return true end
 function M.setControllerTripodsEnabled(enabled) cfg.axisTripods.drawControllerTripods=enabled==true; return true end
 function M.setOriginLinesEnabled(enabled) cfg.axisTripods.drawOriginLines=enabled==true; return true end
+function M.startGeluaCameraAnchorCapture()
+  -- Do not probe by invoking the setter and do not assign a trial wrapper.  A
+  -- successful assignment would prove only mutability, not that BeamNG calls the
+  -- table member dynamically, and restoring after such a probe cannot undo a
+  -- camera update that raced with it.
+  geluaCameraAnchorCapture.wrapperInstalled=false
+  geluaCameraAnchorCapture.captureAvailable=false
+  geluaCameraAnchorCapture.captureFailureReason=geluaCaptureFailureReason
+  geluaCameraAnchorCapture.originalFunctionPreserved=true
+  state.geluaCameraAnchorCapture=geluaCameraAnchorCapture
+  log('W','beamngVRControllerPoses','setGeluaCameraPosRot capture unavailable: '..geluaCaptureFailureReason)
+  return false,geluaCaptureFailureReason
+end
+function M.stopGeluaCameraAnchorCapture()
+  -- Idempotent.  No global binding was installed or modified.
+  geluaCameraAnchorCapture.wrapperInstalled=false
+  geluaCameraAnchorCapture.originalFunctionPreserved=true
+  state.geluaCameraAnchorCapture=geluaCameraAnchorCapture
+  log('I','beamngVRControllerPoses','setGeluaCameraPosRot capture stop; wrapper restoration not required; calls observed=false')
+  return true
+end
+function M.getGeluaCameraAnchorCaptureState()
+  if geluaCameraAnchorCapture.lastCallTimestamp then
+    local now=socketlib and socketlib.gettime() or os.clock()
+    geluaCameraAnchorCapture.timeSinceLastCall=now-geluaCameraAnchorCapture.lastCallTimestamp
+  end
+  return geluaCameraAnchorCapture
+end
 function M.getState() return state end
-function M.onExtensionUnloaded() if sock then sock:close(); sock=nil end end
+function M.onExtensionUnloaded()
+  M.stopGeluaCameraAnchorCapture()
+  if sock then sock:close(); sock=nil end
+end
 return M
