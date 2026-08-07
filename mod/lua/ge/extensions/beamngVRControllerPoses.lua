@@ -3,6 +3,7 @@ local M = {}
 local sock, socketlib, cfg, latest, lastCounter, lastLog = nil, nil, nil, nil, -1, 0
 local state = {leftControllerWorld={valid=false}, rightControllerWorld={valid=false}, diagnostics={}}
 local hmdBaseline, hmdSpaceKey, previousRawHmd, previousHmdSampleTime = nil, nil, nil, nil
+local worldFromBaseQ=nil
 local headingBaseline, alignedHeading = nil, nil
 
 local function qmul(a,b) return {
@@ -55,9 +56,10 @@ local function openXrHeading(q)
   return (heading%360+360)%360
 end
 local function resetHmdBaseline(reason)
-  hmdBaseline=nil; hmdSpaceKey=nil; previousRawHmd=nil; previousHmdSampleTime=nil
+  hmdBaseline=nil; hmdSpaceKey=nil; previousRawHmd=nil; previousHmdSampleTime=nil; worldFromBaseQ=nil
   headingBaseline=nil; alignedHeading=nil
   state.diagnostics.hmdBaselineResetReason=reason
+  state.diagnostics.baselineResetReason=reason
 end
 local function vec3ToTable(v)
   if not v then return nil end
@@ -91,19 +93,21 @@ local function updateHand(name, raw, cameraWorld, now)
   out.position=world.p; out.orientation=world.q; out.valid=true; out.updateCounter=latest.counter; out.ageMs=(now-latest.received)*1000
   out.relative=rel; out.rawRelative=raw
 end
-local validHmdTranslationModes={beamngOnly=true,beamngPlusHmdDelta=true,beamngMinusHmdDelta=true}
-local function hmdCandidates(cameraAnchor, worldDelta)
-  -- Keep these as three direct calculations from the BeamNG camera.  The test
+local validHmdTranslationModes={beamngOnly=true,beamngPlusHmdDelta=true,beamngMinusHmdDelta=true,beamngFixedBaseHmdDelta=true}
+local function hmdCandidates(cameraAnchor, worldDelta, fixedDelta)
+  -- Keep these as direct calculations from the BeamNG camera.  The test
   -- alternatives must never accumulate or derive from one another.
   return {
     beamngOnly={p={cameraAnchor.p[1],cameraAnchor.p[2],cameraAnchor.p[3]},q=cameraAnchor.q},
     beamngPlusHmdDelta={p={cameraAnchor.p[1]+worldDelta[1],cameraAnchor.p[2]+worldDelta[2],cameraAnchor.p[3]+worldDelta[3]},q=cameraAnchor.q},
-    beamngMinusHmdDelta={p={cameraAnchor.p[1]-worldDelta[1],cameraAnchor.p[2]-worldDelta[2],cameraAnchor.p[3]-worldDelta[3]},q=cameraAnchor.q}
+    beamngMinusHmdDelta={p={cameraAnchor.p[1]-worldDelta[1],cameraAnchor.p[2]-worldDelta[2],cameraAnchor.p[3]-worldDelta[3]},q=cameraAnchor.q},
+    beamngFixedBaseHmdDelta={p={cameraAnchor.p[1]+fixedDelta[1],cameraAnchor.p[2]+fixedDelta[2],cameraAnchor.p[3]+fixedDelta[3]},q=cameraAnchor.q}
   }
 end
 local function actualHmdWorld(cameraAnchor, hmd)
-  local rawDelta,mappedDelta,worldDelta=nil,nil,{0,0,0}
-  local valid=hmd and hmd.valid and hmd.p
+  local rawDelta,mappedDelta,worldDelta,fixedDelta=nil,nil,{0,0,0},{0,0,0}
+  local rawQ,mappedQ=nil,nil
+  local valid=hmd and hmd.valid and hmd.p and hmd.q
   if valid then
   local key=tostring(hmd.session or '')..':'..tostring(hmd.base or '')
   local jump=cfg.hmdRecenterJumpMetres or 0.35
@@ -111,27 +115,55 @@ local function actualHmdWorld(cameraAnchor, hmd)
   if hmdSpaceKey and hmdSpaceKey~=key then resetHmdBaseline('tracking space changed')
   elseif sampleWentBack then resetHmdBaseline('sample time reset')
   elseif previousRawHmd and distance(previousRawHmd,hmd.p)>jump then resetHmdBaseline('HMD pose discontinuity') end
-  if not hmdBaseline then hmdBaseline={hmd.p[1],hmd.p[2],hmd.p[3]}; hmdSpaceKey=key end
+  rawQ=qnorm(hmd.q)
+  local root=math.sqrt(0.5)
+  local basis={root,0,0,root}
+  mappedQ=qnorm(qmul(qmul(basis,rawQ),qinv(basis)))
+  if not hmdBaseline then
+    worldFromBaseQ=qnorm(qmul(qnorm(cameraAnchor.q),qinv(mappedQ)))
+    hmdBaseline={
+      p={hmd.p[1],hmd.p[2],hmd.p[3]},q=rawQ,mappedQ=mappedQ,
+      cameraQ=qnorm(cameraAnchor.q),worldFromBaseQ=worldFromBaseQ,
+      session=hmd.session,base=hmd.base,sampleTime=hmd.sampleTime
+    }
+    hmdSpaceKey=key
+  end
   previousRawHmd={hmd.p[1],hmd.p[2],hmd.p[3]}; previousHmdSampleTime=hmd.sampleTime
 
   -- The baseline removes standing height/tracking-origin placement.  Apply the
   -- confirmed OpenXR -> BeamNG mapping (x,y,z) -> (x,-z,y), then rotate the
   -- room-scale displacement by the corrected camera-to-world quaternion.
-  rawDelta={hmd.p[1]-hmdBaseline[1],hmd.p[2]-hmdBaseline[2],hmd.p[3]-hmdBaseline[3]}
+  rawDelta={hmd.p[1]-hmdBaseline.p[1],hmd.p[2]-hmdBaseline.p[2],hmd.p[3]-hmdBaseline.p[3]}
   mappedDelta=mappedPosition(rawDelta)
   worldDelta=qrot(cameraAnchor.q,mappedDelta)
+  fixedDelta=qrot(worldFromBaseQ,mappedDelta)
   end
-  local candidates=hmdCandidates(cameraAnchor,worldDelta)
+  local candidates=hmdCandidates(cameraAnchor,worldDelta,fixedDelta)
   local mode=cfg.hmdTranslationMode
   if not validHmdTranslationModes[mode] then mode='beamngOnly'; cfg.hmdTranslationMode=mode end
   local selected=candidates[mode]
   state.diagnostics.beamngCameraPosition={cameraAnchor.p[1],cameraAnchor.p[2],cameraAnchor.p[3]}
   state.diagnostics.rawOpenXrHmdPosition=valid and {hmd.p[1],hmd.p[2],hmd.p[3]} or nil
   state.diagnostics.rawHmdPose=hmd
-  state.diagnostics.hmdBaseline=hmdBaseline and {hmdBaseline[1],hmdBaseline[2],hmdBaseline[3]} or nil
+  state.diagnostics.hmdBaseline=hmdBaseline and {hmdBaseline.p[1],hmdBaseline.p[2],hmdBaseline.p[3]} or nil
   state.diagnostics.rawHmdDelta=rawDelta
   state.diagnostics.mappedHmdDelta=mappedDelta
   state.diagnostics.rotatedWorldHmdDelta=valid and worldDelta or nil
+  state.diagnostics.rawBaseFromHmdPosition=valid and {hmd.p[1],hmd.p[2],hmd.p[3]} or nil
+  state.diagnostics.rawBaseFromHmdOrientation=rawQ
+  state.diagnostics.mappedBaseFromHmdOrientation=mappedQ
+  state.diagnostics.baselineBaseFromHmdPosition=hmdBaseline and hmdBaseline.p or nil
+  state.diagnostics.baselineBaseFromHmdOrientation=hmdBaseline and hmdBaseline.q or nil
+  state.diagnostics.baselineMappedHmdOrientation=hmdBaseline and hmdBaseline.mappedQ or nil
+  state.diagnostics.baselineBeamngCameraOrientation=hmdBaseline and hmdBaseline.cameraQ or nil
+  state.diagnostics.fixedWorldFromBaseOrientation=worldFromBaseQ
+  state.diagnostics.rawBaseDelta=rawDelta
+  state.diagnostics.mappedBaseDelta=mappedDelta
+  state.diagnostics.liveCameraWorldDelta=valid and worldDelta or nil
+  state.diagnostics.fixedBaseWorldDelta=valid and fixedDelta or nil
+  state.diagnostics.fixedBaseWorldRight=worldFromBaseQ and qrot(worldFromBaseQ,{1,0,0}) or nil
+  state.diagnostics.fixedBaseWorldForward=worldFromBaseQ and qrot(worldFromBaseQ,{0,1,0}) or nil
+  state.diagnostics.fixedBaseWorldUp=worldFromBaseQ and qrot(worldFromBaseQ,{0,0,1}) or nil
   state.diagnostics.beamngCameraAnchor=cameraAnchor
   local beamHeading=beamngHeading(cameraAnchor.q)
   local xrHeading=valid and hmd.q and openXrHeading(hmd.q) or nil
@@ -150,8 +182,10 @@ local function actualHmdWorld(cameraAnchor, hmd)
   state.diagnostics.candidateHmdWorldPositions={
     beamngOnly=candidates.beamngOnly.p,
     beamngPlusHmdDelta=candidates.beamngPlusHmdDelta.p,
-    beamngMinusHmdDelta=candidates.beamngMinusHmdDelta.p
+    beamngMinusHmdDelta=candidates.beamngMinusHmdDelta.p,
+    beamngFixedBaseHmdDelta=candidates.beamngFixedBaseHmdDelta.p
   }
+  state.diagnostics.fixedBaseCandidateHmdWorldPosition=candidates.beamngFixedBaseHmdDelta.p
   state.diagnostics.actualHmdWorldPosition=selected.p -- retained for PR #13 diagnostic consumers
   return selected,candidates
 end
@@ -214,13 +248,16 @@ local function drawDiagnostics(candidates,hmdWorld)
     local red=compose(candidates.beamngOnly,{p=localPos,q={0,0,0,1}})
     local green=compose(candidates.beamngPlusHmdDelta,{p=localPos,q={0,0,0,1}})
     local yellow=compose(candidates.beamngMinusHmdDelta,{p=localPos,q={0,0,0,1}})
-    state.diagnostics.diagnosticSphereWorldPositions={beamngOnly=red.p,beamngPlusHmdDelta=green.p,beamngMinusHmdDelta=yellow.p}
+    local white=compose(candidates.beamngFixedBaseHmdDelta,{p=localPos,q={0,0,0,1}})
+    state.diagnostics.diagnosticSphereWorldPositions={beamngOnly=red.p,beamngPlusHmdDelta=green.p,beamngMinusHmdDelta=yellow.p,beamngFixedBaseHmdDelta=white.p}
+    state.diagnostics.fixedBaseDiagnosticSphereWorldPosition=white.p
     state.diagnostics.cameraTestSphereWorld=red.p -- backward-compatible name
     local radius=(cfg.cameraTestSphere.diameter or cfg.sphereDiameter)/2
     debugDrawer:drawSphere(vec3(red.p),radius,ColorF(1,0,0,1))
     debugDrawer:drawSphere(vec3(green.p),radius,ColorF(0,1,0,1))
     debugDrawer:drawSphere(vec3(yellow.p),radius,ColorF(1,1,0,1))
-    for name,item in pairs({beamngOnly=red,beamngPlusHmdDelta=green,beamngMinusHmdDelta=yellow}) do
+    debugDrawer:drawSphere(vec3(white.p),radius,ColorF(1,1,1,1))
+    for name,item in pairs({beamngOnly=red,beamngPlusHmdDelta=green,beamngMinusHmdDelta=yellow,beamngFixedBaseHmdDelta=white}) do
       local endpoints=tripod(item.p,item.q,tripodState.axisLength)
       tripodState.diagnostic[name]={centre=item.p,orientation=item.q,endpoints=endpoints}
       tripodState.originLines[name]={start=candidates[name].p,endpoint=item.p}
@@ -263,9 +300,11 @@ function M.onPreRender(dtReal,dtSim,dtRaw)
     left=state.leftControllerWorld.valid and state.leftControllerWorld.position or nil,
     right=state.rightControllerWorld.valid and state.rightControllerWorld.position or nil
   }
+  state.diagnostics.finalLeftControllerWorldPosition=state.diagnostics.finalControllerWorldPositions.left
+  state.diagnostics.finalRightControllerWorldPosition=state.diagnostics.finalControllerWorldPositions.right
   drawDiagnostics(candidates,hmdWorld)
   if now-lastLog>cfg.logIntervalSeconds then
-    log('I','beamngVRControllerPoses',string.format('counter=%d age=%.1fms mode=%s heading=%s beamngCamera=%s rawHmd=%s hmdBaseline=%s rawHmdDelta=%s mappedHmdDelta=%s worldHmdDelta=%s candidateHmdWorld=%s diagnosticSpheres=%s finalControllers=%s rawLeft=%s rawRight=%s',latest.counter,(now-latest.received)*1000,cfg.hmdTranslationMode,dumps(state.diagnostics.heading),dumps(cameraAnchor.p),dumps(state.diagnostics.rawOpenXrHmdPosition),dumps(state.diagnostics.hmdBaseline),dumps(state.diagnostics.rawHmdDelta),dumps(state.diagnostics.mappedHmdDelta),dumps(state.diagnostics.rotatedWorldHmdDelta),dumps(state.diagnostics.candidateHmdWorldPositions),dumps(state.diagnostics.diagnosticSphereWorldPositions),dumps(state.diagnostics.finalControllerWorldPositions),dumps(latest.left),dumps(latest.right))); lastLog=now
+    log('I','beamngVRControllerPoses','fixed-base diagnostics='..dumps(state.diagnostics)); lastLog=now
   end
 end
 function M.resetHmdBaseline() resetHmdBaseline('explicit reset') end
