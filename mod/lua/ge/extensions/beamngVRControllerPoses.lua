@@ -15,6 +15,9 @@ local movingArtificialYawRebaseCount=0
 local geluaCapture={captureInstalled=false,captureAvailable=false,captureFailureReason='capture not installed',setterSequence=0,pairComplete=false}
 local geluaOriginalSetter,geluaOriginalGetter,geluaSetterWrapper,geluaGetterWrapper=nil,nil,nil,nil
 local nativeSource={enabled=false,available=false,failureReason='diagnostics disabled',pollCounter=0,lastPollTimestamp=nil,lastLogTimestamp=0}
+local diagnosticVisualProfile='orangeVioletControllers'
+local visibleDiagnosticCandidates={'baselineRigidPositionBeamngRotationRebased','geluaNativeCameraComposition','leftApiLayerController','rightApiLayerController'}
+local hiddenDiagnosticCandidates={'beamngOnly','beamngPlusHmdDelta','beamngMinusHmdDelta','beamngFixedBaseHmdDelta','baselineRigidTracking','baselineRigidPositionBeamngRotation','baselineRigidPositionBeamngRotationRebasedMovingAnchor','nativeSourceYellowControllers','cameraAxisSpheres'}
 local yellowCandidateFormula='captured GE Lua anchor position + raw BeamNG native source position'
 local unpackValues=table.unpack or unpack
 local function packValues(...) return {n=select('#',...),...} end
@@ -279,6 +282,8 @@ local function pollNativeSourcePoses(now)
   end
 end
 local function drawNativeSourcePoses()
+  -- Retain PR #35 state inspection, but never render its unavailable poses in the clean profile.
+  if diagnosticVisualProfile=='orangeVioletControllers' then return end
   if not nativeSource.enabled then return end
   local settings=cfg.nativeSourcePoseDiagnostics or {}; local cap=math.max(0,math.floor(settings.maxVisibleCandidatesPerHand or 8))
   for _,hand in ipairs({'left','right'}) do
@@ -625,7 +630,7 @@ local function drawDiagnostics(candidates,hmdWorld)
     drawControllerTripods=settings.drawControllerTripods==true,drawOriginLines=settings.drawOriginLines==true,
     diagnostic={},controllers={},originLines={}}
   local cameraAxes=cfg.cameraAxisSpheres or {}
-  if cameraAxes.enabled==true then
+  if cameraAxes.enabled==true and diagnosticVisualProfile~='orangeVioletControllers' then
     local distance=cameraAxes.distance or 1.0
     local diameter=cameraAxes.diameter or cfg.sphereDiameter
     local axes={
@@ -655,6 +660,10 @@ local function drawDiagnostics(candidates,hmdWorld)
     local lime=candidates.geluaNativeCameraComposition and compose(candidates.geluaNativeCameraComposition,{p=localPos,q={0,0,0,1}}) or nil
     state.diagnostics.diagnosticSphereWorldPositions={beamngOnly=red.p,beamngPlusHmdDelta=green.p,beamngMinusHmdDelta=yellow.p,beamngFixedBaseHmdDelta=white.p,baselineRigidTracking=purple and purple.p or nil,baselineRigidPositionBeamngRotation=cyan and cyan.p or nil,baselineRigidPositionBeamngRotationRebased=orange and orange.p or nil,baselineRigidPositionBeamngRotationRebasedMovingAnchor=pink and pink.p or nil,geluaNativeCameraComposition=lime and lime.p or nil}
     state.geluaNativeDiagnosticSphereWorld=lime and lime.p or nil
+    state.violetCameraWorld=candidates.geluaNativeCameraComposition
+    state.violetDiagnosticSphereWorld=lime and lime.p or nil
+    state.orangeCameraWorld=candidates.baselineRigidPositionBeamngRotationRebased
+    state.orangeDiagnosticSphereWorld=orange and orange.p or nil
     state.hybridDiagnosticSphereWorldPosition=cyan and cyan.p or nil
     state.diagnostics.hybridDiagnosticSphereWorldPosition=state.hybridDiagnosticSphereWorldPosition
     state.rebasedHybridDiagnosticSphereWorldPosition=orange and orange.p or nil
@@ -665,27 +674,20 @@ local function drawDiagnostics(candidates,hmdWorld)
     state.diagnostics.fixedBaseDiagnosticSphereWorldPosition=white.p
     state.diagnostics.cameraTestSphereWorld=red.p -- backward-compatible name
     local radius=(cfg.cameraTestSphere.diameter or cfg.sphereDiameter)/2
-    debugDrawer:drawSphere(vec3(red.p),radius,ColorF(1,0,0,1))
-    debugDrawer:drawSphere(vec3(green.p),radius,ColorF(0,1,0,1))
-    debugDrawer:drawSphere(vec3(yellow.p),radius,ColorF(1,1,0,1))
-    debugDrawer:drawSphere(vec3(white.p),radius,ColorF(1,1,1,1))
-    if purple then debugDrawer:drawSphere(vec3(purple.p),radius,ColorF(0.65,0,1,1)) end
-    if cyan then debugDrawer:drawSphere(vec3(cyan.p),radius,ColorF(0,1,1,1)) end
-    if orange then debugDrawer:drawSphere(vec3(orange.p),radius,ColorF(1,0.5,0,1)) end
-    if pink then debugDrawer:drawSphere(vec3(pink.p),radius,ColorF(1,0.2,0.6,1)) end
-    if lime then debugDrawer:drawSphere(vec3(lime.p),radius,ColorF(0.55,0.1,1,1)) end
-    local diagnosticItems={beamngOnly=red,beamngPlusHmdDelta=green,beamngMinusHmdDelta=yellow,beamngFixedBaseHmdDelta=white}
-    if purple then diagnosticItems.baselineRigidTracking=purple end
-    if cyan then diagnosticItems.baselineRigidPositionBeamngRotation=cyan end
+    if orange then debugDrawer:drawSphere(vec3(orange.p),radius,ColorF(1,0.35,0,1)) end
+    if lime then debugDrawer:drawSphere(vec3(lime.p),radius,ColorF(0.5,0,1,1)) end
+    local diagnosticItems={}
     if orange then diagnosticItems.baselineRigidPositionBeamngRotationRebased=orange end
-    if pink then diagnosticItems.baselineRigidPositionBeamngRotationRebasedMovingAnchor=pink end
     if lime then diagnosticItems.geluaNativeCameraComposition=lime end
     for name,item in pairs(diagnosticItems) do
       local endpoints=tripod(item.p,item.q,tripodState.axisLength)
       tripodState.diagnostic[name]={centre=item.p,orientation=item.q,endpoints=endpoints}
       tripodState.originLines[name]={start=candidates[name].p,endpoint=item.p}
       if tripodState.enabled and tripodState.drawDiagnosticSphereTripods then drawTripod(item.p,endpoints,settings) end
-      if tripodState.enabled and tripodState.drawOriginLines then drawSphereStick(candidates[name].p,item.p,settings.lineThickness,ColorF(0.75,0.75,0.75,1)) end
+      if tripodState.enabled and tripodState.drawOriginLines then
+        local colour=name=='baselineRigidPositionBeamngRotationRebased' and ColorF(1,0.35,0,1) or ColorF(0.5,0,1,1)
+        drawSphereStick(candidates[name].p,item.p,settings.lineThickness,colour)
+      end
     end
   end
   local c=ColorF(cfg.sphereColour[1],cfg.sphereColour[2],cfg.sphereColour[3],cfg.sphereColour[4]); local radius=cfg.sphereDiameter/2
@@ -696,8 +698,8 @@ local function drawDiagnostics(candidates,hmdWorld)
       local endpoints=tripod(p.position,p.orientation,tripodState.axisLength)
       tripodState.controllers[hand]={centre=p.position,orientation=p.orientation,endpoints=endpoints}
       tripodState.originLines[hand]={start=hmdWorld.p,endpoint=p.position}
-      if tripodState.enabled and tripodState.drawControllerTripods then drawTripod(p.position,endpoints,settings) end
-      if tripodState.enabled and tripodState.drawOriginLines then
+      if diagnosticVisualProfile~='orangeVioletControllers' and tripodState.enabled and tripodState.drawControllerTripods then drawTripod(p.position,endpoints,settings) end
+      if diagnosticVisualProfile~='orangeVioletControllers' and tripodState.enabled and tripodState.drawOriginLines then
         drawSphereStick(hmdWorld.p,p.position,settings.lineThickness,hand=='left' and ColorF(0,1,1,1) or ColorF(1,0,1,1))
       end
     end
@@ -709,6 +711,8 @@ function M.onExtensionLoaded()
   if not cfg then log('E','beamngVRControllerPoses','configuration not found'); return false end
   cameraSourceMode='beamngOnly'
   cfg.cameraSourceMode='beamngOnly'
+  diagnosticVisualProfile=cfg.diagnosticVisualProfile or 'orangeVioletControllers'
+  state.visibleDiagnosticCandidates=visibleDiagnosticCandidates; state.hiddenDiagnosticCandidates=hiddenDiagnosticCandidates
   state.selectedCameraSourceMode=cameraSourceMode
   socketlib=require('socket'); sock=socketlib.udp(); sock:settimeout(0); assert(sock:setsockname(cfg.listenAddress,cfg.listenPort))
   resetHmdBaseline('extension loaded')
@@ -806,13 +810,36 @@ function M.onPreRender(dtReal,dtSim,dtRaw)
   -- Packets from older protocol-2 publishers have no hmd member and retain the
   -- previous camera-anchor behavior rather than being rejected.
   local beamngWorld,candidates=actualHmdWorld(cameraAnchor,latest.hmd)
-  local hmdWorld=beamngWorld
+  local selectedControllerCameraWorld=beamngWorld
+  local requestedViolet=cfg.hmdTranslationMode=='geluaNativeCameraComposition'
+  if requestedViolet then
+    selectedControllerCameraWorld=candidates.geluaNativeCameraComposition
+    state.controllerParentFallbackActive=selectedControllerCameraWorld==nil
+    state.controllerParentFallbackReason=state.controllerParentFallbackActive and (state.selectedModeFallbackReason or 'violet capture invalid') or nil
+    if not selectedControllerCameraWorld then selectedControllerCameraWorld=candidates.baselineRigidPositionBeamngRotationRebased end
+  else
+    state.controllerParentFallbackActive=false; state.controllerParentFallbackReason=nil
+  end
+  local hmdWorld=selectedControllerCameraWorld
+  state.selectedControllerParentMode=requestedViolet and (state.controllerParentFallbackActive and 'baselineRigidPositionBeamngRotationRebased' or 'geluaNativeCameraComposition') or state.selectedHmdTranslationMode
+  state.selectedControllerParentTransform=selectedControllerCameraWorld
+  state.controllersUseVioletParent=selectedControllerCameraWorld~=nil and selectedControllerCameraWorld==candidates.geluaNativeCameraComposition
+  state.violetCameraWorld=candidates.geluaNativeCameraComposition
+  state.orangeCameraWorld=candidates.baselineRigidPositionBeamngRotationRebased
   state.selectedCameraSourceMode=cameraSourceMode
   state.finalSelectedCameraWorldTransform=hmdWorld
   state.diagnostics.selectedCameraSourceMode=state.selectedCameraSourceMode
   state.diagnostics.finalSelectedCameraWorldTransform=state.finalSelectedCameraWorldTransform
   state.diagnostics.cameraWorld=hmdWorld
-  updateHand('left',latest.left,hmdWorld,now); updateHand('right',latest.right,hmdWorld,now)
+  if hmdWorld then
+    updateHand('left',latest.left,hmdWorld,now); updateHand('right',latest.right,hmdWorld,now)
+  else
+    state.leftControllerWorld.valid=false; state.rightControllerWorld.valid=false
+  end
+  state.leftControllerRelativeToHmd=state.leftControllerWorld.relative
+  state.rightControllerRelativeToHmd=state.rightControllerWorld.relative
+  state.finalLeftControllerWorld=state.leftControllerWorld.valid and {p=state.leftControllerWorld.position,q=state.leftControllerWorld.orientation} or nil
+  state.finalRightControllerWorld=state.rightControllerWorld.valid and {p=state.rightControllerWorld.position,q=state.rightControllerWorld.orientation} or nil
   state.beamngOnlyLeftControllerWorld=diagnosticControllerWorld('left',latest.left,candidates.beamngOnly)
   state.beamngOnlyRightControllerWorld=diagnosticControllerWorld('right',latest.right,candidates.beamngOnly)
   state.baselineRigidLeftControllerWorld=candidates.baselineRigidTracking and diagnosticControllerWorld('left',latest.left,candidates.baselineRigidTracking) or nil
@@ -851,7 +878,7 @@ function M.onPreRender(dtReal,dtSim,dtRaw)
   state.diagnostics.finalRightControllerWorldPosition=state.diagnostics.finalControllerWorldPositions.right
   state.finalLeftControllerWorldPosition=state.diagnostics.finalLeftControllerWorldPosition
   state.finalRightControllerWorldPosition=state.diagnostics.finalRightControllerWorldPosition
-  drawDiagnostics(candidates,hmdWorld)
+  drawDiagnostics(candidates,hmdWorld or candidates.baselineRigidPositionBeamngRotationRebased or candidates.beamngOnly)
   syncGeluaDiagnostics()
   if now-lastLog>cfg.logIntervalSeconds then
     log('I','beamngVRControllerPoses','fixed-base diagnostics='..dumps(state.diagnostics)); lastLog=now
@@ -898,6 +925,12 @@ function M.setAxisTripodsEnabled(enabled) cfg.axisTripods.enabled=enabled==true;
 function M.setDiagnosticTripodsEnabled(enabled) cfg.axisTripods.drawDiagnosticSphereTripods=enabled==true; return true end
 function M.setControllerTripodsEnabled(enabled) cfg.axisTripods.drawControllerTripods=enabled==true; return true end
 function M.setOriginLinesEnabled(enabled) cfg.axisTripods.drawOriginLines=enabled==true; return true end
+function M.setDiagnosticVisualProfile(profile)
+  if profile~='orangeVioletControllers' then return false,'unsupported diagnostic visual profile' end
+  diagnosticVisualProfile=profile; cfg.diagnosticVisualProfile=profile
+  state.visibleDiagnosticCandidates=visibleDiagnosticCandidates; state.hiddenDiagnosticCandidates=hiddenDiagnosticCandidates
+  return true
+end
 function M.getState() geluaNativeCandidate(captureNow()); syncGeluaDiagnostics(); return state end
 function M.onExtensionUnloaded() M.stopGeluaCameraAnchorCapture(); M.stopNativeSourcePoseDiagnostics(); if sock then sock:close(); sock=nil end end
 return M

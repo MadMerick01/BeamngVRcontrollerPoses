@@ -157,7 +157,7 @@ def test_native_capture_is_fail_closed_and_violet_diagnostic_is_present():
     for text in ('cannot replace OpenXR.setGeluaCameraPosRot',
                  'cannot replace OpenXR.getCameraPosRotPredictedXYZXYZW',
                  "captureInstalled=false", "pairComplete=false",
-                 "ColorF(0.55,0.1,1,1)"):
+                 "ColorF(0.5,0,1,1)"):
         assert text in source
 
 
@@ -189,14 +189,15 @@ def test_fixed_baseline_lifecycle_and_diagnostics_are_explicit():
     assert derivation in source
     assert 'fixedDelta=qrot(worldFromBaseQ,mappedDelta)' in source
 
-def test_lua_candidate_spheres_are_independent_and_have_required_colours():
+def test_lua_candidate_calculations_remain_independent_but_hidden_colours_are_not_drawn():
     source=(Path(__file__).parents[1]/'mod/lua/ge/extensions/beamngVRControllerPoses.lua').read_text()
     assert 'local red=compose(candidates.beamngOnly' in source
     assert 'local green=compose(candidates.beamngPlusHmdDelta' in source
     assert 'local yellow=compose(candidates.beamngMinusHmdDelta' in source
     assert 'local white=compose(candidates.beamngFixedBaseHmdDelta' in source
-    for colour in ('ColorF(1,0,0,1)', 'ColorF(0,1,0,1)', 'ColorF(1,1,0,1)', 'ColorF(1,1,1,1)'):
-        assert colour in source
+    draw=source.split('local radius=(cfg.cameraTestSphere.diameter',1)[1].split('local c=ColorF',1)[0]
+    for candidate in ('red','green','yellow','white'):
+        assert f'drawSphere(vec3({candidate}.p)' not in draw
 
 
 def test_camera_axis_spheres_use_only_the_beamng_camera_anchor():
@@ -214,7 +215,7 @@ def test_camera_axis_spheres_use_only_the_beamng_camera_anchor():
 
     settings = json.loads(Path('mod/settings/beamngVRControllerPoses.json').read_text())
     assert settings['cameraAxisSpheres'] == {
-        'enabled': True,
+        'enabled': False,
         'distance': 1.0,
         'diameter': 0.12,
     }
@@ -310,12 +311,12 @@ def test_pr26_invalid_hmd_does_not_replace_last_rigid_candidate():
     assert 'finiteNumber(hmd.p[i])' in block and 'finiteNumber(hmd.q[i])' in block
 
 
-def test_pr26_preserves_all_existing_diagnostic_spheres_and_adds_purple():
+def test_pr26_candidate_calculation_remains_but_purple_rendering_is_hidden():
     source=lua_source(); draw=source.split('local function drawDiagnostics',1)[1].split('\nfunction M.onExtensionLoaded',1)[0]
     for candidate in ('beamngOnly','beamngPlusHmdDelta','beamngMinusHmdDelta','beamngFixedBaseHmdDelta'):
         assert candidate in draw
     assert 'baselineRigidTracking=purple' in draw
-    assert 'ColorF(0.65,0,1,1)' in draw
+    assert 'drawSphere(vec3(purple.p)' not in draw
     assert 'cameraAxisSphereWorldPositions' in draw
     assert 'drawTripod' in draw and 'drawSphereStick' in draw
 

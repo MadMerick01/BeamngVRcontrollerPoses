@@ -112,7 +112,8 @@ def test_lua_absolute_formula_reset_jump_and_diagnostics_are_wired():
     assert "resetHmdBaseline('translation mode changed to '..mode)" in lua
     assert "resetHmdBaseline('BeamNG camera anchor jump')" in lua
     assert "baselineRigidPositionBeamngRotationRebasedMovingAnchor=true" in lua
-    assert "ColorF(1,0.2,0.6,1)" in lua
+    assert "baselineRigidPositionBeamngRotationRebasedMovingAnchor=pink" in lua
+    assert "drawSphere(vec3(pink.p)" not in lua
     for diagnostic in (
         "baselineOrangeReferenceHmdWorldPosition", "currentOrangeReferenceHmdWorldPosition",
         "physicalOffsetFromRecenter", "physicalOffsetFromRecenterMagnitude",

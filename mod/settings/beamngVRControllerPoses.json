@@ -54,6 +54,7 @@
     1.0,
     1.0
   ],
+  "diagnosticVisualProfile": "orangeVioletControllers",
   "logIntervalSeconds": 5.0,
   "nativeSourcePoseDiagnostics": {
     "enabled": false,
@@ -74,7 +75,7 @@
     "diameter": 0.12
   },
   "cameraAxisSpheres": {
-    "enabled": true,
+    "enabled": false,
     "distance": 1.0,
     "diameter": 0.12
   },
@@ -84,7 +85,7 @@
     "endpointDiameter": 0.025,
     "lineThickness": 0.01,
     "drawDiagnosticSphereTripods": true,
-    "drawControllerTripods": true,
+    "drawControllerTripods": false,
     "drawOriginLines": true
   }
 }
