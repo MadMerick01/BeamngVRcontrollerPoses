@@ -321,3 +321,31 @@ and stored alignments, angular delta, trigger/count/reason/time, positions befor
 and after rebase, discontinuity, rebased transform, hybrid HMD/controllers, and
 orange-sphere position. Rebase event logs are throttled; ordinary render frames
 do not emit an event log.
+
+## Moving camera anchor with room-scale motion subtraction
+
+The `baselineRigidPositionBeamngRotationRebasedMovingAnchor` mode extends the
+proven rebased transform for stick-controlled walking. Because BeamNG's core
+camera delta includes both locomotion and physical HMD translation, this mode
+first subtracts the physical world movement already supplied by the current
+OpenXR tracking-local HMD pose. Only the remaining game-locomotion delta moves
+the tracking-world attachment; the raw core-camera delta is never applied
+directly. Artificial-yaw rebasing then runs around the translated HMD pivot.
+
+The existing pink diagnostic sphere remains assigned to this corrected mode,
+while orange continues to show the unchanged PR #28 candidate. Enable it with
+the exact headset-test command:
+
+```lua
+extensions.load('beamngVRControllerPoses')
+extensions.beamngVRControllerPoses.setHmdTranslationMode(
+  'baselineRigidPositionBeamngRotationRebasedMovingAnchor'
+)
+```
+
+Remain still briefly to establish the baseline. Test physical translation,
+natural and artificial rotation, stick walking, and simultaneous physical plus
+stick movement. Diagnostics report raw core-camera, physical tracking, residual
+game-locomotion and reconstruction-error vectors and magnitudes. Discontinuities
+in either the raw or residual delta establish a fresh baseline. `beamngOnly`
+remains the configured default.
