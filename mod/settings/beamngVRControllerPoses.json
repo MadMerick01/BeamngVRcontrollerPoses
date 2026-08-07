@@ -52,7 +52,7 @@
   ],
   "logIntervalSeconds": 5.0,
   "cameraTestSphere": {
-    "enabled": true,
+    "enabled": false,
     "offset": [
       0,
       1,
