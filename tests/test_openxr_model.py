@@ -124,8 +124,10 @@ def test_valid_candidate_not_overwritten_by_later_invalid_candidate_source():
 
 def test_lua_uses_beamng_camera_world_transform_and_diagnostics():
     source=(Path(__file__).parents[1]/'mod/lua/ge/extensions/beamngVRControllerPoses.lua').read_text()
-    assert 'getCameraPosition' in source
-    assert 'getCameraQuat' in source
+    assert 'core_camera.getPosition' in source
+    assert 'core_camera.getQuat' in source
+    assert 'getCameraPosition' not in source
+    assert 'getCameraQuat' not in source
     assert 'getCameraPosRotPredictedXYZXYZW' not in source
     assert 'cameraTestSphereWorld' in source
     for diagnostic in ('beamngCameraPosition','rawOpenXrHmdPosition','rawHmdPose','hmdBaseline',
