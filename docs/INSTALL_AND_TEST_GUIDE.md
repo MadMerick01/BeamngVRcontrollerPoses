@@ -6,37 +6,28 @@ API layer: it must not replace `openxr_loader.dll`, it must not be registered as
 an OpenXR runtime, and it must not change the system `ActiveRuntime` registry
 value.
 
-## PR #26 acceptance procedure: stationary world only
+## PR #26 stationary-world acceptance test
 
-This test validates only the complete baseline tracking-to-world rigid
-transform. Park the vehicle, do not operate any in-game camera controls, and do
-not attempt to evaluate vehicle motion and room-scale motion simultaneously.
+Park the vehicle and do not move the game camera controls. Load the extension,
+then run:
 
-1. Load the extension with
-   `extensions.load('beamngVRControllerPoses')`.
-2. Run
-   `extensions.beamngVRControllerPoses.setHmdTranslationMode('baselineRigidTracking')`.
-3. Face forward and remain still while the first valid native HMD sample creates
-   the fresh baseline.
-4. Move physically right and return, left and return, forward and return,
-   backward and return, upward and return, then downward and return.
-5. Repeat lateral and forward/back movement at the baseline heading, 90 degrees
-   left, 180 degrees, 90 degrees right, and the baseline/360-degree heading.
-6. Confirm the purple sphere remains attached one metre forward of the rendered
-   HMD, both blue controller spheres remain aligned independently, physical
-   translation directions do not change with head yaw, every return reaches the
-   baseline positions, and no drift accumulates. The red sphere remains the
-   `beamngOnly` comparison.
-7. Save `dump(extensions.beamngVRControllerPoses.getState())` and `beamng.log`.
+```lua
+extensions.beamngVRControllerPoses.setHmdTranslationMode('baselineRigidTracking')
+```
 
-If the candidate fails, do not tune gains, smoothing, offsets, or corrections.
-Switch back immediately with
-`extensions.beamngVRControllerPoses.setHmdTranslationMode('beamngOnly')` and
-classify the evidence as a constant axis permutation, constant sign inversion,
-yaw-dependent rotation, doubled translation, or failure to return to baseline.
-Session/base changes, sample-time resets, recenter detection, extension load,
-and manual `resetHmdBaseline()` establish a new baseline; ordinary head movement
-and yaw do not.
+Face forward and remain still for the fresh baseline. Move the headset right,
+left, forward, backward, up, and down, returning after each movement. Repeat
+lateral and forward/back movement at the baseline heading, 90 degrees left,
+180 degrees, 90 degrees right, and 360 degrees/baseline. Success means the
+purple sphere remains attached to the rendered HMD, blue spheres remain aligned
+with independent physical controllers, movement directions do not change with
+head yaw, all positions return to baseline, and no drift accumulates.
+
+Save `dump(extensions.beamngVRControllerPoses.getState())` and `beamng.log`. On
+failure, do not tune gains, smoothing, or offsets; report constant axis
+permutation, constant sign inversion, yaw-dependent rotation, doubled
+translation, or failure to return. Restore PR #25 immediately with
+`extensions.beamngVRControllerPoses.setHmdTranslationMode('beamngOnly')`.
 
 ## 1. Prerequisites
 

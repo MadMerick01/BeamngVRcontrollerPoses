@@ -14,48 +14,32 @@ never changes a pose returned to BeamNG. SteamVR/OpenVR is **not required**. The
 old Python OpenVR publisher remains only as an unsupported fallback entry point,
 `beamng-vr-poses-openvr-fallback`, so the earlier work remains recoverable.
 
-## PR #26 stationary-world baseline-rigid candidate
+## PR #26 stationary-world rigid-transform test
 
-`beamngOnly` remains the default and preserves PR #25 behavior. PR #26 adds one
-isolated headset-test mode, `baselineRigidTracking`. On its first valid native
-API-layer HMD sample, it captures the complete BeamNG camera world pose and the
-complete mapped tracking-local HMD pose, then fixes this rigid transform:
+`beamngOnly` remains the default. The explicitly selected
+`baselineRigidTracking` candidate captures complete BeamNG-camera-world and
+mapped native-HMD tracking-local poses, then evaluates:
 
 ```text
-baselineWorldFromTracking =
-  baselineBeamngCameraWorld * inverse(baselineTrackingHmdMapped)
-
+baselineWorldFromTracking = baselineBeamngCameraWorld * inverse(baselineTrackingHmdMapped)
 candidateHmdWorld = baselineWorldFromTracking * currentTrackingHmdMapped
-candidateControllerWorld =
-  candidateHmdWorld * controllerRelativeToHmd * controllerCalibrationOffset
+candidateControllerWorld = candidateHmdWorld * controllerRelativeToHmd * controllerCalibrationOffset
 ```
 
-The inverse includes rotated negative translation as well as inverse rotation.
-Both tracking HMD components use the same OpenXR `(x,y,z)` to BeamNG
-`(x,-z,y)` basis. The native packet HMD remains authoritative because it shares
-the controller sample's OpenXR base and time; the predicted OpenXR getter is
-still diagnostic-only and is never a world parent.
-
-This is deliberately a **stationary-world validation**. Keep the vehicle and
-game camera stationary; vehicle/camera-anchor motion will be addressed only
-after the tracking-to-world relationship is proven. Enable the candidate in the
-GE Lua console with:
+The native packet HMD is authoritative because it shares the controller base
+space and sample time. The predicted OpenXR getter remains diagnostic-only.
+This first test requires a stationary vehicle and stationary game camera; it
+does not attempt to solve camera-anchor motion and room-scale motion together.
 
 ```lua
 extensions.beamngVRControllerPoses.setHmdTranslationMode('baselineRigidTracking')
-```
-
-Selecting it establishes a fresh baseline. Switch immediately back to the safe
-PR #25 behavior with:
-
-```lua
+-- Immediate PR #25 fallback:
 extensions.beamngVRControllerPoses.setHmdTranslationMode('beamngOnly')
 ```
 
-The red sphere is the `beamngOnly` HMD-forward comparison, the purple sphere is
-the complete baseline-rigid candidate one metre forward, and the blue spheres
-follow the selected mode. Never interpret the raw tracking-local or predicted
-pose as world coordinates.
+Selecting the candidate establishes a fresh baseline. Existing red, green,
+yellow, and white diagnostics remain; purple is the new complete-pose candidate
+one metre forward. Blue controller spheres follow the selected mode.
 
 ## Choose an installation route
 

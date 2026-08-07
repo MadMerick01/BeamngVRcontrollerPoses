@@ -233,7 +233,111 @@ def test_hmd_delta_uses_nonzero_world_anchor_and_nonidentity_rotation():
     close(actual.orientation,qz)
 
 
+def test_zero_hmd_delta_makes_all_translation_modes_identical():
+    camera = Pose((10., 20., 30.), I)
+    hmd = Pose((2., 1.7, -3.), I)
+    candidates = hmd_translation_candidates(camera, hmd, hmd.position)
+    assert set(candidates) == {"beamngOnly", "beamngPlusHmdDelta", "beamngMinusHmdDelta", "beamngFixedBaseHmdDelta"}
+    for candidate in candidates.values():
+        close(candidate.position, camera.position)
 
+
+@pytest.mark.parametrize(('delta', 'mapped'), [
+    ((.4, 0., 0.), (.4, 0., 0.)),
+    ((0., .3, 0.), (0., 0., .3)),
+    ((0., 0., -.5), (0., .5, 0.)),
+    ((0., 0., .5), (0., -.5, 0.)),
+])
+def test_plus_and_minus_modes_for_room_scale_axes(delta, mapped):
+    origin = (-715., 106., 119.)
+    hmd = Pose(delta, I)
+    candidates = hmd_translation_candidates(Pose(origin, I), hmd, (0., 0., 0.))
+    close(candidates['beamngOnly'].position, origin)
+    close(candidates['beamngPlusHmdDelta'].position,
+          tuple(origin[i] + mapped[i] for i in range(3)))
+    close(candidates['beamngMinusHmdDelta'].position,
+          tuple(origin[i] - mapped[i] for i in range(3)))
+
+
+def test_translation_candidates_rotate_delta_without_rotating_world_origin():
+    qz = (0., 0., sin(pi/4), cos(pi/4))
+    camera = Pose((-715., 106., 119.), qz)
+    candidates = hmd_translation_candidates(camera, Pose((1., 0., 0.), I), (0., 0., 0.))
+    close(candidates['beamngOnly'].position, camera.position)
+    close(candidates['beamngPlusHmdDelta'].position, (-715., 107., 119.))
+    close(candidates['beamngMinusHmdDelta'].position, (-715., 105., 119.))
+
+
+def test_each_candidate_is_an_independent_pose_calculation():
+    candidates = hmd_translation_candidates(Pose((1., 2., 3.), I),
+                                            Pose((.2, .3, .4), I), (0., 0., 0.))
+    assert len({id(pose) for pose in candidates.values()}) == 4
+    assert len({id(pose.position) for pose in candidates.values()}) == 4
+    close(candidates['beamngOnly'].position, (1., 2., 3.))
+
+
+def test_selection_returns_requested_mode_and_rejects_invalid_mode():
+    camera = Pose((10., 20., 30.), I)
+    hmd = Pose((1., 0., 0.), I)
+    close(select_hmd_translation(camera, hmd, (0., 0., 0.),
+                                 'beamngMinusHmdDelta').position, (9., 20., 30.))
+    with pytest.raises(ValueError):
+        select_hmd_translation(camera, hmd, (0., 0., 0.), 'scaledGuess')
+
+
+def test_invalid_or_absent_hmd_data_uses_zero_delta_for_every_mode():
+    camera = Pose((10., 20., 30.), I)
+    for hmd, baseline in ((None, None), (Pose((99., 99., 99.), I), None)):
+        for candidate in hmd_translation_candidates(camera, hmd, baseline).values():
+            close(candidate.position, camera.position)
+
+
+BASIS = (sin(pi / 4), 0., 0., cos(pi / 4))
+
+
+def test_openxr_orientation_basis_and_xyzw_order():
+    close(map_openxr_orientation(I), I)
+    assert BASIS[0] != 0 and BASIS[3] != 0 and BASIS[1:3] == (0., 0.)
+    close(map_openxr_position((1., 0., 0.)), (1., 0., 0.))
+    close(map_openxr_position((0., 1., 0.)), (0., 0., 1.))
+    close(map_openxr_position((0., 0., -1.)), (0., 1., 0.))
+
+
+def test_world_from_base_is_world_from_hmd_times_inverse_mapped_hmd():
+    base_from_hmd = (0., sin(pi / 8), 0., cos(pi / 8))
+    world_from_hmd = (0., 0., sin(pi / 6), cos(pi / 6))
+    expected = qnorm(qmul(world_from_hmd,
+                          quaternion_inverse(map_openxr_orientation(base_from_hmd))))
+    close(fixed_world_from_base(world_from_hmd, base_from_hmd), expected)
+
+
+@pytest.mark.parametrize('raw_delta', [(1., 0., 0.), (0., 0., -1.), (0., 1., 0.)])
+def test_fixed_translation_axes_are_independent_of_live_hmd_yaw(raw_delta):
+    fixed = fixed_world_from_base(I, I)
+    expected = fixed_base_world_delta(fixed, raw_delta, (0., 0., 0.))
+    live_results = []
+    for degrees in (0, 90, 180, 270, 360):
+        yaw = (0., 0., sin(degrees*pi/360), cos(degrees*pi/360))
+        close(fixed_base_world_delta(fixed, raw_delta, (0., 0., 0.)), expected)
+        live_results.append(qrotate(yaw, map_openxr_position(raw_delta)))
+    if raw_delta != (0., 1., 0.):
+        assert live_results[0] != pytest.approx(live_results[1])
+    close(live_results[0], live_results[4])
+
+
+def test_fixed_delta_zero_at_baseline_on_return_and_during_full_rotation():
+    baseline = (2., 1.7, -3.)
+    fixed = fixed_world_from_base(I, I)
+    close(fixed_base_world_delta(fixed, baseline, baseline), (0., 0., 0.))
+    moved = (2.4, 1.7, -3.)
+    assert fixed_base_world_delta(fixed, moved, baseline) != pytest.approx((0., 0., 0.))
+    close(fixed_base_world_delta(fixed, baseline, baseline), (0., 0., 0.))
+    for degrees in (0, 90, 180, 270, 360):
+        # Orientation changes are deliberately absent from the positional formula.
+        close(fixed_base_world_delta(fixed, baseline, baseline), (0., 0., 0.))
+
+# PR #26 complete baseline rigid-transform tests. These are additive to the
+# controller, native hot-path, and PR #25 safety suite above.
 from beamng_vr_poses.math3d import (
     baseline_rigid_controller_world,
     baseline_rigid_hmd_world,
@@ -242,82 +346,76 @@ from beamng_vr_poses.math3d import (
 )
 
 
-def rigid(camera, baseline_hmd, current_hmd):
+def baseline_candidate(camera, baseline_hmd, current_hmd):
     fixed = baseline_world_from_tracking(camera, baseline_hmd)
     return fixed, baseline_rigid_hmd_world(fixed, current_hmd)
 
 
-def test_complete_rigid_transform_inverse_round_trip_includes_translation():
-    pose = Pose((3., -4., 5.), qnorm((.2, -.3, .1, .8)))
-    result = compose(pose, inverse(pose))
-    close(result.position, (0., 0., 0.)); close(result.orientation, I)
-    assert inverse(pose).position != tuple(-v for v in pose.position)
+def test_baseline_rigid_complete_inverse_round_trip():
+    pose=Pose((3.,-4.,5.),qnorm((.2,-.3,.1,.8)))
+    identity=compose(inverse(pose),pose)
+    close(identity.position,(0.,0.,0.));close(identity.orientation,I)
 
 
-def test_identity_baseline_and_zero_movement_reproduce_camera_exactly():
-    camera = Pose((0., 0., 0.), I); hmd = Pose((0., 0., 0.), I)
-    fixed, current = rigid(camera, hmd, hmd)
-    assert fixed == camera; close(current.position, camera.position); close(current.orientation, camera.orientation)
+def test_pose_inverse_rotates_negative_translated_position():
+    pose=Pose((2.,-3.,4.),(0.,0.,sin(pi/4),cos(pi/4)))
+    assert inverse(pose).position != pytest.approx(tuple(-v for v in pose.position))
+    close(compose(pose,inverse(pose)).position,(0.,0.,0.))
 
 
-def test_nonzero_tracking_baseline_and_nonzero_world_position_cancel_exactly():
-    camera = Pose((-715., 106., 119.), I)
-    hmd = Pose((2., 1.7, -3.), I)
-    _, current = rigid(camera, hmd, hmd)
-    close(current.position, camera.position); close(current.orientation, camera.orientation)
+def test_baseline_rigid_identity_baseline():
+    fixed,current=baseline_candidate(Pose((0.,0.,0.),I),Pose((0.,0.,0.),I),Pose((0.,0.,0.),I))
+    assert fixed==Pose((0.,0.,0.),I);assert current==fixed
 
 
-def test_nonidentity_baseline_hmd_orientation_cancels_exactly():
-    camera = Pose((10., 20., 30.), qnorm((0., 0., .3, .9)))
-    hmd = Pose((2., 1.7, -3.), qnorm((0., .4, 0., .8)))
-    _, current = rigid(camera, hmd, hmd)
-    close(current.position, camera.position); close(current.orientation, camera.orientation)
+def test_baseline_rigid_nonzero_tracking_hmd_baseline_position():
+    camera=Pose((10.,20.,30.),I); hmd=Pose((2.,1.7,-3.),I)
+    _,current=baseline_candidate(camera,hmd,hmd)
+    close(current.position,camera.position);close(current.orientation,camera.orientation)
 
 
-@pytest.mark.parametrize('degrees', (0, 90, 180, 270))
-def test_world_yaw_determines_fixed_tracking_axes(degrees):
-    yaw = (0., 0., sin(degrees*pi/360), cos(degrees*pi/360))
-    camera = Pose((100., -50., 8.), yaw); base = Pose((0., 0., 0.), I)
-    _, moved = rigid(camera, base, Pose((1., 0., 0.), I))
-    expected = compose(camera, Pose((1., 0., 0.), I))
-    close(moved.position, expected.position)
+def test_baseline_rigid_nonidentity_hmd_baseline_orientation():
+    camera=Pose((10.,20.,30.),qnorm((0.,0.,.2,.9)))
+    hmd=Pose((2.,1.7,-3.),qnorm((0.,.3,0.,.8)))
+    _,current=baseline_candidate(camera,hmd,hmd)
+    close(current.position,camera.position);close(current.orientation,camera.orientation)
 
 
-def test_tracking_translation_meaning_is_fixed_not_rotated_by_current_head_yaw():
-    camera = Pose((10., 20., 30.), qnorm((0., 0., .2, .98))); base = Pose((0., 0., 0.), I)
-    fixed = baseline_world_from_tracking(camera, base)
-    positions=[]
-    for degrees in (0, 90, 180, 270):
-        raw_yaw=(0., sin(degrees*pi/360), 0., cos(degrees*pi/360))
-        positions.append(baseline_rigid_hmd_world(fixed, Pose((.4, 0., 0.), raw_yaw)).position)
-    for position in positions[1:]: close(position, positions[0])
+@pytest.mark.parametrize('degrees',(0,90,180,270))
+def test_baseline_rigid_beamng_world_cardinal_yaws(degrees):
+    yaw=(0.,0.,sin(degrees*pi/360),cos(degrees*pi/360))
+    camera=Pose((-715.,106.,119.),yaw); baseline=Pose((0.,0.,0.),I)
+    _,moved=baseline_candidate(camera,baseline,Pose((1.,0.,0.),I))
+    expected=compose(camera,Pose((1.,0.,0.),I))
+    close(moved.position,expected.position)
 
 
-def test_current_hmd_yaw_changes_orientation_without_changing_translation_axes():
-    fixed = baseline_world_from_tracking(Pose((0., 0., 0.), I), Pose((0., 0., 0.), I))
-    level = baseline_rigid_hmd_world(fixed, Pose((0., 0., -1.), I))
-    turned = baseline_rigid_hmd_world(fixed, Pose((0., 0., -1.), (0., sin(pi/4), 0., cos(pi/4))))
-    close(level.position, turned.position)
-    assert turned.orientation != pytest.approx(level.orientation)
+def test_same_tracking_movement_uses_fixed_baseline_not_current_hmd_yaw():
+    fixed=baseline_world_from_tracking(Pose((10.,20.,30.),qnorm((0.,0.,.2,.98))),Pose((0.,0.,0.),I))
+    results=[]
+    for degrees in (0,90,180,270):
+        current=Pose((.4,0.,0.),(0.,sin(degrees*pi/360),0.,cos(degrees*pi/360)))
+        results.append(baseline_rigid_hmd_world(fixed,current))
+    for result in results[1:]: close(result.position,results[0].position)
+    assert results[1].orientation != pytest.approx(results[0].orientation)
 
 
-def test_left_and_right_controllers_remain_independent():
-    hmd = Pose((5., 6., 7.), I); offset = Pose((0., 0., 0.), I)
-    left = baseline_rigid_controller_world(hmd, Pose((-.4, 1., 0.), I), offset)
-    right = baseline_rigid_controller_world(hmd, Pose((.4, 1., 0.), I), offset)
-    assert left.position != right.position
-    close(left.position, (4.6, 7., 7.)); close(right.position, (5.4, 7., 7.))
+def test_baseline_rigid_left_and_right_controllers_are_independent():
+    hmd=Pose((5.,6.,7.),I); offset=Pose((0.,0.,0.),I)
+    left=baseline_rigid_controller_world(hmd,Pose((-.4,1.,0.),I),offset)
+    right=baseline_rigid_controller_world(hmd,Pose((.4,1.,0.),I),offset)
+    close(left.position,(4.6,7.,7.));close(right.position,(5.4,7.,7.))
 
 
-def test_openxr_position_and_orientation_share_one_basis_mapping():
-    yaw_about_openxr_up = (0., sin(pi/4), 0., cos(pi/4))
-    mapped = map_openxr_pose(Pose((0., 1., -2.), yaw_about_openxr_up))
-    close(mapped.position, (0., 2., 1.))
-    # OpenXR up maps to BeamNG +Z, so yaw maps to a +Z-axis quaternion.
-    assert abs(mapped.orientation[2]) == pytest.approx(sin(pi/4))
-    assert abs(mapped.orientation[0]) < 1e-6 and abs(mapped.orientation[1]) < 1e-6
+def test_zero_hmd_movement_exactly_reproduces_nonzero_camera_world():
+    camera=Pose((-715.,106.,119.),qnorm((.1,-.2,.3,.9)))
+    baseline=Pose((2.,1.7,-3.),qnorm((0.,.3,0.,.8)))
+    _,current=baseline_candidate(camera,baseline,baseline)
+    close(current.position,camera.position);close(current.orientation,camera.orientation)
 
 
-def test_beamng_only_is_the_only_default_mode():
-    from beamng_vr_poses.math3d import HMD_TRANSLATION_MODES
-    assert HMD_TRANSLATION_MODES == ('beamngOnly', 'baselineRigidTracking')
+def test_complete_openxr_pose_uses_one_basis_for_position_and_orientation():
+    mapped=map_openxr_pose(Pose((0.,1.,-2.),(0.,sin(pi/4),0.,cos(pi/4))))
+    close(mapped.position,(0.,2.,1.))
+    assert abs(mapped.orientation[2])==pytest.approx(sin(pi/4))
+    assert abs(mapped.orientation[0])<1e-6 and abs(mapped.orientation[1])<1e-6

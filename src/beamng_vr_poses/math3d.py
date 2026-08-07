@@ -77,20 +77,20 @@ def map_openxr_orientation(orientation):
 
 
 def map_openxr_pose(pose: Pose) -> Pose:
-    """Map one complete OpenXR tracking-local pose into BeamNG's basis."""
+    """Map a complete OpenXR pose with one shared change of basis."""
     return Pose(map_openxr_position(pose.position),
                 map_openxr_orientation(pose.orientation))
 
 
 def baseline_world_from_tracking(beamng_camera_world: Pose,
-                                 tracking_hmd: Pose) -> Pose:
-    """Capture the fixed tracking-base-to-world transform at baseline."""
-    return compose(beamng_camera_world, inverse(map_openxr_pose(tracking_hmd)))
+                                 baseline_tracking_hmd: Pose) -> Pose:
+    """Return the complete, fixed BeamNG-world-from-tracking transform."""
+    return compose(beamng_camera_world,
+                   inverse(map_openxr_pose(baseline_tracking_hmd)))
 
 
 def baseline_rigid_hmd_world(world_from_tracking: Pose,
                              current_tracking_hmd: Pose) -> Pose:
-    """Place the current tracking-local HMD through the fixed baseline pose."""
     return compose(world_from_tracking, map_openxr_pose(current_tracking_hmd))
 
 
@@ -123,7 +123,9 @@ def actual_hmd_world(camera_anchor: Pose, hmd_in_base: Pose, baseline):
 
 HMD_TRANSLATION_MODES = (
     "beamngOnly",
-    "baselineRigidTracking",
+    "beamngPlusHmdDelta",
+    "beamngMinusHmdDelta",
+    "beamngFixedBaseHmdDelta",
 )
 
 
