@@ -228,6 +228,16 @@ The red sphere represents `beamngOnly`, green represents
 rendered simultaneously. The blue controller spheres use only the selected
 mode.
 
+Three additional spheres isolate the BeamNG camera quaternion from the HMD
+translation modes. They are composed only from the `beamngOnly` camera anchor:
+red is one metre to camera-right (`[1,0,0]`), green is one metre camera-forward
+(`[0,1,0]`), and blue is one metre camera-up (`[0,0,1]`). Translate the headset
+at several headings and record whether any sphere swings onto another camera
+axis. Their world positions are exposed in
+`diagnostics.cameraAxisSphereWorldPositions`. Configure the check with
+`cameraAxisSpheres.enabled`, `cameraAxisSpheres.distance`, and
+`cameraAxisSpheres.diameter` in `settings/beamngVRControllerPoses.json`.
+
 Run this checklist in order:
 
 1. Connect the Quest 3 through Virtual Desktop.

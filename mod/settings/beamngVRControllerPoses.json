@@ -60,6 +60,11 @@
     ],
     "diameter": 0.12
   },
+  "cameraAxisSpheres": {
+    "enabled": true,
+    "distance": 1.0,
+    "diameter": 0.12
+  },
   "axisTripods": {
     "enabled": true,
     "axisLength": 0.25,
