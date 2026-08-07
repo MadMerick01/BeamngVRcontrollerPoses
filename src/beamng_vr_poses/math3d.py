@@ -136,26 +136,46 @@ def translate_world_from_tracking(world_from_tracking: Pose, beamng_anchor_delta
                 world_from_tracking.orientation)
 
 
+def separate_camera_motion(raw_core_camera_delta, physical_tracking_world_delta):
+    """Remove room-scale HMD motion already represented by the OpenXR pose."""
+    raw = tuple(float(value) for value in raw_core_camera_delta)
+    physical = tuple(float(value) for value in physical_tracking_world_delta)
+    if (len(raw) != 3 or len(physical) != 3 or
+            not all(isfinite(value) for value in raw + physical)):
+        raise ValueError("camera motion components must be finite vec3 values")
+    return tuple(raw[i] - physical[i] for i in range(3))
+
+
 def moving_anchor_update(world_from_tracking: Pose, previous_anchor, current_anchor,
-                         mapped_tracking_hmd: Pose, camera_orientation,
+                         mapped_tracking_hmd: Pose, previous_final_hmd_position,
+                         camera_orientation,
                          jump_metres=5.0, yaw_threshold_degrees=.75):
-    """Apply world translation, then PR #28's pivot-preserving yaw rebase."""
+    """Apply only game locomotion, then PR #28's pivot-preserving yaw rebase."""
     from math import dist, isfinite
     previous, current = tuple(previous_anchor), tuple(current_anchor)
     if len(previous) != 3 or len(current) != 3 or not all(
             isfinite(value) for value in previous + current):
         raise ValueError("BeamNG anchor positions must be finite vec3 values")
-    delta = tuple(current[i] - previous[i] for i in range(3))
-    if dist(delta, (0., 0., 0.)) > jump_metres:
-        return world_from_tracking, delta, True, False
-    moved = translate_world_from_tracking(world_from_tracking, delta)
+    prior_final = tuple(previous_final_hmd_position)
+    if len(prior_final) != 3 or not all(isfinite(value) for value in prior_final):
+        raise ValueError("previous final HMD position must be a finite vec3")
+    pre_anchor = compose(world_from_tracking, mapped_tracking_hmd)
+    physical = tuple(pre_anchor.position[i] - prior_final[i] for i in range(3))
+    raw = tuple(current[i] - previous[i] for i in range(3))
+    residual = separate_camera_motion(raw, physical)
+    if (dist(raw, (0., 0., 0.)) > jump_metres or
+            dist(residual, (0., 0., 0.)) > jump_metres):
+        return (world_from_tracking, raw, physical, residual, True, False,
+                pre_anchor, pre_anchor)
+    moved = translate_world_from_tracking(world_from_tracking, residual)
     target = target_world_from_tracking_orientation(camera_orientation,
                                                     mapped_tracking_hmd.orientation)
     rebased = quaternion_angular_difference_degrees(moved.orientation, target) > yaw_threshold_degrees
     if rebased:
         moved, _, _ = pivot_preserving_world_from_tracking_rebase(
             moved, mapped_tracking_hmd, target)
-    return moved, delta, False, rebased
+    final = compose(moved, mapped_tracking_hmd)
+    return moved, raw, physical, residual, False, rebased, pre_anchor, final
 
 
 def fixed_world_from_base(world_from_hmd, base_from_hmd):
