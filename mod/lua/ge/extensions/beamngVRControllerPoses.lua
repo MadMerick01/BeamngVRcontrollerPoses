@@ -9,8 +9,8 @@ local headingBaseline, alignedHeading = nil, nil
 local rigidBaseline, lastBaselineRigidCandidate = nil, nil
 local rebasedWorldFromTracking, lastRebasedRigidCandidate=nil,nil
 local artificialYawRebaseCount, lastArtificialRebaseLog = 0, 0
-local movingWorldFromTracking, previousBeamngCameraAnchorPosition, previousFinalMovingHmdWorldPosition, lastMovingRigidCandidate=nil,nil,nil,nil
-local accumulatedBeamngAnchorTranslation={0,0,0}
+local movingWorldFromTracking, previousBeamngCameraAnchorPosition, lastMovingRigidCandidate=nil,nil,nil
+local baselineOrangeReferenceHmdWorldPosition=nil
 local movingArtificialYawRebaseCount=0
 
 local function qmul(a,b) return {
@@ -84,8 +84,8 @@ local function resetHmdBaseline(reason)
   hmdBaseline=nil; hmdSpaceKey=nil; previousRawHmd=nil; previousHmdSampleTime=nil; worldFromBaseQ=nil
   headingBaseline=nil; alignedHeading=nil
   rigidBaseline=nil; lastBaselineRigidCandidate=nil; rebasedWorldFromTracking=nil; lastRebasedRigidCandidate=nil
-  movingWorldFromTracking=nil; previousBeamngCameraAnchorPosition=nil; previousFinalMovingHmdWorldPosition=nil; lastMovingRigidCandidate=nil
-  accumulatedBeamngAnchorTranslation={0,0,0}; movingArtificialYawRebaseCount=0
+  movingWorldFromTracking=nil; previousBeamngCameraAnchorPosition=nil; lastMovingRigidCandidate=nil
+  baselineOrangeReferenceHmdWorldPosition=nil; movingArtificialYawRebaseCount=0
   artificialYawRebaseCount=0; lastArtificialRebaseLog=0
   state.baselineValid=false
   state.baselineRigidCandidateHmdWorld=nil
@@ -105,22 +105,21 @@ local function resetHmdBaseline(reason)
   state.rebasedWorldFromTracking=nil; state.rebasedHybridHmdWorld=nil
   state.rebasedHybridLeftControllerWorld=nil; state.rebasedHybridRightControllerWorld=nil
   state.rebasedHybridDiagnosticSphereWorldPosition=nil
-  state.movingWorldFromTracking=nil; state.previousBeamngCameraAnchorPosition=nil
-  state.previousFinalMovingHmdWorldPosition=nil; state.preAnchorHmdWorldPosition=nil
-  state.finalMovingHmdWorldPosition=nil; state.rawCoreCameraDelta=nil
-  state.rawCoreCameraDeltaMagnitude=nil; state.physicalTrackingWorldDelta=nil
-  state.physicalTrackingWorldDeltaMagnitude=nil; state.residualGameLocomotionDelta=nil
-  state.residualGameLocomotionDeltaMagnitude=nil; state.physicalMotionSubtracted=false
-  state.anchorMovementApplied=false; state.movingReconstructionError=nil
-  state.movingReconstructionErrorMagnitude=nil
-  state.currentBeamngCameraAnchorPosition=nil; state.beamngAnchorDelta=nil
-  state.beamngAnchorDeltaMagnitude=nil; state.beamngAnchorMovementApplied=false
-  state.accumulatedBeamngAnchorTranslation={0,0,0}; state.beamngAnchorJumpDetected=false
+  state.movingReferenceWorldFromTracking=nil; state.previousBeamngCameraAnchorPosition=nil
+  state.baselineOrangeReferenceHmdWorldPosition=nil; state.currentOrangeReferenceHmdWorldPosition=nil
+  state.physicalOffsetFromRecenter=nil; state.physicalOffsetFromRecenterMagnitude=nil
+  state.currentBeamngCameraAnchorPosition=nil; state.absoluteMovingHmdWorldPosition=nil
+  state.absoluteMovingHmdWorldOrientation=nil; state.absoluteMovingHybridHmdWorld=nil
+  state.absoluteMovingLeftControllerWorld=nil; state.absoluteMovingRightControllerWorld=nil
+  state.absoluteMovingDiagnosticSphereWorldPosition=nil; state.beamngAnchorJumpDetected=false
+  state.movingAnchorJumpDetected=false
   state.movingAnchorResetReason=reason; state.movingCandidateHmdWorld=nil; state.movingHybridHmdWorld=nil
   state.movingHybridLeftControllerWorld=nil; state.movingHybridRightControllerWorld=nil
   state.movingHybridDiagnosticSphereWorldPosition=nil; state.movingArtificialYawRebaseCount=0
   state.movingArtificialYawAlignmentDeltaDegrees=nil; state.movingPositionBeforeAnchorUpdate=nil
-  state.movingPositionAfterAnchorUpdate=nil
+  state.anchorSource='core_camera.getPosition'
+  state.physicalOffsetSource='PR28 orange reference from native OpenXR HMD'
+  state.orientationSource='corrected core_camera.getQuat'
   state.diagnostics.baselineRigidPositionBeamngRotationHmdWorld=nil
   state.diagnostics.baselineRigidPosition=nil; state.diagnostics.baselineRigidTrackingOrientation=nil
   state.diagnostics.selectedHybridOrientation=nil
@@ -262,7 +261,7 @@ local function actualHmdWorld(cameraAnchor, hmd)
     movingWorldFromTracking={p={rigidBaseline.worldFromTracking.p[1],rigidBaseline.worldFromTracking.p[2],rigidBaseline.worldFromTracking.p[3]},q={rigidBaseline.worldFromTracking.q[1],rigidBaseline.worldFromTracking.q[2],rigidBaseline.worldFromTracking.q[3],rigidBaseline.worldFromTracking.q[4]}}
     previousBeamngCameraAnchorPosition={cameraAnchor.p[1],cameraAnchor.p[2],cameraAnchor.p[3]}
     local initialMovingHmdWorld=compose(movingWorldFromTracking,mappedTrackingHmd)
-    previousFinalMovingHmdWorldPosition={initialMovingHmdWorld.p[1],initialMovingHmdWorld.p[2],initialMovingHmdWorld.p[3]}
+    baselineOrangeReferenceHmdWorldPosition={initialMovingHmdWorld.p[1],initialMovingHmdWorld.p[2],initialMovingHmdWorld.p[3]}
   end
   previousRawHmd={hmd.p[1],hmd.p[2],hmd.p[3]}; previousHmdSampleTime=hmd.sampleTime
 
@@ -301,44 +300,19 @@ local function actualHmdWorld(cameraAnchor, hmd)
   state.rebasedWorldFromTracking=rebasedWorldFromTracking
   if cfg.hmdTranslationMode=='baselineRigidPositionBeamngRotationRebasedMovingAnchor' then
     local currentAnchor={cameraAnchor.p[1],cameraAnchor.p[2],cameraAnchor.p[3]}
-    local preAnchorHmdWorld=compose(movingWorldFromTracking,mappedTrackingHmd)
-    local physicalTrackingWorldDelta={preAnchorHmdWorld.p[1]-previousFinalMovingHmdWorldPosition[1],preAnchorHmdWorld.p[2]-previousFinalMovingHmdWorldPosition[2],preAnchorHmdWorld.p[3]-previousFinalMovingHmdWorldPosition[3]}
-    local rawCoreCameraDelta={currentAnchor[1]-previousBeamngCameraAnchorPosition[1],currentAnchor[2]-previousBeamngCameraAnchorPosition[2],currentAnchor[3]-previousBeamngCameraAnchorPosition[3]}
-    local residualGameLocomotionDelta={rawCoreCameraDelta[1]-physicalTrackingWorldDelta[1],rawCoreCameraDelta[2]-physicalTrackingWorldDelta[2],rawCoreCameraDelta[3]-physicalTrackingWorldDelta[3]}
-    local rawMagnitude=distance(rawCoreCameraDelta,{0,0,0})
-    local physicalMagnitude=distance(physicalTrackingWorldDelta,{0,0,0})
-    local residualMagnitude=distance(residualGameLocomotionDelta,{0,0,0})
-    local reconstructionError={rawCoreCameraDelta[1]-physicalTrackingWorldDelta[1]-residualGameLocomotionDelta[1],rawCoreCameraDelta[2]-physicalTrackingWorldDelta[2]-residualGameLocomotionDelta[2],rawCoreCameraDelta[3]-physicalTrackingWorldDelta[3]-residualGameLocomotionDelta[3]}
-    state.previousBeamngCameraAnchorPosition={previousBeamngCameraAnchorPosition[1],previousBeamngCameraAnchorPosition[2],previousBeamngCameraAnchorPosition[3]}
-    state.previousFinalMovingHmdWorldPosition={previousFinalMovingHmdWorldPosition[1],previousFinalMovingHmdWorldPosition[2],previousFinalMovingHmdWorldPosition[3]}
-    state.currentBeamngCameraAnchorPosition=currentAnchor
-    state.rawCoreCameraDelta=rawCoreCameraDelta; state.rawCoreCameraDeltaMagnitude=rawMagnitude
-    state.beamngAnchorDelta=rawCoreCameraDelta; state.beamngAnchorDeltaMagnitude=rawMagnitude
-    state.physicalTrackingWorldDelta=physicalTrackingWorldDelta; state.physicalTrackingWorldDeltaMagnitude=physicalMagnitude
-    state.residualGameLocomotionDelta=residualGameLocomotionDelta; state.residualGameLocomotionDeltaMagnitude=residualMagnitude
-    state.preAnchorHmdWorldPosition=preAnchorHmdWorld.p; state.physicalMotionSubtracted=physicalMagnitude>0
-    state.movingReconstructionError=reconstructionError; state.movingReconstructionErrorMagnitude=distance(reconstructionError,{0,0,0})
+    local anchorStepMagnitude=distance(currentAnchor,previousBeamngCameraAnchorPosition)
     state.beamngAnchorJumpThreshold=cfg.beamngAnchorJumpMetres or 5.0
-    state.beamngAnchorJumpDetected=rawMagnitude>state.beamngAnchorJumpThreshold or residualMagnitude>state.beamngAnchorJumpThreshold
+    state.beamngAnchorJumpDetected=anchorStepMagnitude>state.beamngAnchorJumpThreshold
+    state.movingAnchorJumpDetected=state.beamngAnchorJumpDetected
     if state.beamngAnchorJumpDetected then
       resetHmdBaseline('BeamNG camera anchor jump')
       local resetSelected,resetCandidates=actualHmdWorld(cameraAnchor,hmd)
       state.beamngAnchorJumpDetected=true
+      state.movingAnchorJumpDetected=true
       state.movingAnchorResetReason='BeamNG camera anchor jump'
       state.currentBeamngCameraAnchorPosition=currentAnchor
-      state.rawCoreCameraDelta=rawCoreCameraDelta; state.rawCoreCameraDeltaMagnitude=rawMagnitude
-      state.physicalTrackingWorldDelta=physicalTrackingWorldDelta; state.physicalTrackingWorldDeltaMagnitude=physicalMagnitude
-      state.residualGameLocomotionDelta=residualGameLocomotionDelta; state.residualGameLocomotionDeltaMagnitude=residualMagnitude
       return resetSelected,resetCandidates
     end
-    state.movingPositionBeforeAnchorUpdate={movingWorldFromTracking.p[1],movingWorldFromTracking.p[2],movingWorldFromTracking.p[3]}
-    -- Both deltas are already in BeamNG world axes. Apply only movement not
-    -- already represented by the current OpenXR tracking-local HMD pose.
-    movingWorldFromTracking.p={movingWorldFromTracking.p[1]+residualGameLocomotionDelta[1],movingWorldFromTracking.p[2]+residualGameLocomotionDelta[2],movingWorldFromTracking.p[3]+residualGameLocomotionDelta[3]}
-    accumulatedBeamngAnchorTranslation={accumulatedBeamngAnchorTranslation[1]+residualGameLocomotionDelta[1],accumulatedBeamngAnchorTranslation[2]+residualGameLocomotionDelta[2],accumulatedBeamngAnchorTranslation[3]+residualGameLocomotionDelta[3]}
-    state.movingPositionAfterAnchorUpdate={movingWorldFromTracking.p[1],movingWorldFromTracking.p[2],movingWorldFromTracking.p[3]}
-    state.anchorMovementApplied=residualMagnitude>0; state.beamngAnchorMovementApplied=state.anchorMovementApplied
-    state.accumulatedBeamngAnchorTranslation={accumulatedBeamngAnchorTranslation[1],accumulatedBeamngAnchorTranslation[2],accumulatedBeamngAnchorTranslation[3]}
     local movingTargetQ=qnorm(qmul(qnorm(cameraAnchor.q),qinv(mappedTrackingHmd.q)))
     local movingDelta=quaternionAngularDifferenceDegrees(movingWorldFromTracking.q,movingTargetQ)
     state.movingArtificialYawAlignmentDeltaDegrees=movingDelta
@@ -350,11 +324,18 @@ local function actualHmdWorld(cameraAnchor, hmd)
     end
     previousBeamngCameraAnchorPosition=currentAnchor
     state.movingArtificialYawRebaseCount=movingArtificialYawRebaseCount
-    state.movingWorldFromTracking=movingWorldFromTracking
-    lastMovingRigidCandidate=compose(movingWorldFromTracking,mappedTrackingHmd)
-    previousFinalMovingHmdWorldPosition={lastMovingRigidCandidate.p[1],lastMovingRigidCandidate.p[2],lastMovingRigidCandidate.p[3]}
-    state.previousFinalMovingHmdWorldPosition={previousFinalMovingHmdWorldPosition[1],previousFinalMovingHmdWorldPosition[2],previousFinalMovingHmdWorldPosition[3]}
-    state.finalMovingHmdWorldPosition=lastMovingRigidCandidate.p
+    state.movingReferenceWorldFromTracking=movingWorldFromTracking
+    local currentOrangeReferenceHmdWorld=compose(movingWorldFromTracking,mappedTrackingHmd)
+    local physicalOffsetFromRecenter={currentOrangeReferenceHmdWorld.p[1]-baselineOrangeReferenceHmdWorldPosition[1],currentOrangeReferenceHmdWorld.p[2]-baselineOrangeReferenceHmdWorldPosition[2],currentOrangeReferenceHmdWorld.p[3]-baselineOrangeReferenceHmdWorldPosition[3]}
+    lastMovingRigidCandidate={p={currentAnchor[1]+physicalOffsetFromRecenter[1],currentAnchor[2]+physicalOffsetFromRecenter[2],currentAnchor[3]+physicalOffsetFromRecenter[3]},q=qnorm(cameraAnchor.q)}
+    state.baselineOrangeReferenceHmdWorldPosition=baselineOrangeReferenceHmdWorldPosition
+    state.currentOrangeReferenceHmdWorldPosition=currentOrangeReferenceHmdWorld.p
+    state.physicalOffsetFromRecenter=physicalOffsetFromRecenter
+    state.physicalOffsetFromRecenterMagnitude=distance(physicalOffsetFromRecenter,{0,0,0})
+    state.currentBeamngCameraAnchorPosition=currentAnchor
+    state.absoluteMovingHmdWorldPosition=lastMovingRigidCandidate.p
+    state.absoluteMovingHmdWorldOrientation=lastMovingRigidCandidate.q
+    state.absoluteMovingHybridHmdWorld=lastMovingRigidCandidate
     state.movingCandidateHmdWorld=lastMovingRigidCandidate
   end
   -- Complete current pose composition. No position delta is independently added.
@@ -513,6 +494,7 @@ local function drawDiagnostics(candidates,hmdWorld)
     state.rebasedHybridDiagnosticSphereWorldPosition=orange and orange.p or nil
     state.diagnostics.rebasedHybridDiagnosticSphereWorldPosition=state.rebasedHybridDiagnosticSphereWorldPosition
     state.movingHybridDiagnosticSphereWorldPosition=pink and pink.p or nil
+    state.absoluteMovingDiagnosticSphereWorldPosition=pink and pink.p or nil
     state.diagnostics.movingHybridDiagnosticSphereWorldPosition=state.movingHybridDiagnosticSphereWorldPosition
     state.diagnostics.fixedBaseDiagnosticSphereWorldPosition=white.p
     state.diagnostics.cameraTestSphereWorld=red.p -- backward-compatible name
@@ -598,6 +580,8 @@ function M.onPreRender(dtReal,dtSim,dtRaw)
   state.rebasedHybridRightControllerWorld=candidates.baselineRigidPositionBeamngRotationRebased and diagnosticControllerWorld('right',latest.right,candidates.baselineRigidPositionBeamngRotationRebased) or nil
   state.movingHybridLeftControllerWorld=candidates.baselineRigidPositionBeamngRotationRebasedMovingAnchor and diagnosticControllerWorld('left',latest.left,candidates.baselineRigidPositionBeamngRotationRebasedMovingAnchor) or nil
   state.movingHybridRightControllerWorld=candidates.baselineRigidPositionBeamngRotationRebasedMovingAnchor and diagnosticControllerWorld('right',latest.right,candidates.baselineRigidPositionBeamngRotationRebasedMovingAnchor) or nil
+  state.absoluteMovingLeftControllerWorld=state.movingHybridLeftControllerWorld
+  state.absoluteMovingRightControllerWorld=state.movingHybridRightControllerWorld
   state.diagnostics.beamngOnlyLeftControllerWorld=state.beamngOnlyLeftControllerWorld
   state.diagnostics.beamngOnlyRightControllerWorld=state.beamngOnlyRightControllerWorld
   state.diagnostics.baselineRigidLeftControllerWorld=state.baselineRigidLeftControllerWorld
@@ -612,7 +596,7 @@ function M.onPreRender(dtReal,dtSim,dtRaw)
   for _,field in ipairs({'artificialYawRebaseThresholdDegrees','targetWorldFromTrackingOrientation','storedWorldFromTrackingOrientationBeforeRebase','artificialAlignmentDeltaDegrees','artificialYawRebaseTriggered','artificialYawRebaseCount','lastArtificialYawRebaseReason','lastArtificialYawRebaseTime','hmdWorldPositionBeforeArtificialRebase','hmdWorldPositionAfterArtificialRebase','artificialRebasePositionDiscontinuityMetres','rebasedWorldFromTracking','rebasedHybridHmdWorld','rebasedHybridLeftControllerWorld','rebasedHybridRightControllerWorld','rebasedHybridDiagnosticSphereWorldPosition'}) do state.diagnostics[field]=state[field] end
   for _,field in ipairs({'baselineValid','baselineResetReason','baselineBeamngCameraWorld','baselineTrackingHmdRaw','baselineTrackingHmdMapped','baselineWorldFromTracking','currentTrackingHmdRaw','currentTrackingHmdMapped','baselineRigidCandidateHmdWorld','baselineRigidPositionBeamngRotationHmdWorld','baselineRigidPosition','baselineRigidTrackingOrientation','beamngLiveCameraOrientation','selectedHybridOrientation','trackingWorldRight','trackingWorldForward','trackingWorldUp'}) do state.diagnostics[field]=state[field] end
   state.beamngAnchorJumpThreshold=cfg.beamngAnchorJumpMetres or 5.0
-  for _,field in ipairs({'movingWorldFromTracking','previousBeamngCameraAnchorPosition','previousFinalMovingHmdWorldPosition','currentBeamngCameraAnchorPosition','rawCoreCameraDelta','rawCoreCameraDeltaMagnitude','physicalTrackingWorldDelta','physicalTrackingWorldDeltaMagnitude','residualGameLocomotionDelta','residualGameLocomotionDeltaMagnitude','preAnchorHmdWorldPosition','finalMovingHmdWorldPosition','physicalMotionSubtracted','anchorMovementApplied','movingReconstructionError','movingReconstructionErrorMagnitude','beamngAnchorDelta','beamngAnchorDeltaMagnitude','beamngAnchorMovementApplied','accumulatedBeamngAnchorTranslation','beamngAnchorJumpThreshold','beamngAnchorJumpDetected','movingAnchorResetReason','movingCandidateHmdWorld','movingHybridHmdWorld','movingHybridLeftControllerWorld','movingHybridRightControllerWorld','movingHybridDiagnosticSphereWorldPosition','movingArtificialYawRebaseCount','movingArtificialYawAlignmentDeltaDegrees','movingPositionBeforeAnchorUpdate','movingPositionAfterAnchorUpdate'}) do state.diagnostics[field]=state[field] end
+  for _,field in ipairs({'baselineOrangeReferenceHmdWorldPosition','currentOrangeReferenceHmdWorldPosition','physicalOffsetFromRecenter','physicalOffsetFromRecenterMagnitude','currentBeamngCameraAnchorPosition','absoluteMovingHmdWorldPosition','absoluteMovingHmdWorldOrientation','absoluteMovingHybridHmdWorld','absoluteMovingLeftControllerWorld','absoluteMovingRightControllerWorld','absoluteMovingDiagnosticSphereWorldPosition','movingReferenceWorldFromTracking','beamngAnchorJumpThreshold','beamngAnchorJumpDetected','movingAnchorJumpDetected','movingAnchorResetReason','movingCandidateHmdWorld','movingHybridHmdWorld','movingHybridLeftControllerWorld','movingHybridRightControllerWorld','movingHybridDiagnosticSphereWorldPosition','movingArtificialYawRebaseCount','movingArtificialYawAlignmentDeltaDegrees','anchorSource','physicalOffsetSource','orientationSource'}) do state.diagnostics[field]=state[field] end
   state.diagnostics.finalControllerWorldPositions={
     left=state.leftControllerWorld.valid and state.leftControllerWorld.position or nil,
     right=state.rightControllerWorld.valid and state.rightControllerWorld.position or nil
