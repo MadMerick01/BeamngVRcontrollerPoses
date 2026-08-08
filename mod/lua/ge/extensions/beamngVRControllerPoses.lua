@@ -8,6 +8,11 @@ local worldFromBaseQ=nil
 local headingBaseline, alignedHeading = nil, nil
 local rigidBaseline, lastBaselineRigidCandidate = nil, nil
 local rebasedWorldFromTracking, lastRebasedRigidCandidate=nil,nil
+-- PR #37 additive candidate state.  This is deliberately independent of the
+-- proven orange rebase state above; resetting it never changes orange.
+local darkBlueWorldFromTracking,previousBeamngCameraWorld,previousOrangeHmdWorld=nil,nil,nil
+local lastDarkBlueRigidCandidate=nil
+local darkBlueResetCount,darkBlueResetReason=0,'extension loaded'
 local artificialYawRebaseCount, lastArtificialRebaseLog = 0, 0
 local movingWorldFromTracking, previousBeamngCameraAnchorPosition, lastMovingRigidCandidate=nil,nil,nil
 local baselineOrangeReferenceHmdWorldPosition=nil
@@ -16,7 +21,7 @@ local geluaCapture={captureInstalled=false,captureAvailable=false,captureFailure
 local geluaOriginalSetter,geluaOriginalGetter,geluaSetterWrapper,geluaGetterWrapper=nil,nil,nil,nil
 local nativeSource={enabled=false,available=false,failureReason='diagnostics disabled',pollCounter=0,lastPollTimestamp=nil,lastLogTimestamp=0}
 local diagnosticVisualProfile='orangeVioletControllers'
-local visibleDiagnosticCandidates={'baselineRigidPositionBeamngRotationRebased','geluaNativeCameraComposition','leftApiLayerController','rightApiLayerController'}
+local visibleDiagnosticCandidates={'baselineRigidPositionBeamngRotationRebased','baselineRigidRebasedArtificialCamera','geluaNativeCameraComposition','leftApiLayerController','rightApiLayerController'}
 local hiddenDiagnosticCandidates={'beamngOnly','beamngPlusHmdDelta','beamngMinusHmdDelta','beamngFixedBaseHmdDelta','baselineRigidTracking','baselineRigidPositionBeamngRotation','baselineRigidPositionBeamngRotationRebasedMovingAnchor','nativeSourceYellowControllers','cameraAxisSpheres'}
 local yellowCandidateFormula='captured GE Lua anchor position + raw BeamNG native source position'
 local unpackValues=table.unpack or unpack
@@ -51,6 +56,10 @@ local function inversePose(t)
   local qi=qinv(t.q)
   return {p=qrot(qi,{-t.p[1],-t.p[2],-t.p[3]}),q=qi}
 end
+local function copyPose(t)
+  return t and {p={t.p[1],t.p[2],t.p[3]},q={t.q[1],t.q[2],t.q[3],t.q[4]}} or nil
+end
+local function identityPose() return {p={0,0,0},q={0,0,0,1}} end
 local function mappedPosition(p)
   local o,s=cfg.axisOrder,cfg.axisSign
   return {p[o[1]]*s[1]*cfg.metresToBeamNGUnit,p[o[2]]*s[2]*cfg.metresToBeamNGUnit,p[o[3]]*s[3]*cfg.metresToBeamNGUnit}
@@ -96,6 +105,8 @@ local function resetHmdBaseline(reason)
   movingWorldFromTracking=nil; previousBeamngCameraAnchorPosition=nil; lastMovingRigidCandidate=nil
   baselineOrangeReferenceHmdWorldPosition=nil; movingArtificialYawRebaseCount=0
   artificialYawRebaseCount=0; lastArtificialRebaseLog=0
+  darkBlueWorldFromTracking=nil; previousBeamngCameraWorld=nil; previousOrangeHmdWorld=nil
+  lastDarkBlueRigidCandidate=nil; darkBlueResetCount=darkBlueResetCount+1; darkBlueResetReason=reason
   state.baselineValid=false
   state.baselineRigidCandidateHmdWorld=nil
   state.baselineRigidPositionBeamngRotationHmdWorld=nil
@@ -136,6 +147,15 @@ local function resetHmdBaseline(reason)
   state.diagnostics.hybridDiagnosticSphereWorldPosition=nil
   state.diagnostics.hmdBaselineResetReason=reason
   state.diagnostics.baselineResetReason=reason
+  state.darkBlueHmdWorld=nil; state.darkBlueDiagnosticSphereWorld=nil
+  state.darkBlueWorldFromTracking=nil; state.previousBeamngCameraWorld=nil; state.currentBeamngCameraWorld=nil
+  state.beamngCameraDelta=nil; state.previousOrangeHmdWorld=nil; state.currentOrangeHmdWorld=nil
+  state.orangePhysicalDelta=nil; state.artificialCameraDelta=nil
+  state.artificialTranslationMagnitude=nil; state.artificialRotationDegrees=nil
+  state.artificialDeltaConsideredIdentity=nil; state.darkBlueLeftControllerWorld=nil
+  state.darkBlueRightControllerWorld=nil; state.darkBlueOrangePositionDifference=nil
+  state.darkBlueOrangeAngularDifference=nil; state.darkBlueResetReason=reason
+  state.darkBlueResetCount=darkBlueResetCount; state.darkBlueValid=false
 end
 local function vec3ToTable(v)
   if not v then return nil end
@@ -335,7 +355,7 @@ local function updateHand(name, raw, cameraWorld, now)
   out.position=world.p; out.orientation=world.q; out.valid=true; out.updateCounter=latest.counter; out.ageMs=(now-latest.received)*1000
   out.relative=rel; out.rawRelative=raw
 end
-local validHmdTranslationModes={beamngOnly=true,beamngPlusHmdDelta=true,beamngMinusHmdDelta=true,beamngFixedBaseHmdDelta=true,baselineRigidTracking=true,baselineRigidPositionBeamngRotation=true,baselineRigidPositionBeamngRotationRebased=true,baselineRigidPositionBeamngRotationRebasedMovingAnchor=true,geluaNativeCameraComposition=true}
+local validHmdTranslationModes={beamngOnly=true,beamngPlusHmdDelta=true,beamngMinusHmdDelta=true,beamngFixedBaseHmdDelta=true,baselineRigidTracking=true,baselineRigidPositionBeamngRotation=true,baselineRigidPositionBeamngRotationRebased=true,baselineRigidRebasedArtificialCamera=true,baselineRigidPositionBeamngRotationRebasedMovingAnchor=true,geluaNativeCameraComposition=true}
 local function hmdCandidates(cameraAnchor, worldDelta, fixedDelta, baselineRigidCandidate)
   -- Keep these as direct calculations from the BeamNG camera.  The test
   -- alternatives must never accumulate or derive from one another.
@@ -361,6 +381,7 @@ local function hmdCandidates(cameraAnchor, worldDelta, fixedDelta, baselineRigid
     baselineRigidTracking=baselineRigidCandidate,
     baselineRigidPositionBeamngRotation=hybridCandidate,
     baselineRigidPositionBeamngRotationRebased=rebasedHybridCandidate,
+    baselineRigidRebasedArtificialCamera=lastDarkBlueRigidCandidate,
     baselineRigidPositionBeamngRotationRebasedMovingAnchor=movingHybridCandidate
   }
 end
@@ -369,6 +390,58 @@ local function diagnosticControllerWorld(name,raw,hmdWorld)
   local rel=mappedPose(raw)
   local offset={p=cfg[name..'PositionOffset'],q=cfg[name..'RotationOffset']}
   return compose(hmdWorld,compose(rel,offset))
+end
+local function establishDarkBlue(cameraWorld,orangeWorld,trackingHmd,reason)
+  -- Match orange numerically on every establishment, but retain a distinct
+  -- world-from-tracking attachment for all subsequent frames.
+  darkBlueWorldFromTracking=compose(orangeWorld,inversePose(trackingHmd))
+  lastDarkBlueRigidCandidate=compose(darkBlueWorldFromTracking,trackingHmd)
+  previousBeamngCameraWorld=copyPose(cameraWorld); previousOrangeHmdWorld=copyPose(orangeWorld)
+  state.previousBeamngCameraWorld=copyPose(cameraWorld); state.previousOrangeHmdWorld=copyPose(orangeWorld)
+  state.currentBeamngCameraWorld=copyPose(cameraWorld); state.currentOrangeHmdWorld=copyPose(orangeWorld)
+  darkBlueResetReason=reason
+  state.beamngCameraDelta=identityPose(); state.orangePhysicalDelta=identityPose()
+  state.artificialCameraDelta=identityPose(); state.artificialTranslationMagnitude=0
+  state.artificialRotationDegrees=0; state.artificialDeltaConsideredIdentity=true
+end
+local function updateDarkBlue(cameraWorld,orangeWorld,trackingHmd)
+  state.previousBeamngCameraWorld=copyPose(previousBeamngCameraWorld)
+  state.previousOrangeHmdWorld=copyPose(previousOrangeHmdWorld)
+  state.currentBeamngCameraWorld=copyPose(cameraWorld); state.currentOrangeHmdWorld=copyPose(orangeWorld)
+  if not darkBlueWorldFromTracking or not previousBeamngCameraWorld or not previousOrangeHmdWorld then
+    establishDarkBlue(cameraWorld,orangeWorld,trackingHmd,darkBlueResetReason or 'candidate initialized')
+  else
+    -- compose(a,b) means the column-vector convention a * b (b is applied
+    -- first).  Therefore current * inverse(previous) is a world-space frame
+    -- delta, and order is significant.  Removing orange physical motion on
+    -- the right gives one complete SE(3) artificial delta; its quaternion and
+    -- pivot-aware translated component are never split into separate fixes.
+    local beamngDelta=compose(cameraWorld,inversePose(previousBeamngCameraWorld))
+    local orangeDelta=compose(orangeWorld,inversePose(previousOrangeHmdWorld))
+    local artificialDelta=compose(beamngDelta,inversePose(orangeDelta))
+    local translationMagnitude=distance(artificialDelta.p,{0,0,0})
+    local rotationDegrees=quaternionAngularDifferenceDegrees(artificialDelta.q,{0,0,0,1}) or 0
+    local consideredIdentity=translationMagnitude<=(cfg.artificialCameraPositionNoiseMetres or 0.0001) and
+      rotationDegrees<=(cfg.artificialCameraAngularNoiseDegrees or 0.01)
+    if consideredIdentity then artificialDelta=identityPose() end
+    if translationMagnitude>(cfg.artificialCameraDiscontinuityMetres or 5.0) or
+        rotationDegrees>(cfg.artificialCameraDiscontinuityDegrees or 120.0) then
+      darkBlueResetCount=darkBlueResetCount+1
+      establishDarkBlue(cameraWorld,orangeWorld,trackingHmd,'BeamNG camera discontinuity')
+    else
+      darkBlueWorldFromTracking=compose(artificialDelta,darkBlueWorldFromTracking)
+      lastDarkBlueRigidCandidate=compose(darkBlueWorldFromTracking,trackingHmd)
+      state.beamngCameraDelta=beamngDelta; state.orangePhysicalDelta=orangeDelta
+      state.artificialCameraDelta=artificialDelta; state.artificialTranslationMagnitude=translationMagnitude
+      state.artificialRotationDegrees=rotationDegrees; state.artificialDeltaConsideredIdentity=consideredIdentity
+      previousBeamngCameraWorld=copyPose(cameraWorld); previousOrangeHmdWorld=copyPose(orangeWorld)
+    end
+  end
+  state.darkBlueHmdWorld=lastDarkBlueRigidCandidate; state.darkBlueWorldFromTracking=darkBlueWorldFromTracking
+  state.darkBlueResetReason=darkBlueResetReason; state.darkBlueResetCount=darkBlueResetCount
+  state.darkBlueValid=lastDarkBlueRigidCandidate~=nil
+  state.darkBlueOrangePositionDifference=lastDarkBlueRigidCandidate and distance(lastDarkBlueRigidCandidate.p,orangeWorld.p) or nil
+  state.darkBlueOrangeAngularDifference=lastDarkBlueRigidCandidate and quaternionAngularDifferenceDegrees(lastDarkBlueRigidCandidate.q,orangeWorld.q) or nil
 end
 local function actualHmdWorld(cameraAnchor, hmd)
   local rawDelta,mappedDelta,worldDelta,fixedDelta=nil,nil,{0,0,0},{0,0,0}
@@ -494,6 +567,8 @@ local function actualHmdWorld(cameraAnchor, hmd)
   -- Complete current pose composition. No position delta is independently added.
   lastBaselineRigidCandidate=compose(rigidBaseline.worldFromTracking,mappedTrackingHmd)
   lastRebasedRigidCandidate=compose(rebasedWorldFromTracking,mappedTrackingHmd)
+  local currentOrangeHmdWorld={p={lastRebasedRigidCandidate.p[1],lastRebasedRigidCandidate.p[2],lastRebasedRigidCandidate.p[3]},q=qnorm(cameraAnchor.q)}
+  updateDarkBlue(cameraAnchor,currentOrangeHmdWorld,mappedTrackingHmd)
   end
   end
   local candidates=hmdCandidates(cameraAnchor,worldDelta,fixedDelta,lastBaselineRigidCandidate)
@@ -504,6 +579,7 @@ local function actualHmdWorld(cameraAnchor, hmd)
   if not validHmdTranslationModes[mode] then mode='beamngOnly'; cfg.hmdTranslationMode=mode end
   if mode=='baselineRigidPositionBeamngRotation' and not candidates.baselineRigidPositionBeamngRotation then mode='beamngOnly' end
   if mode=='baselineRigidPositionBeamngRotationRebased' and not candidates.baselineRigidPositionBeamngRotationRebased then mode='beamngOnly' end
+  if mode=='baselineRigidRebasedArtificialCamera' and not candidates.baselineRigidRebasedArtificialCamera then mode='beamngOnly' end
   if mode=='baselineRigidPositionBeamngRotationRebasedMovingAnchor' and not candidates.baselineRigidPositionBeamngRotationRebasedMovingAnchor then mode='beamngOnly' end
   state.selectedModeFallback=nil; state.selectedModeFallbackReason=nil
   if mode=='geluaNativeCameraComposition' and not nativeCandidate then
@@ -528,6 +604,7 @@ local function actualHmdWorld(cameraAnchor, hmd)
   state.beamngLiveCameraOrientation=qnorm(cameraAnchor.q)
   state.selectedHybridOrientation=candidates.baselineRigidPositionBeamngRotation and candidates.baselineRigidPositionBeamngRotation.q or nil
   state.rebasedHybridHmdWorld=candidates.baselineRigidPositionBeamngRotationRebased
+  state.darkBlueHmdWorld=candidates.baselineRigidRebasedArtificialCamera
   state.movingHybridHmdWorld=candidates.baselineRigidPositionBeamngRotationRebasedMovingAnchor
   state.trackingWorldRight=rigidBaseline and qrot(rigidBaseline.worldFromTracking.q,{1,0,0}) or nil
   state.trackingWorldForward=rigidBaseline and qrot(rigidBaseline.worldFromTracking.q,{0,1,0}) or nil
@@ -583,6 +660,7 @@ local function actualHmdWorld(cameraAnchor, hmd)
   state.diagnostics.candidateHmdWorldPositions.baselineRigidTracking=candidates.baselineRigidTracking and candidates.baselineRigidTracking.p or nil
   state.diagnostics.candidateHmdWorldPositions.baselineRigidPositionBeamngRotation=candidates.baselineRigidPositionBeamngRotation and candidates.baselineRigidPositionBeamngRotation.p or nil
   state.diagnostics.candidateHmdWorldPositions.baselineRigidPositionBeamngRotationRebased=candidates.baselineRigidPositionBeamngRotationRebased and candidates.baselineRigidPositionBeamngRotationRebased.p or nil
+  state.diagnostics.candidateHmdWorldPositions.baselineRigidRebasedArtificialCamera=candidates.baselineRigidRebasedArtificialCamera and candidates.baselineRigidRebasedArtificialCamera.p or nil
   state.diagnostics.candidateHmdWorldPositions.baselineRigidPositionBeamngRotationRebasedMovingAnchor=candidates.baselineRigidPositionBeamngRotationRebasedMovingAnchor and candidates.baselineRigidPositionBeamngRotationRebasedMovingAnchor.p or nil
   state.diagnostics.candidateHmdWorldPositions.geluaNativeCameraComposition=nativeCandidate and nativeCandidate.p or nil
   state.geluaNativeFinalVrPosition=nativeCandidate and nativeCandidate.p or nil
@@ -656,14 +734,16 @@ local function drawDiagnostics(candidates,hmdWorld)
     local purple=candidates.baselineRigidTracking and compose(candidates.baselineRigidTracking,{p=localPos,q={0,0,0,1}}) or nil
     local cyan=candidates.baselineRigidPositionBeamngRotation and compose(candidates.baselineRigidPositionBeamngRotation,{p=localPos,q={0,0,0,1}}) or nil
     local orange=candidates.baselineRigidPositionBeamngRotationRebased and compose(candidates.baselineRigidPositionBeamngRotationRebased,{p=localPos,q={0,0,0,1}}) or nil
+    local darkBlue=candidates.baselineRigidRebasedArtificialCamera and compose(candidates.baselineRigidRebasedArtificialCamera,{p=localPos,q={0,0,0,1}}) or nil
     local pink=candidates.baselineRigidPositionBeamngRotationRebasedMovingAnchor and compose(candidates.baselineRigidPositionBeamngRotationRebasedMovingAnchor,{p=localPos,q={0,0,0,1}}) or nil
     local lime=candidates.geluaNativeCameraComposition and compose(candidates.geluaNativeCameraComposition,{p=localPos,q={0,0,0,1}}) or nil
-    state.diagnostics.diagnosticSphereWorldPositions={beamngOnly=red.p,beamngPlusHmdDelta=green.p,beamngMinusHmdDelta=yellow.p,beamngFixedBaseHmdDelta=white.p,baselineRigidTracking=purple and purple.p or nil,baselineRigidPositionBeamngRotation=cyan and cyan.p or nil,baselineRigidPositionBeamngRotationRebased=orange and orange.p or nil,baselineRigidPositionBeamngRotationRebasedMovingAnchor=pink and pink.p or nil,geluaNativeCameraComposition=lime and lime.p or nil}
+    state.diagnostics.diagnosticSphereWorldPositions={beamngOnly=red.p,beamngPlusHmdDelta=green.p,beamngMinusHmdDelta=yellow.p,beamngFixedBaseHmdDelta=white.p,baselineRigidTracking=purple and purple.p or nil,baselineRigidPositionBeamngRotation=cyan and cyan.p or nil,baselineRigidPositionBeamngRotationRebased=orange and orange.p or nil,baselineRigidRebasedArtificialCamera=darkBlue and darkBlue.p or nil,baselineRigidPositionBeamngRotationRebasedMovingAnchor=pink and pink.p or nil,geluaNativeCameraComposition=lime and lime.p or nil}
     state.geluaNativeDiagnosticSphereWorld=lime and lime.p or nil
     state.violetCameraWorld=candidates.geluaNativeCameraComposition
     state.violetDiagnosticSphereWorld=lime and lime.p or nil
     state.orangeCameraWorld=candidates.baselineRigidPositionBeamngRotationRebased
     state.orangeDiagnosticSphereWorld=orange and orange.p or nil
+    state.darkBlueDiagnosticSphereWorld=darkBlue and darkBlue.p or nil
     state.hybridDiagnosticSphereWorldPosition=cyan and cyan.p or nil
     state.diagnostics.hybridDiagnosticSphereWorldPosition=state.hybridDiagnosticSphereWorldPosition
     state.rebasedHybridDiagnosticSphereWorldPosition=orange and orange.p or nil
@@ -676,6 +756,13 @@ local function drawDiagnostics(candidates,hmdWorld)
     local radius=(cfg.cameraTestSphere.diameter or cfg.sphereDiameter)/2
     if orange then debugDrawer:drawSphere(vec3(orange.p),radius,ColorF(1,0.35,0,1)) end
     if lime then debugDrawer:drawSphere(vec3(lime.p),radius,ColorF(0.5,0,1,1)) end
+    if darkBlue then
+      local darkBlueRadius=(cfg.darkBlueHeadsetSphereDiameter or 0.16)/2
+      debugDrawer:drawSphere(vec3(darkBlue.p),darkBlueRadius,ColorF(0.02,0.08,0.45,1.0))
+      -- One pale direction stick is intentionally clearer than reusing the RGB tripod.
+      drawSphereStick(candidates.baselineRigidRebasedArtificialCamera.p,darkBlue.p,
+        cfg.darkBlueDirectionLineThickness or 0.018,ColorF(0.75,0.9,1,1))
+    end
     local diagnosticItems={}
     if orange then diagnosticItems.baselineRigidPositionBeamngRotationRebased=orange end
     if lime then diagnosticItems.geluaNativeCameraComposition=lime end
@@ -811,7 +898,9 @@ function M.onPreRender(dtReal,dtSim,dtRaw)
   -- previous camera-anchor behavior rather than being rejected.
   local beamngWorld,candidates=actualHmdWorld(cameraAnchor,latest.hmd)
   local selectedControllerCameraWorld=beamngWorld
-  local requestedViolet=cfg.hmdTranslationMode=='geluaNativeCameraComposition'
+  -- PR #37 changes only the headset experiment.  Controllers retain PR #36's
+  -- captured-violet parent while dark blue is selected.
+  local requestedViolet=cfg.hmdTranslationMode=='geluaNativeCameraComposition' or cfg.hmdTranslationMode=='baselineRigidRebasedArtificialCamera'
   if requestedViolet then
     selectedControllerCameraWorld=candidates.geluaNativeCameraComposition
     state.controllerParentFallbackActive=selectedControllerCameraWorld==nil
@@ -854,6 +943,8 @@ function M.onPreRender(dtReal,dtSim,dtRaw)
   state.absoluteMovingRightControllerWorld=state.movingHybridRightControllerWorld
   state.geluaNativeLeftControllerWorld=candidates.geluaNativeCameraComposition and diagnosticControllerWorld('left',latest.left,candidates.geluaNativeCameraComposition) or nil
   state.geluaNativeRightControllerWorld=candidates.geluaNativeCameraComposition and diagnosticControllerWorld('right',latest.right,candidates.geluaNativeCameraComposition) or nil
+  state.darkBlueLeftControllerWorld=candidates.baselineRigidRebasedArtificialCamera and diagnosticControllerWorld('left',latest.left,candidates.baselineRigidRebasedArtificialCamera) or nil
+  state.darkBlueRightControllerWorld=candidates.baselineRigidRebasedArtificialCamera and diagnosticControllerWorld('right',latest.right,candidates.baselineRigidRebasedArtificialCamera) or nil
   state.diagnostics.beamngOnlyLeftControllerWorld=state.beamngOnlyLeftControllerWorld
   state.diagnostics.beamngOnlyRightControllerWorld=state.beamngOnlyRightControllerWorld
   state.diagnostics.baselineRigidLeftControllerWorld=state.baselineRigidLeftControllerWorld
@@ -864,6 +955,7 @@ function M.onPreRender(dtReal,dtSim,dtRaw)
   state.diagnostics.rebasedHybridRightControllerWorld=state.rebasedHybridRightControllerWorld
   state.diagnostics.movingHybridLeftControllerWorld=state.movingHybridLeftControllerWorld
   state.diagnostics.movingHybridRightControllerWorld=state.movingHybridRightControllerWorld
+  for _,field in ipairs({'darkBlueHmdWorld','darkBlueDiagnosticSphereWorld','darkBlueWorldFromTracking','previousBeamngCameraWorld','currentBeamngCameraWorld','beamngCameraDelta','previousOrangeHmdWorld','currentOrangeHmdWorld','orangePhysicalDelta','artificialCameraDelta','artificialTranslationMagnitude','artificialRotationDegrees','artificialDeltaConsideredIdentity','darkBlueLeftControllerWorld','darkBlueRightControllerWorld','darkBlueResetReason','darkBlueResetCount','darkBlueValid','darkBlueOrangePositionDifference','darkBlueOrangeAngularDifference'}) do state.diagnostics[field]=state[field] end
   syncGeluaDiagnostics()
   state.artificialYawRebaseThresholdDegrees=cfg.artificialYawRebaseThresholdDegrees or 0.75
   for _,field in ipairs({'artificialYawRebaseThresholdDegrees','targetWorldFromTrackingOrientation','storedWorldFromTrackingOrientationBeforeRebase','artificialAlignmentDeltaDegrees','artificialYawRebaseTriggered','artificialYawRebaseCount','lastArtificialYawRebaseReason','lastArtificialYawRebaseTime','hmdWorldPositionBeforeArtificialRebase','hmdWorldPositionAfterArtificialRebase','artificialRebasePositionDiscontinuityMetres','rebasedWorldFromTracking','rebasedHybridHmdWorld','rebasedHybridLeftControllerWorld','rebasedHybridRightControllerWorld','rebasedHybridDiagnosticSphereWorldPosition'}) do state.diagnostics[field]=state[field] end
@@ -881,7 +973,12 @@ function M.onPreRender(dtReal,dtSim,dtRaw)
   drawDiagnostics(candidates,hmdWorld or candidates.baselineRigidPositionBeamngRotationRebased or candidates.beamngOnly)
   syncGeluaDiagnostics()
   if now-lastLog>cfg.logIntervalSeconds then
-    log('I','beamngVRControllerPoses','fixed-base diagnostics='..dumps(state.diagnostics)); lastLog=now
+    log('I','beamngVRControllerPoses','motion darkBlueValid='..tostring(state.darkBlueValid)..
+      ' artificialMetres='..tostring(state.artificialTranslationMagnitude)..
+      ' artificialDegrees='..tostring(state.artificialRotationDegrees)..
+      ' identity='..tostring(state.artificialDeltaConsideredIdentity)..
+      ' orangeDifference='..tostring(state.darkBlueOrangePositionDifference)..
+      ' resets='..tostring(state.darkBlueResetCount)); lastLog=now
   end
 end
 function M.setCameraSourceMode(mode)
