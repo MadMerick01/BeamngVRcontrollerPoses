@@ -8,9 +8,10 @@ local worldFromBaseQ=nil
 local headingBaseline, alignedHeading = nil, nil
 local rigidBaseline, lastBaselineRigidCandidate = nil, nil
 local rebasedWorldFromTracking, lastRebasedRigidCandidate=nil,nil
--- PR #37 additive candidate state.  This is deliberately independent of the
--- proven orange rebase state above; resetting it never changes orange.
-local darkBlueWorldFromTracking,previousBeamngCameraWorld,previousOrangeHmdWorld=nil,nil,nil
+-- Dark blue consumes the captured setGeluaCameraPosRot anchor: unlike
+-- core_camera, these setter arguments are the game camera anchor before the
+-- predicted OpenXR pose is applied.  Orange remains the sole physical pose.
+local darkBlueArtificialTransform,previousGameAnchor,previousOrangeHmdWorld=nil,nil,nil
 local lastDarkBlueRigidCandidate=nil
 local darkBlueResetCount,darkBlueResetReason=0,'extension loaded'
 local artificialYawRebaseCount, lastArtificialRebaseLog = 0, 0
@@ -105,7 +106,7 @@ local function resetHmdBaseline(reason)
   movingWorldFromTracking=nil; previousBeamngCameraAnchorPosition=nil; lastMovingRigidCandidate=nil
   baselineOrangeReferenceHmdWorldPosition=nil; movingArtificialYawRebaseCount=0
   artificialYawRebaseCount=0; lastArtificialRebaseLog=0
-  darkBlueWorldFromTracking=nil; previousBeamngCameraWorld=nil; previousOrangeHmdWorld=nil
+  darkBlueArtificialTransform=nil; previousGameAnchor=nil; previousOrangeHmdWorld=nil
   lastDarkBlueRigidCandidate=nil; darkBlueResetCount=darkBlueResetCount+1; darkBlueResetReason=reason
   state.baselineValid=false
   state.baselineRigidCandidateHmdWorld=nil
@@ -148,11 +149,15 @@ local function resetHmdBaseline(reason)
   state.diagnostics.hmdBaselineResetReason=reason
   state.diagnostics.baselineResetReason=reason
   state.darkBlueHmdWorld=nil; state.darkBlueDiagnosticSphereWorld=nil
-  state.darkBlueWorldFromTracking=nil; state.previousBeamngCameraWorld=nil; state.currentBeamngCameraWorld=nil
-  state.beamngCameraDelta=nil; state.previousOrangeHmdWorld=nil; state.currentOrangeHmdWorld=nil
-  state.orangePhysicalDelta=nil; state.artificialCameraDelta=nil
+  state.darkBlueArtificialTransform=nil; state.previousGameAnchor=nil; state.currentGameAnchor=nil
+  state.gameAnchorDelta=nil; state.previousOrangeHmdWorld=nil; state.currentOrangeHmdWorld=nil
   state.artificialTranslationMagnitude=nil; state.artificialRotationDegrees=nil
-  state.artificialDeltaConsideredIdentity=nil; state.darkBlueLeftControllerWorld=nil
+  state.artificialTranslationDetected=false; state.artificialRotationDetected=false
+  state.physicalMovementDetected=false; state.artificialInputActive=false
+  state.artificialYawInputActive=false; state.artificialTranslationInputActive=false
+  state.artificialMotionSourceName='captured OpenXR.setGeluaCameraPosRot pre-VR anchor'
+  state.artificialMotionSourceAvailable=false; state.artificialMotionSourceFailureReason='candidate reset'
+  state.darkBlueUnexpectedSeparationDuringPhysicalMotion=false; state.darkBlueLeftControllerWorld=nil
   state.darkBlueRightControllerWorld=nil; state.darkBlueOrangePositionDifference=nil
   state.darkBlueOrangeAngularDifference=nil; state.darkBlueResetReason=reason
   state.darkBlueResetCount=darkBlueResetCount; state.darkBlueValid=false
@@ -391,57 +396,88 @@ local function diagnosticControllerWorld(name,raw,hmdWorld)
   local offset={p=cfg[name..'PositionOffset'],q=cfg[name..'RotationOffset']}
   return compose(hmdWorld,compose(rel,offset))
 end
-local function establishDarkBlue(cameraWorld,orangeWorld,trackingHmd,reason)
-  -- Match orange numerically on every establishment, but retain a distinct
-  -- world-from-tracking attachment for all subsequent frames.
-  darkBlueWorldFromTracking=compose(orangeWorld,inversePose(trackingHmd))
-  lastDarkBlueRigidCandidate=compose(darkBlueWorldFromTracking,trackingHmd)
-  previousBeamngCameraWorld=copyPose(cameraWorld); previousOrangeHmdWorld=copyPose(orangeWorld)
-  state.previousBeamngCameraWorld=copyPose(cameraWorld); state.previousOrangeHmdWorld=copyPose(orangeWorld)
-  state.currentBeamngCameraWorld=copyPose(cameraWorld); state.currentOrangeHmdWorld=copyPose(orangeWorld)
-  darkBlueResetReason=reason
-  state.beamngCameraDelta=identityPose(); state.orangePhysicalDelta=identityPose()
-  state.artificialCameraDelta=identityPose(); state.artificialTranslationMagnitude=0
-  state.artificialRotationDegrees=0; state.artificialDeltaConsideredIdentity=true
+local function capturedArtificialGameAnchor(now)
+  local name='captured OpenXR.setGeluaCameraPosRot pre-VR anchor'
+  if not geluaCapture.captureInstalled then return nil,name,'capture not installed' end
+  if not geluaCapture.setterTimestamp or geluaCapture.setterSequence<1 then return nil,name,'awaiting setter arguments' end
+  local ageMs=(now-geluaCapture.setterTimestamp)*1000
+  if ageMs>(cfg.geluaCaptureMaxAgeMs or 100) then return nil,name,'setter arguments are stale' end
+  local p,q=geluaCapture.rawAnchorPosition,geluaCapture.rawAnchorQuaternion
+  if not p or not q then return nil,name,'setter arguments unavailable' end
+  local normalized=qnorm(q)
+  if not normalized then return nil,name,'setter quaternion has zero length' end
+  -- setGeluaCameraPosRot receives the pre-prediction view quaternion. Convert
+  -- once at the API boundary to the camera-to-world convention used here.
+  return {p={p[1],p[2],p[3]},q=qinv(normalized)},name,nil
 end
-local function updateDarkBlue(cameraWorld,orangeWorld,trackingHmd)
-  state.previousBeamngCameraWorld=copyPose(previousBeamngCameraWorld)
-  state.previousOrangeHmdWorld=copyPose(previousOrangeHmdWorld)
-  state.currentBeamngCameraWorld=copyPose(cameraWorld); state.currentOrangeHmdWorld=copyPose(orangeWorld)
-  if not darkBlueWorldFromTracking or not previousBeamngCameraWorld or not previousOrangeHmdWorld then
-    establishDarkBlue(cameraWorld,orangeWorld,trackingHmd,darkBlueResetReason or 'candidate initialized')
+local function establishDarkBlue(orangeWorld,gameAnchor,reason)
+  darkBlueArtificialTransform=identityPose()
+  lastDarkBlueRigidCandidate=copyPose(orangeWorld)
+  previousGameAnchor=copyPose(gameAnchor); previousOrangeHmdWorld=copyPose(orangeWorld)
+  state.previousGameAnchor=copyPose(gameAnchor); state.currentGameAnchor=copyPose(gameAnchor)
+  state.previousOrangeHmdWorld=copyPose(orangeWorld); state.currentOrangeHmdWorld=copyPose(orangeWorld)
+  state.gameAnchorDelta=identityPose(); state.artificialTranslationMagnitude=0
+  state.artificialRotationDegrees=0; state.artificialTranslationDetected=false
+  state.artificialRotationDetected=false; darkBlueResetReason=reason
+end
+local function updateDarkBlue(_,orangeWorld,_)
+  local priorOrange=copyPose(previousOrangeHmdWorld)
+  local now=captureNow()
+  local gameAnchor,sourceName,failure=capturedArtificialGameAnchor(now)
+  state.artificialMotionSourceName=sourceName
+  state.artificialMotionSourceAvailable=gameAnchor~=nil
+  state.artificialMotionSourceFailureReason=failure
+  state.previousGameAnchor=copyPose(previousGameAnchor); state.currentGameAnchor=copyPose(gameAnchor)
+  state.previousOrangeHmdWorld=copyPose(previousOrangeHmdWorld); state.currentOrangeHmdWorld=copyPose(orangeWorld)
+
+  -- Fail closed: a mixed core_camera transform is diagnostic-only and is never
+  -- substituted for the authoritative captured pre-VR anchor.
+  if not gameAnchor then
+    darkBlueArtificialTransform=identityPose(); previousGameAnchor=nil
+    lastDarkBlueRigidCandidate=copyPose(orangeWorld); state.gameAnchorDelta=identityPose()
+    state.artificialTranslationMagnitude=0; state.artificialRotationDegrees=0
+    state.artificialTranslationDetected=false; state.artificialRotationDetected=false
+  elseif not darkBlueArtificialTransform or not previousGameAnchor then
+    establishDarkBlue(orangeWorld,gameAnchor,darkBlueResetReason or 'candidate initialized')
   else
-    -- compose(a,b) means the column-vector convention a * b (b is applied
-    -- first).  Therefore current * inverse(previous) is a world-space frame
-    -- delta, and order is significant.  Removing orange physical motion on
-    -- the right gives one complete SE(3) artificial delta; its quaternion and
-    -- pivot-aware translated component are never split into separate fixes.
-    local beamngDelta=compose(cameraWorld,inversePose(previousBeamngCameraWorld))
-    local orangeDelta=compose(orangeWorld,inversePose(previousOrangeHmdWorld))
-    local artificialDelta=compose(beamngDelta,inversePose(orangeDelta))
-    local translationMagnitude=distance(artificialDelta.p,{0,0,0})
-    local rotationDegrees=quaternionAngularDifferenceDegrees(artificialDelta.q,{0,0,0,1}) or 0
-    local consideredIdentity=translationMagnitude<=(cfg.artificialCameraPositionNoiseMetres or 0.0001) and
-      rotationDegrees<=(cfg.artificialCameraAngularNoiseDegrees or 0.01)
-    if consideredIdentity then artificialDelta=identityPose() end
+    -- compose(a,b) is a*b for column vectors.  The captured anchor delta is a
+    -- complete world-space rigid transform, including the pivot translation
+    -- for yaw, so no second T(p)*R*T(-p) correction is added.
+    local gameAnchorDelta=compose(gameAnchor,inversePose(previousGameAnchor))
+    local translationMagnitude=distance(gameAnchorDelta.p,{0,0,0})
+    local rotationDegrees=quaternionAngularDifferenceDegrees(gameAnchorDelta.q,{0,0,0,1}) or 0
+    local translationDetected=translationMagnitude>(cfg.artificialCameraPositionNoiseMetres or 0.0001)
+    local rotationDetected=rotationDegrees>(cfg.artificialCameraAngularNoiseDegrees or 0.01)
     if translationMagnitude>(cfg.artificialCameraDiscontinuityMetres or 5.0) or
         rotationDegrees>(cfg.artificialCameraDiscontinuityDegrees or 120.0) then
       darkBlueResetCount=darkBlueResetCount+1
-      establishDarkBlue(cameraWorld,orangeWorld,trackingHmd,'BeamNG camera discontinuity')
+      establishDarkBlue(orangeWorld,gameAnchor,'validated game-anchor discontinuity')
     else
-      darkBlueWorldFromTracking=compose(artificialDelta,darkBlueWorldFromTracking)
-      lastDarkBlueRigidCandidate=compose(darkBlueWorldFromTracking,trackingHmd)
-      state.beamngCameraDelta=beamngDelta; state.orangePhysicalDelta=orangeDelta
-      state.artificialCameraDelta=artificialDelta; state.artificialTranslationMagnitude=translationMagnitude
-      state.artificialRotationDegrees=rotationDegrees; state.artificialDeltaConsideredIdentity=consideredIdentity
-      previousBeamngCameraWorld=copyPose(cameraWorld); previousOrangeHmdWorld=copyPose(orangeWorld)
+      if translationDetected or rotationDetected then
+        darkBlueArtificialTransform=compose(gameAnchorDelta,darkBlueArtificialTransform)
+      else gameAnchorDelta=identityPose() end
+      lastDarkBlueRigidCandidate=compose(darkBlueArtificialTransform,orangeWorld)
+      state.gameAnchorDelta=gameAnchorDelta; state.artificialTranslationMagnitude=translationMagnitude
+      state.artificialRotationDegrees=rotationDegrees; state.artificialTranslationDetected=translationDetected
+      state.artificialRotationDetected=rotationDetected
+      previousGameAnchor=copyPose(gameAnchor); previousOrangeHmdWorld=copyPose(orangeWorld)
     end
   end
-  state.darkBlueHmdWorld=lastDarkBlueRigidCandidate; state.darkBlueWorldFromTracking=darkBlueWorldFromTracking
+  local orangeDelta=priorOrange and compose(orangeWorld,inversePose(priorOrange)) or identityPose()
+  state.physicalMovementDetected=distance(orangeDelta.p,{0,0,0})>(cfg.artificialCameraPositionNoiseMetres or 0.0001) or
+    (quaternionAngularDifferenceDegrees(orangeDelta.q,{0,0,0,1}) or 0)>(cfg.artificialCameraAngularNoiseDegrees or 0.01)
+  -- No raw stick values are integrated. These classification fields describe
+  -- authoritative observed anchor motion only.
+  state.artificialTranslationInputActive=state.artificialTranslationDetected
+  state.artificialYawInputActive=state.artificialRotationDetected
+  state.artificialInputActive=state.artificialTranslationInputActive or state.artificialYawInputActive
+  state.darkBlueHmdWorld=lastDarkBlueRigidCandidate; state.darkBlueArtificialTransform=darkBlueArtificialTransform
   state.darkBlueResetReason=darkBlueResetReason; state.darkBlueResetCount=darkBlueResetCount
   state.darkBlueValid=lastDarkBlueRigidCandidate~=nil
   state.darkBlueOrangePositionDifference=lastDarkBlueRigidCandidate and distance(lastDarkBlueRigidCandidate.p,orangeWorld.p) or nil
   state.darkBlueOrangeAngularDifference=lastDarkBlueRigidCandidate and quaternionAngularDifferenceDegrees(lastDarkBlueRigidCandidate.q,orangeWorld.q) or nil
+  state.darkBlueUnexpectedSeparationDuringPhysicalMotion=state.physicalMovementDetected and not state.artificialInputActive and
+    ((state.darkBlueOrangePositionDifference or 0)>1e-6 or (state.darkBlueOrangeAngularDifference or 0)>1e-4) or false
 end
 local function actualHmdWorld(cameraAnchor, hmd)
   local rawDelta,mappedDelta,worldDelta,fixedDelta=nil,nil,{0,0,0},{0,0,0}
@@ -605,6 +641,7 @@ local function actualHmdWorld(cameraAnchor, hmd)
   state.selectedHybridOrientation=candidates.baselineRigidPositionBeamngRotation and candidates.baselineRigidPositionBeamngRotation.q or nil
   state.rebasedHybridHmdWorld=candidates.baselineRigidPositionBeamngRotationRebased
   state.darkBlueHmdWorld=candidates.baselineRigidRebasedArtificialCamera
+  state.orangeHmdWorld=candidates.baselineRigidPositionBeamngRotationRebased
   state.movingHybridHmdWorld=candidates.baselineRigidPositionBeamngRotationRebasedMovingAnchor
   state.trackingWorldRight=rigidBaseline and qrot(rigidBaseline.worldFromTracking.q,{1,0,0}) or nil
   state.trackingWorldForward=rigidBaseline and qrot(rigidBaseline.worldFromTracking.q,{0,1,0}) or nil
@@ -955,7 +992,7 @@ function M.onPreRender(dtReal,dtSim,dtRaw)
   state.diagnostics.rebasedHybridRightControllerWorld=state.rebasedHybridRightControllerWorld
   state.diagnostics.movingHybridLeftControllerWorld=state.movingHybridLeftControllerWorld
   state.diagnostics.movingHybridRightControllerWorld=state.movingHybridRightControllerWorld
-  for _,field in ipairs({'darkBlueHmdWorld','darkBlueDiagnosticSphereWorld','darkBlueWorldFromTracking','previousBeamngCameraWorld','currentBeamngCameraWorld','beamngCameraDelta','previousOrangeHmdWorld','currentOrangeHmdWorld','orangePhysicalDelta','artificialCameraDelta','artificialTranslationMagnitude','artificialRotationDegrees','artificialDeltaConsideredIdentity','darkBlueLeftControllerWorld','darkBlueRightControllerWorld','darkBlueResetReason','darkBlueResetCount','darkBlueValid','darkBlueOrangePositionDifference','darkBlueOrangeAngularDifference'}) do state.diagnostics[field]=state[field] end
+  for _,field in ipairs({'darkBlueHmdWorld','orangeHmdWorld','darkBlueArtificialTransform','artificialMotionSourceName','artificialMotionSourceAvailable','artificialMotionSourceFailureReason','previousGameAnchor','currentGameAnchor','gameAnchorDelta','artificialTranslationDetected','artificialRotationDetected','artificialTranslationMagnitude','artificialRotationDegrees','physicalMovementDetected','artificialInputActive','artificialYawInputActive','artificialTranslationInputActive','darkBlueLeftControllerWorld','darkBlueRightControllerWorld','darkBlueResetReason','darkBlueResetCount','darkBlueValid','darkBlueOrangePositionDifference','darkBlueOrangeAngularDifference','darkBlueUnexpectedSeparationDuringPhysicalMotion'}) do state.diagnostics[field]=state[field] end
   syncGeluaDiagnostics()
   state.artificialYawRebaseThresholdDegrees=cfg.artificialYawRebaseThresholdDegrees or 0.75
   for _,field in ipairs({'artificialYawRebaseThresholdDegrees','targetWorldFromTrackingOrientation','storedWorldFromTrackingOrientationBeforeRebase','artificialAlignmentDeltaDegrees','artificialYawRebaseTriggered','artificialYawRebaseCount','lastArtificialYawRebaseReason','lastArtificialYawRebaseTime','hmdWorldPositionBeforeArtificialRebase','hmdWorldPositionAfterArtificialRebase','artificialRebasePositionDiscontinuityMetres','rebasedWorldFromTracking','rebasedHybridHmdWorld','rebasedHybridLeftControllerWorld','rebasedHybridRightControllerWorld','rebasedHybridDiagnosticSphereWorldPosition'}) do state.diagnostics[field]=state[field] end
@@ -976,7 +1013,8 @@ function M.onPreRender(dtReal,dtSim,dtRaw)
     log('I','beamngVRControllerPoses','motion darkBlueValid='..tostring(state.darkBlueValid)..
       ' artificialMetres='..tostring(state.artificialTranslationMagnitude)..
       ' artificialDegrees='..tostring(state.artificialRotationDegrees)..
-      ' identity='..tostring(state.artificialDeltaConsideredIdentity)..
+      ' source='..tostring(state.artificialMotionSourceAvailable)..
+      ' unexpectedPhysicalSeparation='..tostring(state.darkBlueUnexpectedSeparationDuringPhysicalMotion)..
       ' orangeDifference='..tostring(state.darkBlueOrangePositionDifference)..
       ' resets='..tostring(state.darkBlueResetCount)); lastLog=now
   end
