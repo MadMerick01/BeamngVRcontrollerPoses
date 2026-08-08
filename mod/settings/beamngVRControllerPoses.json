@@ -93,5 +93,7 @@
     "drawDiagnosticSphereTripods": true,
     "drawControllerTripods": false,
     "drawOriginLines": true
-  }
+  },
+  "cameraReanchorTranslationDiscontinuityMetres": 5.0,
+  "cameraReanchorAngularDiscontinuityDegrees": 120.0
 }
