@@ -37,7 +37,8 @@ def test_initialization_recenter_and_missing_source_equal_orange():
     text=LUA.read_text(); block=text.split('local function updateDarkBlue',1)[1].split('local function actualHmdWorld',1)[0]
     assert "if not gameAnchor then" in block
     assert "darkBlueArtificialTransform=identityPose()" in block
-    assert "lastDarkBlueRigidCandidate=copyPose(orangeWorld)" in block
+    assert "lastProvisionalDarkBlueFullRigidPose=copyPose(orangeWorld)" in block
+    assert "finalizeDarkBlueOrientation(lastProvisionalDarkBlueFullRigidPose,orangeWorld)" in block
 
 
 def test_physical_translation_and_natural_rotation_do_not_change_artificial_transform():

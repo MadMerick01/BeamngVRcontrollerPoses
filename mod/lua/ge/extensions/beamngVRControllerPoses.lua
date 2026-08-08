@@ -12,7 +12,7 @@ local rebasedWorldFromTracking, lastRebasedRigidCandidate=nil,nil
 -- core_camera, these setter arguments are the game camera anchor before the
 -- predicted OpenXR pose is applied.  Orange remains the sole physical pose.
 local darkBlueArtificialTransform,previousGameAnchor,previousOrangeHmdWorld=nil,nil,nil
-local lastDarkBlueRigidCandidate=nil
+local lastDarkBlueRigidCandidate,lastProvisionalDarkBlueFullRigidPose=nil,nil
 local darkBlueResetCount,darkBlueResetReason=0,'extension loaded'
 local artificialYawRebaseCount, lastArtificialRebaseLog = 0, 0
 local movingWorldFromTracking, previousBeamngCameraAnchorPosition, lastMovingRigidCandidate=nil,nil,nil
@@ -107,7 +107,8 @@ local function resetHmdBaseline(reason)
   baselineOrangeReferenceHmdWorldPosition=nil; movingArtificialYawRebaseCount=0
   artificialYawRebaseCount=0; lastArtificialRebaseLog=0
   darkBlueArtificialTransform=nil; previousGameAnchor=nil; previousOrangeHmdWorld=nil
-  lastDarkBlueRigidCandidate=nil; darkBlueResetCount=darkBlueResetCount+1; darkBlueResetReason=reason
+  lastDarkBlueRigidCandidate=nil; lastProvisionalDarkBlueFullRigidPose=nil
+  darkBlueResetCount=darkBlueResetCount+1; darkBlueResetReason=reason
   state.baselineValid=false
   state.baselineRigidCandidateHmdWorld=nil
   state.baselineRigidPositionBeamngRotationHmdWorld=nil
@@ -161,6 +162,11 @@ local function resetHmdBaseline(reason)
   state.darkBlueRightControllerWorld=nil; state.darkBlueOrangePositionDifference=nil
   state.darkBlueOrangeAngularDifference=nil; state.darkBlueResetReason=reason
   state.darkBlueResetCount=darkBlueResetCount; state.darkBlueValid=false
+  state.provisionalDarkBlueFullRigidPose=nil; state.provisionalDarkBlueOrientation=nil
+  state.finalDarkBlueOrientation=nil; state.orangeOrientationUsedForDarkBlue=nil
+  state.darkBlueOrientationSource='orange live BeamNG orientation'
+  state.duplicateArtificialYawRemoved=true; state.provisionalVsFinalAngularDifferenceDegrees=nil
+  state.darkBlueOrientationEqualsOrange=false
 end
 local function vec3ToTable(v)
   if not v then return nil end
@@ -412,13 +418,23 @@ local function capturedArtificialGameAnchor(now)
 end
 local function establishDarkBlue(orangeWorld,gameAnchor,reason)
   darkBlueArtificialTransform=identityPose()
-  lastDarkBlueRigidCandidate=copyPose(orangeWorld)
+  lastProvisionalDarkBlueFullRigidPose=copyPose(orangeWorld)
+  lastDarkBlueRigidCandidate={p={orangeWorld.p[1],orangeWorld.p[2],orangeWorld.p[3]},q=qnorm(orangeWorld.q)}
   previousGameAnchor=copyPose(gameAnchor); previousOrangeHmdWorld=copyPose(orangeWorld)
   state.previousGameAnchor=copyPose(gameAnchor); state.currentGameAnchor=copyPose(gameAnchor)
   state.previousOrangeHmdWorld=copyPose(orangeWorld); state.currentOrangeHmdWorld=copyPose(orangeWorld)
   state.gameAnchorDelta=identityPose(); state.artificialTranslationMagnitude=0
   state.artificialRotationDegrees=0; state.artificialTranslationDetected=false
   state.artificialRotationDetected=false; darkBlueResetReason=reason
+end
+local function finalizeDarkBlueOrientation(provisionalDarkBluePose,orangeWorld)
+  if not provisionalDarkBluePose or not orangeWorld then return nil end
+  local normalizedOrangeOrientation=qnorm(orangeWorld.q)
+  if not normalizedOrangeOrientation then return nil end
+  return {
+    p={provisionalDarkBluePose.p[1],provisionalDarkBluePose.p[2],provisionalDarkBluePose.p[3]},
+    q=normalizedOrangeOrientation
+  }
 end
 local function updateDarkBlue(_,orangeWorld,_)
   local priorOrange=copyPose(previousOrangeHmdWorld)
@@ -434,7 +450,9 @@ local function updateDarkBlue(_,orangeWorld,_)
   -- substituted for the authoritative captured pre-VR anchor.
   if not gameAnchor then
     darkBlueArtificialTransform=identityPose(); previousGameAnchor=nil
-    lastDarkBlueRigidCandidate=copyPose(orangeWorld); state.gameAnchorDelta=identityPose()
+    lastProvisionalDarkBlueFullRigidPose=copyPose(orangeWorld)
+    lastDarkBlueRigidCandidate=finalizeDarkBlueOrientation(lastProvisionalDarkBlueFullRigidPose,orangeWorld)
+    state.gameAnchorDelta=identityPose()
     state.artificialTranslationMagnitude=0; state.artificialRotationDegrees=0
     state.artificialTranslationDetected=false; state.artificialRotationDetected=false
   elseif not darkBlueArtificialTransform or not previousGameAnchor then
@@ -456,7 +474,10 @@ local function updateDarkBlue(_,orangeWorld,_)
       if translationDetected or rotationDetected then
         darkBlueArtificialTransform=compose(gameAnchorDelta,darkBlueArtificialTransform)
       else gameAnchorDelta=identityPose() end
-      lastDarkBlueRigidCandidate=compose(darkBlueArtificialTransform,orangeWorld)
+      -- Keep the complete rigid result for its pivot-preserving position, but
+      -- do not apply its artificial rotation again to BeamNG's live orientation.
+      lastProvisionalDarkBlueFullRigidPose=compose(darkBlueArtificialTransform,orangeWorld)
+      lastDarkBlueRigidCandidate=finalizeDarkBlueOrientation(lastProvisionalDarkBlueFullRigidPose,orangeWorld)
       state.gameAnchorDelta=gameAnchorDelta; state.artificialTranslationMagnitude=translationMagnitude
       state.artificialRotationDegrees=rotationDegrees; state.artificialTranslationDetected=translationDetected
       state.artificialRotationDetected=rotationDetected
@@ -472,6 +493,19 @@ local function updateDarkBlue(_,orangeWorld,_)
   state.artificialYawInputActive=state.artificialRotationDetected
   state.artificialInputActive=state.artificialTranslationInputActive or state.artificialYawInputActive
   state.darkBlueHmdWorld=lastDarkBlueRigidCandidate; state.darkBlueArtificialTransform=darkBlueArtificialTransform
+  state.provisionalDarkBlueFullRigidPose=copyPose(lastProvisionalDarkBlueFullRigidPose)
+  state.provisionalDarkBlueOrientation=lastProvisionalDarkBlueFullRigidPose and
+    qnorm(lastProvisionalDarkBlueFullRigidPose.q) or nil
+  state.finalDarkBlueOrientation=lastDarkBlueRigidCandidate and qnorm(lastDarkBlueRigidCandidate.q) or nil
+  state.orangeOrientationUsedForDarkBlue=qnorm(orangeWorld.q)
+  state.darkBlueOrientationSource='orange live BeamNG orientation'
+  state.duplicateArtificialYawRemoved=true
+  state.provisionalVsFinalAngularDifferenceDegrees=state.provisionalDarkBlueOrientation and
+    state.finalDarkBlueOrientation and quaternionAngularDifferenceDegrees(
+      state.provisionalDarkBlueOrientation,state.finalDarkBlueOrientation) or nil
+  state.darkBlueOrientationEqualsOrange=state.finalDarkBlueOrientation and
+    state.orangeOrientationUsedForDarkBlue and quaternionAngularDifferenceDegrees(
+      state.finalDarkBlueOrientation,state.orangeOrientationUsedForDarkBlue)<=1e-6 or false
   state.darkBlueResetReason=darkBlueResetReason; state.darkBlueResetCount=darkBlueResetCount
   state.darkBlueValid=lastDarkBlueRigidCandidate~=nil
   state.darkBlueOrangePositionDifference=lastDarkBlueRigidCandidate and distance(lastDarkBlueRigidCandidate.p,orangeWorld.p) or nil
@@ -992,7 +1026,7 @@ function M.onPreRender(dtReal,dtSim,dtRaw)
   state.diagnostics.rebasedHybridRightControllerWorld=state.rebasedHybridRightControllerWorld
   state.diagnostics.movingHybridLeftControllerWorld=state.movingHybridLeftControllerWorld
   state.diagnostics.movingHybridRightControllerWorld=state.movingHybridRightControllerWorld
-  for _,field in ipairs({'darkBlueHmdWorld','orangeHmdWorld','darkBlueArtificialTransform','artificialMotionSourceName','artificialMotionSourceAvailable','artificialMotionSourceFailureReason','previousGameAnchor','currentGameAnchor','gameAnchorDelta','artificialTranslationDetected','artificialRotationDetected','artificialTranslationMagnitude','artificialRotationDegrees','physicalMovementDetected','artificialInputActive','artificialYawInputActive','artificialTranslationInputActive','darkBlueLeftControllerWorld','darkBlueRightControllerWorld','darkBlueResetReason','darkBlueResetCount','darkBlueValid','darkBlueOrangePositionDifference','darkBlueOrangeAngularDifference','darkBlueUnexpectedSeparationDuringPhysicalMotion'}) do state.diagnostics[field]=state[field] end
+  for _,field in ipairs({'darkBlueHmdWorld','orangeHmdWorld','darkBlueArtificialTransform','provisionalDarkBlueFullRigidPose','provisionalDarkBlueOrientation','finalDarkBlueOrientation','orangeOrientationUsedForDarkBlue','darkBlueOrientationSource','duplicateArtificialYawRemoved','provisionalVsFinalAngularDifferenceDegrees','darkBlueOrientationEqualsOrange','artificialMotionSourceName','artificialMotionSourceAvailable','artificialMotionSourceFailureReason','previousGameAnchor','currentGameAnchor','gameAnchorDelta','artificialTranslationDetected','artificialRotationDetected','artificialTranslationMagnitude','artificialRotationDegrees','physicalMovementDetected','artificialInputActive','artificialYawInputActive','artificialTranslationInputActive','darkBlueLeftControllerWorld','darkBlueRightControllerWorld','darkBlueResetReason','darkBlueResetCount','darkBlueValid','darkBlueOrangePositionDifference','darkBlueOrangeAngularDifference','darkBlueUnexpectedSeparationDuringPhysicalMotion'}) do state.diagnostics[field]=state[field] end
   syncGeluaDiagnostics()
   state.artificialYawRebaseThresholdDegrees=cfg.artificialYawRebaseThresholdDegrees or 0.75
   for _,field in ipairs({'artificialYawRebaseThresholdDegrees','targetWorldFromTrackingOrientation','storedWorldFromTrackingOrientationBeforeRebase','artificialAlignmentDeltaDegrees','artificialYawRebaseTriggered','artificialYawRebaseCount','lastArtificialYawRebaseReason','lastArtificialYawRebaseTime','hmdWorldPositionBeforeArtificialRebase','hmdWorldPositionAfterArtificialRebase','artificialRebasePositionDiscontinuityMetres','rebasedWorldFromTracking','rebasedHybridHmdWorld','rebasedHybridLeftControllerWorld','rebasedHybridRightControllerWorld','rebasedHybridDiagnosticSphereWorldPosition'}) do state.diagnostics[field]=state[field] end
@@ -1014,6 +1048,7 @@ function M.onPreRender(dtReal,dtSim,dtRaw)
       ' artificialMetres='..tostring(state.artificialTranslationMagnitude)..
       ' artificialDegrees='..tostring(state.artificialRotationDegrees)..
       ' source='..tostring(state.artificialMotionSourceAvailable)..
+      ' orientationMatchesOrange='..tostring(state.darkBlueOrientationEqualsOrange)..
       ' unexpectedPhysicalSeparation='..tostring(state.darkBlueUnexpectedSeparationDuringPhysicalMotion)..
       ' orangeDifference='..tostring(state.darkBlueOrangePositionDifference)..
       ' resets='..tostring(state.darkBlueResetCount)); lastLog=now
