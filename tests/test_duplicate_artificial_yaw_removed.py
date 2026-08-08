@@ -128,5 +128,6 @@ def test_visual_and_hypothetical_controllers_consume_final_candidate_only():
 def test_orange_violet_native_protocol_and_controller_selection_are_unchanged():
     text = LUA.read_text()
     assert "selectedControllerCameraWorld=candidates.geluaNativeCameraComposition" in text
+    assert "selectedControllerCameraWorld=state.darkBlueValid" in text
     assert "candidates.geluaNativeCameraComposition=nativeCandidate" in text
     assert "xrLocateSpace" not in text

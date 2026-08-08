@@ -36,11 +36,12 @@ def test_only_visible_candidate_tripods_and_lines_are_constructed():
         assert hidden not in block
 
 
-def test_controllers_share_one_authoritative_violet_parent_and_compose_once():
+def test_controllers_share_one_authoritative_selected_parent_and_compose_once():
     text = source()
     frame = text.split("function M.onPreRender", 1)[1].split(
         "function M.setCameraSourceMode", 1)[0]
     assert "selectedControllerCameraWorld=candidates.geluaNativeCameraComposition" in frame
+    assert "candidates.baselineRigidRebasedArtificialCamera or nil" in frame
     assert "selectedControllerCameraWorld==candidates.geluaNativeCameraComposition" in frame
     assert "updateHand('left',latest.left,hmdWorld,now); updateHand('right',latest.right,hmdWorld,now)" in frame
     update = text.split("local function updateHand", 1)[1].split(
@@ -50,16 +51,16 @@ def test_controllers_share_one_authoritative_violet_parent_and_compose_once():
         assert forbidden not in update
 
 
-def test_violet_fallback_is_wholly_orange_and_exposes_actual_selection():
+def test_selected_candidate_fallback_is_wholly_orange_and_exposes_actual_selection():
     frame = source().split("function M.onPreRender", 1)[1].split(
         "function M.setCameraSourceMode", 1)[0]
-    assert "selectedControllerCameraWorld=candidates.baselineRigidPositionBeamngRotationRebased" in frame
+    assert "selectedControllerCameraWorld=orangeControllerParent" in frame
     assert "controllerParentFallbackReason" in frame
     assert "controllersUseVioletParent" in frame
     for field in ("selectedControllerParentMode", "selectedControllerParentTransform",
                   "violetCameraWorld", "orangeCameraWorld", "leftControllerRelativeToHmd",
                   "rightControllerRelativeToHmd", "finalLeftControllerWorld",
-                  "finalRightControllerWorld"):
+                  "finalRightControllerWorld", "controllersUseDarkBlueParent"):
         assert f"state.{field}" in frame
 
 

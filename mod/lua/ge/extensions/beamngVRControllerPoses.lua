@@ -14,6 +14,18 @@ local rebasedWorldFromTracking, lastRebasedRigidCandidate=nil,nil
 local darkBlueArtificialTransform,previousGameAnchor,previousOrangeHmdWorld=nil,nil,nil
 local lastDarkBlueRigidCandidate,lastProvisionalDarkBlueFullRigidPose=nil,nil
 local darkBlueResetCount,darkBlueResetReason=0,'extension loaded'
+-- Camera context uses only repository-confirmed BeamNG entry points:
+-- core_camera.getActiveCamName(), getPlayerVehicle(0):getID(), and
+-- getCurrentLevelIdentifier(). Every optional call is protected because these
+-- globals are not present during every BeamNG lifecycle phase.
+local cameraContextKey,previousCameraContextKey=nil,nil
+local cameraContextChanged,cameraContextChangeReason=false,nil
+local cameraContextChangeCount=0
+local pendingCameraRebaseReason=nil
+local activeCameraMode,activeControlledObjectId,activeLevelOrMissionId=nil,nil,nil
+local cameraCutDetected=false
+local darkBlueRebasedThisFrame,darkBlueRebaseReason=false,nil
+local darkBlueRebaseCount=0
 local artificialYawRebaseCount, lastArtificialRebaseLog = 0, 0
 local movingWorldFromTracking, previousBeamngCameraAnchorPosition, lastMovingRigidCandidate=nil,nil,nil
 local baselineOrangeReferenceHmdWorldPosition=nil
@@ -61,6 +73,11 @@ local function copyPose(t)
   return t and {p={t.p[1],t.p[2],t.p[3]},q={t.q[1],t.q[2],t.q[3],t.q[4]}} or nil
 end
 local function identityPose() return {p={0,0,0},q={0,0,0,1}} end
+local function safeCall(fn,...)
+  if type(fn)~='function' then return nil end
+  local ok,value=pcall(fn,...)
+  return ok and value or nil
+end
 local function mappedPosition(p)
   local o,s=cfg.axisOrder,cfg.axisSign
   return {p[o[1]]*s[1]*cfg.metresToBeamNGUnit,p[o[2]]*s[2]*cfg.metresToBeamNGUnit,p[o[3]]*s[3]*cfg.metresToBeamNGUnit}
@@ -167,6 +184,7 @@ local function resetHmdBaseline(reason)
   state.darkBlueOrientationSource='orange live BeamNG orientation'
   state.duplicateArtificialYawRemoved=true; state.provisionalVsFinalAngularDifferenceDegrees=nil
   state.darkBlueOrientationEqualsOrange=false
+  darkBlueRebasedThisFrame=false; darkBlueRebaseReason=nil; cameraCutDetected=false
 end
 local function vec3ToTable(v)
   if not v then return nil end
@@ -343,6 +361,42 @@ local function syncGeluaDiagnostics()
   local fields={'geluaCaptureInstalled','geluaCaptureAvailable','geluaCaptureFailureReason','geluaSetterSequence','geluaSetterTimestamp','geluaGetterTimestamp','geluaPairComplete','geluaPairAgeMs','geluaRawAnchorPosition','geluaRawAnchorQuaternion','geluaRawPredictedPosition','geluaRawPredictedQuaternion','geluaRawNativeViewQuaternion','geluaNativeCameraToWorldQuaternion','geluaQuaternionBoundaryConversion','geluaNativeFinalVrPosition','geluaNativeFinalVrQuaternion','geluaNativeLeftControllerWorld','geluaNativeRightControllerWorld','geluaNativeDiagnosticSphereWorld'}
   for _,key in ipairs(fields) do state[key]=values[key]; state.diagnostics[key]=values[key] end
 end
+local function readCameraContext()
+  local mode=core_camera and safeCall(core_camera.getActiveCamName) or nil
+  local controlled=safeCall(getPlayerVehicle,0)
+  local objectId=controlled and safeCall(function(object)
+    if type(object.getID)=='function' then return object:getID() end
+    if type(object.getId)=='function' then return object:getId() end
+    return nil
+  end,controlled) or nil
+  local level=safeCall(getCurrentLevelIdentifier)
+  mode=mode~=nil and tostring(mode) or 'unavailable'
+  objectId=objectId~=nil and tostring(objectId) or 'unavailable'
+  level=level~=nil and tostring(level) or 'unavailable'
+  return mode..'|object='..objectId..'|level='..level,mode,objectId,level
+end
+local function updateCameraContext()
+  local newKey,newMode,newObjectId,newLevel=readCameraContext()
+  local oldKey=cameraContextKey
+  previousCameraContextKey=oldKey
+  cameraContextKey=newKey
+  activeCameraMode,activeControlledObjectId,activeLevelOrMissionId=newMode,newObjectId,newLevel
+  cameraContextChanged=oldKey~=nil and newKey~=oldKey
+  cameraContextChangeReason=nil
+  if cameraContextChanged then
+    if state.activeCameraMode~=nil and state.activeCameraMode~=newMode then cameraContextChangeReason='active camera mode changed'
+    elseif state.activeControlledObjectId~=nil and state.activeControlledObjectId~=newObjectId then cameraContextChangeReason='controlled object changed'
+    elseif state.activeLevelOrMissionId~=nil and state.activeLevelOrMissionId~=newLevel then cameraContextChangeReason='level or mission changed'
+    else cameraContextChangeReason='camera context key changed' end
+    cameraContextChangeCount=cameraContextChangeCount+1
+    pendingCameraRebaseReason=cameraContextChangeReason
+  end
+  state.cameraContextKey=cameraContextKey; state.previousCameraContextKey=previousCameraContextKey
+  state.cameraContextChanged=cameraContextChanged; state.cameraContextChangeReason=cameraContextChangeReason
+  state.cameraContextChangeCount=cameraContextChangeCount
+  state.activeCameraMode=activeCameraMode; state.activeControlledObjectId=activeControlledObjectId
+  state.activeLevelOrMissionId=activeLevelOrMissionId
+end
 local function beamCameraWorld()
   local pos=vec3ToTable(core_camera and core_camera.getPosition and core_camera.getPosition())
   local rawRot=quatToXYZW(core_camera and core_camera.getQuat and core_camera.getQuat())
@@ -427,6 +481,20 @@ local function establishDarkBlue(orangeWorld,gameAnchor,reason)
   state.artificialRotationDegrees=0; state.artificialTranslationDetected=false
   state.artificialRotationDetected=false; darkBlueResetReason=reason
 end
+local function rebaseDarkBlue(orangeWorld,gameAnchor,reason,isCut)
+  if isCut then
+    cameraCutDetected=true
+    cameraContextChanged=true
+    cameraContextChangeReason=reason
+    cameraContextChangeCount=cameraContextChangeCount+1
+  end
+  darkBlueResetCount=darkBlueResetCount+1
+  darkBlueRebaseCount=darkBlueRebaseCount+1
+  darkBlueRebasedThisFrame=true; darkBlueRebaseReason=reason
+  pendingCameraRebaseReason=nil
+  establishDarkBlue(orangeWorld,gameAnchor,reason)
+  log('I','beamngVRControllerPoses','camera context rebase: '..reason..' key='..tostring(cameraContextKey))
+end
 local function finalizeDarkBlueOrientation(provisionalDarkBluePose,orangeWorld)
   if not provisionalDarkBluePose or not orangeWorld then return nil end
   local normalizedOrangeOrientation=qnorm(orangeWorld.q)
@@ -437,6 +505,7 @@ local function finalizeDarkBlueOrientation(provisionalDarkBluePose,orangeWorld)
   }
 end
 local function updateDarkBlue(_,orangeWorld,_)
+  darkBlueRebasedThisFrame=false; darkBlueRebaseReason=nil; cameraCutDetected=false
   local priorOrange=copyPose(previousOrangeHmdWorld)
   local now=captureNow()
   local gameAnchor,sourceName,failure=capturedArtificialGameAnchor(now)
@@ -455,6 +524,10 @@ local function updateDarkBlue(_,orangeWorld,_)
     state.gameAnchorDelta=identityPose()
     state.artificialTranslationMagnitude=0; state.artificialRotationDegrees=0
     state.artificialTranslationDetected=false; state.artificialRotationDetected=false
+  elseif pendingCameraRebaseReason then
+    -- Atomic context transition: discard the old attachment, seed the current
+    -- anchor, and publish complete orange as dark blue for this frame.
+    rebaseDarkBlue(orangeWorld,gameAnchor,pendingCameraRebaseReason,false)
   elseif not darkBlueArtificialTransform or not previousGameAnchor then
     establishDarkBlue(orangeWorld,gameAnchor,darkBlueResetReason or 'candidate initialized')
   else
@@ -468,8 +541,7 @@ local function updateDarkBlue(_,orangeWorld,_)
     local rotationDetected=rotationDegrees>(cfg.artificialCameraAngularNoiseDegrees or 0.01)
     if translationMagnitude>(cfg.artificialCameraDiscontinuityMetres or 5.0) or
         rotationDegrees>(cfg.artificialCameraDiscontinuityDegrees or 120.0) then
-      darkBlueResetCount=darkBlueResetCount+1
-      establishDarkBlue(orangeWorld,gameAnchor,'validated game-anchor discontinuity')
+      rebaseDarkBlue(orangeWorld,gameAnchor,'validated game-anchor camera cut',true)
     else
       if translationDetected or rotationDetected then
         darkBlueArtificialTransform=compose(gameAnchorDelta,darkBlueArtificialTransform)
@@ -512,6 +584,10 @@ local function updateDarkBlue(_,orangeWorld,_)
   state.darkBlueOrangeAngularDifference=lastDarkBlueRigidCandidate and quaternionAngularDifferenceDegrees(lastDarkBlueRigidCandidate.q,orangeWorld.q) or nil
   state.darkBlueUnexpectedSeparationDuringPhysicalMotion=state.physicalMovementDetected and not state.artificialInputActive and
     ((state.darkBlueOrangePositionDifference or 0)>1e-6 or (state.darkBlueOrangeAngularDifference or 0)>1e-4) or false
+  state.cameraContextChanged=cameraContextChanged; state.cameraContextChangeReason=cameraContextChangeReason
+  state.cameraContextChangeCount=cameraContextChangeCount; state.cameraCutDetected=cameraCutDetected
+  state.darkBlueRebasedThisFrame=darkBlueRebasedThisFrame; state.darkBlueRebaseReason=darkBlueRebaseReason
+  state.darkBlueRebaseCount=darkBlueRebaseCount
 end
 local function actualHmdWorld(cameraAnchor, hmd)
   local rawDelta,mappedDelta,worldDelta,fixedDelta=nil,nil,{0,0,0},{0,0,0}
@@ -963,26 +1039,37 @@ end
 function M.getGeluaCameraAnchorCaptureState() geluaNativeCandidate(captureNow()); syncGeluaDiagnostics(); return geluaCapture end
 function M.onPreRender(dtReal,dtSim,dtRaw)
   if not sock then return end; receive(); local now=socketlib.gettime(); local cameraAnchor=beamCameraWorld()
+  updateCameraContext()
   pollNativeSourcePoses(now); drawNativeSourcePoses()
   if not latest or not cameraAnchor or (now-latest.received)*1000>cfg.staleAfterMs then state.leftControllerWorld.valid=false; state.rightControllerWorld.valid=false; return end
   -- Packets from older protocol-2 publishers have no hmd member and retain the
   -- previous camera-anchor behavior rather than being rejected.
   local beamngWorld,candidates=actualHmdWorld(cameraAnchor,latest.hmd)
   local selectedControllerCameraWorld=beamngWorld
-  -- PR #37 changes only the headset experiment.  Controllers retain PR #36's
-  -- captured-violet parent while dark blue is selected.
-  local requestedViolet=cfg.hmdTranslationMode=='geluaNativeCameraComposition' or cfg.hmdTranslationMode=='baselineRigidRebasedArtificialCamera'
-  if requestedViolet then
+  local requestedDarkBlue=cfg.hmdTranslationMode=='baselineRigidRebasedArtificialCamera'
+  local requestedViolet=cfg.hmdTranslationMode=='geluaNativeCameraComposition'
+  local orangeControllerParent=candidates.baselineRigidPositionBeamngRotationRebased
+  if requestedDarkBlue then
+    selectedControllerCameraWorld=state.darkBlueValid and not pendingCameraRebaseReason and
+      candidates.baselineRigidRebasedArtificialCamera or nil
+    state.controllerParentFallbackActive=selectedControllerCameraWorld==nil
+    state.controllerParentFallbackReason=state.controllerParentFallbackActive and
+      (pendingCameraRebaseReason and 'dark blue is being re-established' or 'dark blue unavailable, invalid, or stale') or nil
+    if not selectedControllerCameraWorld then selectedControllerCameraWorld=orangeControllerParent end
+  elseif requestedViolet then
     selectedControllerCameraWorld=candidates.geluaNativeCameraComposition
     state.controllerParentFallbackActive=selectedControllerCameraWorld==nil
     state.controllerParentFallbackReason=state.controllerParentFallbackActive and (state.selectedModeFallbackReason or 'violet capture invalid') or nil
-    if not selectedControllerCameraWorld then selectedControllerCameraWorld=candidates.baselineRigidPositionBeamngRotationRebased end
+    if not selectedControllerCameraWorld then selectedControllerCameraWorld=orangeControllerParent end
   else
     state.controllerParentFallbackActive=false; state.controllerParentFallbackReason=nil
   end
   local hmdWorld=selectedControllerCameraWorld
-  state.selectedControllerParentMode=requestedViolet and (state.controllerParentFallbackActive and 'baselineRigidPositionBeamngRotationRebased' or 'geluaNativeCameraComposition') or state.selectedHmdTranslationMode
+  state.selectedControllerParentMode=requestedDarkBlue and (state.controllerParentFallbackActive and 'baselineRigidPositionBeamngRotationRebased' or 'baselineRigidRebasedArtificialCamera') or
+    (requestedViolet and (state.controllerParentFallbackActive and 'baselineRigidPositionBeamngRotationRebased' or 'geluaNativeCameraComposition') or state.selectedHmdTranslationMode)
   state.selectedControllerParentTransform=selectedControllerCameraWorld
+  state.controllersUseDarkBlueParent=requestedDarkBlue and not state.controllerParentFallbackActive and
+    selectedControllerCameraWorld==candidates.baselineRigidRebasedArtificialCamera
   state.controllersUseVioletParent=selectedControllerCameraWorld~=nil and selectedControllerCameraWorld==candidates.geluaNativeCameraComposition
   state.violetCameraWorld=candidates.geluaNativeCameraComposition
   state.orangeCameraWorld=candidates.baselineRigidPositionBeamngRotationRebased
@@ -1026,7 +1113,7 @@ function M.onPreRender(dtReal,dtSim,dtRaw)
   state.diagnostics.rebasedHybridRightControllerWorld=state.rebasedHybridRightControllerWorld
   state.diagnostics.movingHybridLeftControllerWorld=state.movingHybridLeftControllerWorld
   state.diagnostics.movingHybridRightControllerWorld=state.movingHybridRightControllerWorld
-  for _,field in ipairs({'darkBlueHmdWorld','orangeHmdWorld','darkBlueArtificialTransform','provisionalDarkBlueFullRigidPose','provisionalDarkBlueOrientation','finalDarkBlueOrientation','orangeOrientationUsedForDarkBlue','darkBlueOrientationSource','duplicateArtificialYawRemoved','provisionalVsFinalAngularDifferenceDegrees','darkBlueOrientationEqualsOrange','artificialMotionSourceName','artificialMotionSourceAvailable','artificialMotionSourceFailureReason','previousGameAnchor','currentGameAnchor','gameAnchorDelta','artificialTranslationDetected','artificialRotationDetected','artificialTranslationMagnitude','artificialRotationDegrees','physicalMovementDetected','artificialInputActive','artificialYawInputActive','artificialTranslationInputActive','darkBlueLeftControllerWorld','darkBlueRightControllerWorld','darkBlueResetReason','darkBlueResetCount','darkBlueValid','darkBlueOrangePositionDifference','darkBlueOrangeAngularDifference','darkBlueUnexpectedSeparationDuringPhysicalMotion'}) do state.diagnostics[field]=state[field] end
+  for _,field in ipairs({'cameraContextKey','previousCameraContextKey','cameraContextChanged','cameraContextChangeReason','cameraContextChangeCount','activeCameraMode','activeControlledObjectId','activeLevelOrMissionId','cameraCutDetected','darkBlueRebasedThisFrame','darkBlueRebaseReason','darkBlueRebaseCount','darkBlueHmdWorld','orangeHmdWorld','darkBlueArtificialTransform','provisionalDarkBlueFullRigidPose','provisionalDarkBlueOrientation','finalDarkBlueOrientation','orangeOrientationUsedForDarkBlue','darkBlueOrientationSource','duplicateArtificialYawRemoved','provisionalVsFinalAngularDifferenceDegrees','darkBlueOrientationEqualsOrange','artificialMotionSourceName','artificialMotionSourceAvailable','artificialMotionSourceFailureReason','previousGameAnchor','currentGameAnchor','gameAnchorDelta','artificialTranslationDetected','artificialRotationDetected','artificialTranslationMagnitude','artificialRotationDegrees','physicalMovementDetected','artificialInputActive','artificialYawInputActive','artificialTranslationInputActive','darkBlueLeftControllerWorld','darkBlueRightControllerWorld','darkBlueResetReason','darkBlueResetCount','darkBlueValid','darkBlueOrangePositionDifference','darkBlueOrangeAngularDifference','darkBlueUnexpectedSeparationDuringPhysicalMotion','selectedControllerParentMode','selectedControllerParentTransform','controllersUseDarkBlueParent','controllerParentFallbackActive','controllerParentFallbackReason','finalLeftControllerWorld','finalRightControllerWorld'}) do state.diagnostics[field]=state[field] end
   syncGeluaDiagnostics()
   state.artificialYawRebaseThresholdDegrees=cfg.artificialYawRebaseThresholdDegrees or 0.75
   for _,field in ipairs({'artificialYawRebaseThresholdDegrees','targetWorldFromTrackingOrientation','storedWorldFromTrackingOrientationBeforeRebase','artificialAlignmentDeltaDegrees','artificialYawRebaseTriggered','artificialYawRebaseCount','lastArtificialYawRebaseReason','lastArtificialYawRebaseTime','hmdWorldPositionBeforeArtificialRebase','hmdWorldPositionAfterArtificialRebase','artificialRebasePositionDiscontinuityMetres','rebasedWorldFromTracking','rebasedHybridHmdWorld','rebasedHybridLeftControllerWorld','rebasedHybridRightControllerWorld','rebasedHybridDiagnosticSphereWorldPosition'}) do state.diagnostics[field]=state[field] end
