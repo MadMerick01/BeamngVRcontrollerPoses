@@ -451,3 +451,17 @@ PR #33 live testing already established wrapper replacement, capture pairing, an
 the exact `anchor + predicted` position. A successful static/CI test still does
 not establish that PR #34's corrected artifact behaves properly in a headset; do
 not claim complete success before this acceptance test passes.
+
+## PR #41 camera-change reattachment headset acceptance
+
+Static tests and CI only validate the implementation; do not claim the camera-change issue is solved until Windows x64 CI and this headset sequence both pass.
+
+1. Load the extension.
+2. Start GE Lua camera-anchor capture.
+3. Select `baselineRigidRebasedArtificialCamera`.
+4. Confirm natural head movement, stick movement, and stick rotation still work.
+5. Change from vehicle camera to on-foot camera without manually recentering.
+6. Expected: orange, dark blue, and both controllers attach immediately to the new camera.
+7. Repeat with other camera modes and controlled objects.
+8. Expected: no manual VR recenter is required.
+9. Confirm ordinary continuous stick motion does not cause visible snapping or repeated rebases.
