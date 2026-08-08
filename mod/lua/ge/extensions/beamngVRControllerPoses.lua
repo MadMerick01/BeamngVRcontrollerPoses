@@ -40,6 +40,7 @@ local geluaCapture={captureInstalled=false,captureAvailable=false,captureFailure
 local geluaOriginalSetter,geluaOriginalGetter,geluaSetterWrapper,geluaGetterWrapper=nil,nil,nil,nil
 local nativeSource={enabled=false,available=false,failureReason='diagnostics disabled',pollCounter=0,lastPollTimestamp=nil,lastLogTimestamp=0}
 local diagnosticVisualProfile='orangeVioletControllers'
+local legacyControllerSpheresVisible=true
 local visibleDiagnosticCandidates={'baselineRigidPositionBeamngRotationRebased','baselineRigidRebasedArtificialCamera','geluaNativeCameraComposition','leftApiLayerController','rightApiLayerController'}
 local hiddenDiagnosticCandidates={'beamngOnly','beamngPlusHmdDelta','beamngMinusHmdDelta','beamngFixedBaseHmdDelta','baselineRigidTracking','baselineRigidPositionBeamngRotation','baselineRigidPositionBeamngRotationRebasedMovingAnchor','nativeSourceYellowControllers','cameraAxisSpheres'}
 local yellowCandidateFormula='captured GE Lua anchor position + raw BeamNG native source position'
@@ -1025,7 +1026,7 @@ local function drawDiagnostics(candidates,hmdWorld)
   for _,hand in ipairs({'left','right'}) do
     local p=state[hand..'ControllerWorld']
     if p.valid then
-      debugDrawer:drawSphere(vec3(p.position),radius,c)
+      if legacyControllerSpheresVisible then debugDrawer:drawSphere(vec3(p.position),radius,c) end
       local endpoints=tripod(p.position,p.orientation,tripodState.axisLength)
       tripodState.controllers[hand]={centre=p.position,orientation=p.orientation,endpoints=endpoints}
       tripodState.originLines[hand]={start=hmdWorld.p,endpoint=p.position}
@@ -1289,6 +1290,12 @@ function M.setAxisTripodsEnabled(enabled) cfg.axisTripods.enabled=enabled==true;
 function M.setDiagnosticTripodsEnabled(enabled) cfg.axisTripods.drawDiagnosticSphereTripods=enabled==true; return true end
 function M.setControllerTripodsEnabled(enabled) cfg.axisTripods.drawControllerTripods=enabled==true; return true end
 function M.setOriginLinesEnabled(enabled) cfg.axisTripods.drawOriginLines=enabled==true; return true end
+-- Lets a focused consumer replace only the controller visualization. Tracking,
+-- pose composition, and the diagnostic state are deliberately unaffected.
+function M.setLegacyControllerSpheresVisible(visible)
+  legacyControllerSpheresVisible=visible==true
+  return true
+end
 function M.setDiagnosticVisualProfile(profile)
   if profile~='orangeVioletControllers' then return false,'unsupported diagnostic visual profile' end
   diagnosticVisualProfile=profile; cfg.diagnosticVisualProfile=profile
@@ -1296,5 +1303,19 @@ function M.setDiagnosticVisualProfile(profile)
   return true
 end
 function M.getState() geluaNativeCandidate(captureNow()); syncGeluaDiagnostics(); return state end
+-- Allocation-bounded production boundary for consumers which need the final
+-- proven world pose but none of the large diagnostic state.
+function M.getControllerWorldPose(hand)
+  if hand~='left' and hand~='right' then return nil end
+  local source=state[hand..'ControllerWorld']
+  if not source or not source.valid then
+    return {valid=false,ageMs=source and source.ageMs or nil,position=nil,orientation=nil,
+      updateCounter=source and source.updateCounter or nil}
+  end
+  return {valid=true,ageMs=source.ageMs,
+    position={x=source.position[1],y=source.position[2],z=source.position[3]},
+    orientation={x=source.orientation[1],y=source.orientation[2],z=source.orientation[3],w=source.orientation[4]},
+    updateCounter=source.updateCounter}
+end
 function M.onExtensionUnloaded() M.stopGeluaCameraAnchorCapture(); M.stopNativeSourcePoseDiagnostics(); if sock then sock:close(); sock=nil end end
 return M
