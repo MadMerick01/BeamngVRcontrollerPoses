@@ -1,0 +1,17 @@
+{
+  "enabled": true,
+  "grabRadiusMetres": 0.20,
+  "poseStaleAfterMs": 150,
+  "gripPressThreshold": 0.65,
+  "gripReleaseThreshold": 0.35,
+  "handSphereDiameter": 0.07,
+  "freeHandColour": [1.0, 0.35, 0.0, 1.0],
+  "candidateNodeColour": [1.0, 0.85, 0.0, 1.0],
+  "candidateNodeDiameter": 0.025,
+  "nearbyNodePreviewEnabled": false,
+  "nearbyNodePreviewIntervalSeconds": 0.10,
+  "nearbyNodePreviewMaximumMarkersPerHand": 32,
+  "excludePlayerVehicle": true,
+  "excludedVehicleId": null,
+  "legacyControllerSpheresVisible": false
+}
