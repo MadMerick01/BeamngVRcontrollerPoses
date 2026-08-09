@@ -1,9 +1,11 @@
+import json
 from pathlib import Path
 
 
 ROOT = Path(__file__).parents[1]
 ATTACHMENT = ROOT / "mod/lua/ge/extensions/vrPistolAttachment.lua"
 PROVIDER = ROOT / "mod/lua/ge/extensions/beamngVRControllerPoses.lua"
+SETTINGS = ROOT / "mod/settings/beamngVRControllerPoses.json"
 
 
 def source() -> str:
@@ -14,6 +16,14 @@ def test_uses_right_controller_public_pose_api_and_expected_external_model():
     text = source()
     assert "pcall(poseProvider.getControllerWorldPose,'right')" in text
     assert "'/art/shapes/vrpistol/vr_pistol.dae'" in text
+
+
+def test_head_camera_aids_default_off_without_disabling_controller_visuals_or_pistol_pose():
+    settings = json.loads(SETTINGS.read_text(encoding="utf-8"))
+    provider = PROVIDER.read_text(encoding="utf-8")
+    assert settings["cameraTestSphere"]["enabled"] is False
+    assert "if legacyControllerSpheresVisible then debugDrawer:drawSphere" in provider
+    assert "function M.getControllerWorldPose(hand)" in provider
 
 
 def test_validates_complete_fresh_pose():
