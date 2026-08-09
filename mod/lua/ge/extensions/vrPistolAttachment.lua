@@ -16,7 +16,9 @@ local providerAvailable = nil
 local trackingState = 'initial'
 local creationFailureLogged = false
 local firstValidPoseSeen = false
+local externalRendererReference = nil
 local externalRendererDisabled = false
+local externalRendererDisableFailureLogged = false
 
 local function finite(value)
   return type(value)=='number' and value==value and value~=math.huge and value~=-math.huge
@@ -126,13 +128,34 @@ local function createPistol()
 end
 
 local function disableBundledRenderer()
-  if externalRendererDisabled then return end
-  local old=extensions and extensions.vrPistolVisual or nil
-  if old and type(old.setEnabled)=='function' then
-    local ok=pcall(old.setEnabled,false)
-    if ok then
+  local current=extensions and extensions.vrPistolVisual or nil
+  if not current then
+    externalRendererReference=nil
+    externalRendererDisabled=false
+    externalRendererDisableFailureLogged=false
+    return
+  end
+  if current~=externalRendererReference then
+    externalRendererReference=current
+    externalRendererDisabled=false
+    externalRendererDisableFailureLogged=false
+  end
+  if externalRendererDisabled and type(current.isEnabled)=='function' then
+    local checked,enabled=pcall(current.isEnabled)
+    if checked and enabled==false then return end
+    externalRendererDisabled=false
+  elseif externalRendererDisabled then
+    return
+  end
+  if type(current.setEnabled)=='function' then
+    local ok,result=pcall(current.setEnabled,false)
+    if ok and result==false then
       externalRendererDisabled=true
+      externalRendererDisableFailureLogged=false
       log('I',tag,'disabled the visual mod bundled renderer to prevent a duplicate TSStatic')
+    elseif not externalRendererDisableFailureLogged then
+      externalRendererDisableFailureLogged=true
+      log('W',tag,'could not disable the visual mod bundled renderer')
     end
   end
 end

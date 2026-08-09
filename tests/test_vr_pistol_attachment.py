@@ -62,4 +62,18 @@ def test_provider_optionally_loads_attachment_without_declared_dependency_cycle(
 def test_external_renderer_is_disabled_to_avoid_duplicate_object():
     text = source()
     assert "extensions.vrPistolVisual" in text
-    assert "pcall(old.setEnabled,false)" in text
+    assert "pcall(current.setEnabled,false)" in text
+
+
+def test_external_renderer_disappearance_and_reload_reset_suppression_state():
+    text = source()
+    suppression = text.split("local function disableBundledRenderer()", 1)[1].split(
+        "\nend\n\nlocal function cleanup", 1
+    )[0]
+    assert "if not current then" in suppression
+    assert "externalRendererReference=nil" in suppression
+    assert "externalRendererDisabled=false" in suppression
+    assert "if current~=externalRendererReference then" in suppression
+    assert "externalRendererReference=current" in suppression
+    assert "pcall(current.isEnabled)" in suppression
+    assert "pcall(current.setEnabled,false)" in suppression

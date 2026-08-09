@@ -19,8 +19,11 @@ route. It queries the correct provider API and calls seven-argument
 distinguish invalid from stale transitions, and deletes the object when merely
 disabled. More importantly, leaving that renderer active beside this integration
 would create a second `TSStatic`. The attachment therefore calls its public
-`setEnabled(false)` once it appears. This makes the supplied v0.2 visual package
-an asset provider, while this repository owns the sole attachment lifecycle.
+`setEnabled(false)` when it appears. The attachment retains the actual extension
+reference, resets suppression when that reference disappears, and disables a new
+instance after an extension reload. It also rechecks the instance's `isEnabled`
+state without repeating transition logs. This makes the supplied v0.2 visual
+package an asset provider, while this repository owns the sole attachment lifecycle.
 
 BeamNG's mod manager mounts installed mods into one virtual filesystem. A GE Lua
 extension loaded from this controller mod can therefore resolve the absolute
