@@ -79,7 +79,7 @@ def test_invalid_or_stale_pose_hides_both_pieces():
 def test_objects_are_created_once_updated_many_and_owned_cleanup_is_complete():
     update = SOURCE[SOURCE.index("function M.onPreRender"):SOURCE.index("function M.onExtensionLoaded")]
     assert "createObject" not in update
-    assert "pcall(ensurePieces)" in update
+    assert "ensurePieces()" in update
     assert SOURCE.count("createObject('TSStatic')") == 1  # factory called once per owned piece
     assert "object:setPosRot" in SOURCE
     assert "function M.onExtensionUnloaded()" in SOURCE
@@ -91,7 +91,33 @@ def test_visual_only_contract_has_no_gameplay_or_physics_behavior():
     lower = SOURCE.lower()
     for forbidden in ("projectile", "firing", "recoil", "nodegrab", "activevehiclesiterator", "inputevent"):
         assert forbidden not in lower
-    assert "object.dynamic=false" in SOURCE
-    assert "object.collisionType='None'" in SOURCE
-    assert "object.castShadows=false" in SOURCE
+    assert "configureField(object,name,'collision configuration','collisionType','None',true)" in SOURCE
+    assert "configureField(object,name,'shadow configuration','castShadows','0',false)" in SOURCE
     assert len(re.findall(r"makePiece\('(barrel|handle)'", SOURCE)) == 2
+
+
+def test_native_enum_strings_are_only_passed_through_torque_fields():
+    assert not re.search(r"object\.(collisionType|decalType)\s*=", SOURCE)
+    assert "configureField(object,name,'collision configuration','decalType','None',false)" in SOURCE
+    # Registration precedes all string-addressable configuration fields.
+    make_piece = SOURCE[SOURCE.index("local function makePiece"):SOURCE.index("local function ensurePieces")]
+    assert make_piece.index("object:registerObject") < make_piece.index("'collisionType','None'")
+
+
+def test_optional_field_failure_is_logged_but_does_not_abort_creation():
+    helper = SOURCE[SOURCE.index("local function configureField"):SOURCE.index("local function makePiece")]
+    assert "if required then return fail" in helper
+    assert "state.optionalFieldWarnings[#state.optionalFieldWarnings+1]=message" in helper
+    assert "log('W','vrMockPistol',message)" in helper
+    assert "return false" in helper
+    assert "configureField(object,name,'collision configuration','decalType','None',false)" in SOURCE
+    assert "configureField(object,name,'shadow configuration','castShadows','0',false)" in SOURCE
+
+
+def test_failures_expose_piece_operation_field_and_stage():
+    for field in ("creationStage", "failedPiece", "failedOperation", "failedField", "lastError"):
+        assert field in SOURCE[SOURCE.index("function M.getState()") :]
+    for stage in ("createObject", "shape assignment", "object registration",
+                  "collision configuration", "shadow configuration",
+                  "initial scaling", "setPosRot", "visibility"):
+        assert stage in SOURCE

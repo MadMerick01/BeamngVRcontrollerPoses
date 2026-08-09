@@ -11,7 +11,9 @@ local pieces={barrel=nil,handle=nil}
 local state={
   enabled=false,visible=false,rightControllerPoseValid=false,
   rightControllerPoseAgeMs=nil,renderingBackend='TSStatic cube scene objects',
-  barrelLocalPose=nil,handleLocalPose=nil,barrelWorldPose=nil,handleWorldPose=nil,lastError=nil
+  barrelLocalPose=nil,handleLocalPose=nil,barrelWorldPose=nil,handleWorldPose=nil,
+  creationStage='idle',failedPiece=nil,failedOperation=nil,failedField=nil,
+  optionalFieldWarnings={},lastError=nil
 }
 
 local function finite(v) return type(v)=='number' and v==v and v~=math.huge and v~=-math.huge end
@@ -60,26 +62,67 @@ end
 local function hidePieces()
   setHidden(pieces.barrel,true); setHidden(pieces.handle,true); state.visible=false
 end
+local function clearFailure(stage)
+  state.creationStage=stage or 'idle'; state.failedPiece=nil
+  state.failedOperation=nil; state.failedField=nil; state.lastError=nil
+end
+local function fail(piece,stage,operation,field,err)
+  state.creationStage=stage; state.failedPiece=piece
+  state.failedOperation=operation; state.failedField=field
+  state.lastError=piece..' '..operation..(field and (' ['..field..']') or '')..' failed: '..tostring(err)
+  log('E','vrMockPistol',state.lastError)
+  return nil,state.lastError
+end
+local function discard(object)
+  if not object then return end
+  setHidden(object,true); pcall(function() object:delete() end)
+end
+local function configureField(object,pieceName,stage,field,value,required)
+  state.creationStage=stage
+  local ok,err=pcall(function() object:setField(field,0,value) end)
+  if ok then return true end
+  local message=pieceName..' optional field '..field..' failed: '..tostring(err)
+  if required then return fail(pieceName,stage,'setField',field,err) end
+  state.optionalFieldWarnings[#state.optionalFieldWarnings+1]=message
+  log('W','vrMockPistol',message)
+  return false
+end
 local function makePiece(name,dimensions)
-  local object=createObject('TSStatic')
-  if not object then return nil,'createObject(TSStatic) failed for '..name end
-  object.shapeName=cubeShape
-  object.canSave=false
-  object.dynamic=false
-  object.castShadows=false
-  object.collisionType='None'
-  object.decalType='None'
+  state.creationStage='createObject'
+  local ok,object=pcall(function() return createObject('TSStatic') end)
+  if not ok or not object then return fail(name,'createObject','createObject',nil,object or 'returned nil') end
+
+  state.creationStage='shape assignment'
+  local shapeOk,shapeErr=pcall(function() object.shapeName=cubeShape end)
+  if not shapeOk then discard(object); return fail(name,'shape assignment','shapeName',nil,shapeErr) end
+
+  -- Register first: Torque dynamic fields are reliably addressable only after
+  -- the SimObject exists in the scene tree.
+  state.creationStage='object registration'
+  local registrationOk,registrationErr=pcall(function() object:registerObject('vrMockPistol_'..name) end)
+  if not registrationOk then discard(object); return fail(name,'object registration','registerObject',nil,registrationErr) end
+
+  -- collisionType is a Torque enum field. BeamNG 0.39's dump exposes TSStatic's
+  -- binding but not enum constants, so use its string-addressable field parser;
+  -- never send "None" through the native __newindex binding.
+  if not configureField(object,name,'collision configuration','collisionType','None',true) then
+    discard(object); return nil,state.lastError
+  end
+  configureField(object,name,'collision configuration','decalType','None',false)
+  configureField(object,name,'shadow configuration','castShadows','0',false)
+  configureField(object,name,'object persistence','canSave','0',false)
   -- The stock unit cube accepts per-instance colour; no installed material is changed.
   local c=cfg.colour
-  pcall(function() object:setField('instanceColor',0,string.format('%g %g %g %g',c[1],c[2],c[3],c[4])) end)
-  pcall(function() object:setField('collisionType',0,'None') end)
-  pcall(function() object:setField('castShadows',0,'0') end)
-  pcall(function() object:setField('canSave',0,'0') end)
-  object:registerObject('vrMockPistol_'..name)
+  configureField(object,name,'colour configuration','instanceColor',
+    string.format('%g %g %g %g',c[1],c[2],c[3],c[4]),false)
+
   -- Settings are documented as forward length/depth, width, height. BeamNG's
   -- confirmed controller-forward axis is local +Y, so the cube scale is X/Y/Z.
-  object:setScale(vec3({dimensions[2],dimensions[1],dimensions[3]}))
+  state.creationStage='initial scaling'
+  local scaleOk,scaleErr=pcall(function() object:setScale(vec3({dimensions[2],dimensions[1],dimensions[3]})) end)
+  if not scaleOk then discard(object); return fail(name,'initial scaling','setScale',nil,scaleErr) end
   setHidden(object,true)
+  state.creationStage='ready'
   return object
 end
 local function ensurePieces()
@@ -93,10 +136,20 @@ local function ensurePieces()
   pieces.handle=object
   return true
 end
-local function transformPiece(object,pose)
+local function transformPiece(name,object,pose)
   local p,q=pose.position,pose.orientation
-  object:setPosRot(p[1],p[2],p[3],q[1],q[2],q[3],q[4])
-  setHidden(object,false)
+  state.creationStage='setPosRot'
+  local positionOk,positionErr=pcall(function()
+    object:setPosRot(p[1],p[2],p[3],q[1],q[2],q[3],q[4])
+  end)
+  if not positionOk then return fail(name,'setPosRot','setPosRot',nil,positionErr) end
+  state.creationStage='visibility'
+  local visibilityOk,visibilityErr=pcall(function() object:setHidden(false) end)
+  if not visibilityOk then
+    visibilityOk,visibilityErr=pcall(function() object:setField('hidden',0,'0') end)
+  end
+  if not visibilityOk then return fail(name,'visibility','setHidden','hidden',visibilityErr) end
+  return true
 end
 local function readSettings()
   local loaded=jsonReadFile(settingsPath) or jsonReadFile('/'..settingsPath)
@@ -121,7 +174,7 @@ function M.reloadSettings()
   destroyPieces()
   cfg=loaded; state.enabled=wasEnabled and true or cfg.enabled==true
   state.barrelLocalPose=localPose(cfg.barrel); state.handleLocalPose=localPose(cfg.handle)
-  state.lastError=nil
+  state.optionalFieldWarnings={}; clearFailure('settings loaded')
   return true
 end
 function M.setEnabled(enabled)
@@ -137,7 +190,9 @@ function M.getState()
     rightControllerPoseValid=state.rightControllerPoseValid,rightControllerPoseAgeMs=state.rightControllerPoseAgeMs,
     renderingBackend=state.renderingBackend,barrelLocalPose=copyPose(state.barrelLocalPose),
     handleLocalPose=copyPose(state.handleLocalPose),barrelWorldPose=copyPose(state.barrelWorldPose),
-    handleWorldPose=copyPose(state.handleWorldPose),lastError=state.lastError}
+    handleWorldPose=copyPose(state.handleWorldPose),creationStage=state.creationStage,
+    failedPiece=state.failedPiece,failedOperation=state.failedOperation,failedField=state.failedField,
+    optionalFieldWarnings=state.optionalFieldWarnings,lastError=state.lastError}
 end
 function M.onPreRender()
   if not cfg or not state.enabled then return end
@@ -151,18 +206,14 @@ function M.onPreRender()
   if not state.rightControllerPoseValid then
     state.barrelWorldPose=nil; state.handleWorldPose=nil; hidePieces(); return
   end
-  local creationOk,ready=pcall(ensurePieces)
-  if not creationOk then state.lastError=tostring(ready); hidePieces(); return end
-  if not ready then hidePieces(); return end
+  if not ensurePieces() then hidePieces(); return end
   local parent={position={p.x,p.y,p.z},orientation={q.x,q.y,q.z,q.w}}
   local barrelWorld=compose(parent,state.barrelLocalPose)
   local handleWorld=compose(parent,state.handleLocalPose)
-  local ok,err=pcall(function()
-    transformPiece(pieces.barrel,barrelWorld); transformPiece(pieces.handle,handleWorld)
-  end)
-  if not ok then state.lastError=tostring(err); hidePieces(); return end
+  if not transformPiece('barrel',pieces.barrel,barrelWorld) then hidePieces(); return end
+  if not transformPiece('handle',pieces.handle,handleWorld) then hidePieces(); return end
   state.barrelWorldPose=barrelWorld; state.handleWorldPose=handleWorld
-  state.visible=true; state.lastError=nil
+  state.visible=true; clearFailure('visible')
 end
 function M.onExtensionLoaded()
   local ok,err=M.reloadSettings()
