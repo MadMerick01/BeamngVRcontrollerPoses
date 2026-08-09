@@ -25,9 +25,16 @@ local pendingCameraRebaseReason=nil
 local cameraReanchorPending=false
 local cameraReanchorRequestedAfterSequence=0
 local cameraReanchorCount=0
+local cameraReanchorGeneration,cameraReanchorCompletedGeneration=0,0
+local cameraReanchorRequestedCount,cameraReanchorCompletedCount,cameraReanchorDeferredCount=0,0,0
 local lastCameraReanchorDeferredReason=nil
 local lastObservedAnchorSequence=0
 local lastObservedRawAnchor=nil
+local lastAcceptedRawAnchor,lastAcceptedRawSetterAnchor=nil,nil
+local lastAcceptedAnchorSequence,lastAcceptedAnchorTimestamp=0,nil
+local lastAcceptedAnchorContextKey,lastAcceptedAnchorGeneration=nil,0
+local cameraReanchorRequestedSequence=0
+local duplicateCameraReanchorSuppressedCount=0
 local activeCameraMode,activeControlledObjectId,activeLevelOrMissionId=nil,nil,nil
 local cameraCutDetected=false
 local darkBlueRebasedThisFrame,darkBlueRebaseReason=false,nil
@@ -382,6 +389,7 @@ local function readCameraContext()
   level=level~=nil and tostring(level) or 'unavailable'
   return mode..'|object='..objectId..'|level='..level,mode,objectId,level
 end
+local requestCameraReanchor
 local function updateCameraContext()
   local newKey,newMode,newObjectId,newLevel=readCameraContext()
   local oldKey=cameraContextKey
@@ -396,10 +404,7 @@ local function updateCameraContext()
     elseif state.activeLevelOrMissionId~=nil and state.activeLevelOrMissionId~=newLevel then cameraContextChangeReason='level or mission changed'
     else cameraContextChangeReason='camera context key changed' end
     cameraContextChangeCount=cameraContextChangeCount+1
-    pendingCameraRebaseReason=cameraContextChangeReason
-    cameraReanchorPending=true
-    cameraReanchorRequestedAfterSequence=geluaCapture.setterSequence
-    log('I','beamngVRControllerPoses','camera reattachment requested: '..cameraContextChangeReason..' key='..newKey)
+    requestCameraReanchor(cameraContextChangeReason,geluaCapture.setterSequence+1,nil,nil,true)
   end
   state.cameraContextKey=cameraContextKey; state.previousCameraContextKey=previousCameraContextKey
   state.cameraContextChanged=cameraContextChanged; state.cameraContextChangeReason=cameraContextChangeReason
@@ -408,15 +413,26 @@ local function updateCameraContext()
   state.activeLevelOrMissionId=activeLevelOrMissionId
 end
 
-local function requestCameraReanchor(reason,sequence,translationMagnitude,angularMagnitude)
-  if cameraReanchorPending then return end
+requestCameraReanchor=function(reason,sequence,translationMagnitude,angularMagnitude,waitForSequence)
+  if cameraReanchorPending then
+    duplicateCameraReanchorSuppressedCount=duplicateCameraReanchorSuppressedCount+1
+    return false
+  end
   cameraReanchorPending=true; pendingCameraRebaseReason=reason
   -- A discontinuity capture is itself the fresh sample which requested this
   -- operation. Context changes, by contrast, must wait for the next setter.
-  cameraReanchorRequestedAfterSequence=(sequence or geluaCapture.setterSequence)-1
+  cameraReanchorRequestedAfterSequence=waitForSequence and geluaCapture.setterSequence or
+    (sequence or geluaCapture.setterSequence)-1
+  cameraReanchorGeneration=cameraReanchorGeneration+1
+  cameraReanchorRequestedCount=cameraReanchorRequestedCount+1
+  cameraReanchorRequestedSequence=sequence or geluaCapture.setterSequence
   state.rawAnchorTranslationDiscontinuityMagnitude=translationMagnitude
   state.rawAnchorAngularDiscontinuityMagnitude=angularMagnitude
-  log('I','beamngVRControllerPoses','camera reattachment requested: '..reason..' sequence='..tostring(sequence))
+  cameraCutDetected=translationMagnitude~=nil or angularMagnitude~=nil
+  log('I','beamngVRControllerPoses','camera reattachment requested: generation='..cameraReanchorGeneration..
+    ' reason='..reason..' key='..tostring(cameraContextKey)..' sequence='..tostring(sequence)..
+    ' translation='..tostring(translationMagnitude)..' angular='..tostring(angularMagnitude))
+  return true
 end
 
 local function beamCameraWorld()
@@ -498,17 +514,29 @@ local function observeRawAnchorDiscontinuity(now)
   lastObservedAnchorSequence=sequence
   local anchor=capturedArtificialGameAnchor(now)
   if not anchor then return end
-  if lastObservedRawAnchor then
-    local translation=distance(anchor.p,lastObservedRawAnchor.p)
-    local angle=quaternionAngularDifferenceDegrees(anchor.q,lastObservedRawAnchor.q) or 0
+  if cameraReanchorPending then
+    duplicateCameraReanchorSuppressedCount=duplicateCameraReanchorSuppressedCount+1
+    return
+  end
+  if lastAcceptedRawAnchor then
+    local translation=distance(anchor.p,lastAcceptedRawAnchor.p)
+    local angle=quaternionAngularDifferenceDegrees(anchor.q,lastAcceptedRawAnchor.q) or 0
     state.rawAnchorTranslationDiscontinuityMagnitude=translation
     state.rawAnchorAngularDiscontinuityMagnitude=angle
     if translation>(cfg.cameraReanchorTranslationDiscontinuityMetres or 5.0) or
         angle>(cfg.cameraReanchorAngularDiscontinuityDegrees or 120.0) then
-      requestCameraReanchor('fresh raw setter-anchor discontinuity',sequence,translation,angle)
+      requestCameraReanchor('fresh raw setter-anchor discontinuity',sequence,translation,angle,false)
+      return
     end
   end
+  -- Ordinary fresh observations advance the comparison reference. A detected
+  -- cut freezes it until the complete reattachment transaction succeeds.
   lastObservedRawAnchor=copyPose(anchor)
+  lastAcceptedRawAnchor=copyPose(anchor)
+  lastAcceptedRawSetterAnchor={p={geluaCapture.rawAnchorPosition[1],geluaCapture.rawAnchorPosition[2],geluaCapture.rawAnchorPosition[3]},
+    q={geluaCapture.rawAnchorQuaternion[1],geluaCapture.rawAnchorQuaternion[2],geluaCapture.rawAnchorQuaternion[3],geluaCapture.rawAnchorQuaternion[4]}}
+  lastAcceptedAnchorSequence=sequence; lastAcceptedAnchorTimestamp=geluaCapture.setterTimestamp
+  lastAcceptedAnchorContextKey=cameraContextKey
 end
 local function establishDarkBlue(orangeWorld,gameAnchor,reason)
   darkBlueArtificialTransform=identityPose()
@@ -544,7 +572,26 @@ local function finalizeDarkBlueOrientation(provisionalDarkBluePose,orangeWorld)
     q=normalizedOrangeOrientation
   }
 end
+local function syncCameraReanchorState()
+  state.cameraReanchorPending=cameraReanchorPending
+  state.cameraReanchorGeneration=cameraReanchorGeneration
+  state.cameraReanchorCompletedGeneration=cameraReanchorCompletedGeneration
+  state.cameraReanchorRequestedCount=cameraReanchorRequestedCount
+  state.cameraReanchorCompletedCount=cameraReanchorCompletedCount
+  state.cameraReanchorDeferredCount=cameraReanchorDeferredCount
+  state.cameraReanchorRequestedSequence=cameraReanchorRequestedSequence
+  state.lastObservedAnchorSequence=lastObservedAnchorSequence
+  state.lastAcceptedAnchorSequence=lastAcceptedAnchorSequence
+  state.lastAcceptedAnchorTimestamp=lastAcceptedAnchorTimestamp
+  state.lastAcceptedAnchorContextKey=lastAcceptedAnchorContextKey
+  state.lastAcceptedAnchorGeneration=lastAcceptedAnchorGeneration
+  state.lastAcceptedRawAnchor=copyPose(lastAcceptedRawAnchor)
+  state.lastAcceptedRawSetterAnchor=copyPose(lastAcceptedRawSetterAnchor)
+  state.duplicateCameraReanchorSuppressed=duplicateCameraReanchorSuppressedCount>0
+  state.duplicateCameraReanchorSuppressedCount=duplicateCameraReanchorSuppressedCount
+end
 local function deferCameraReanchor(reason,now)
+  cameraReanchorDeferredCount=cameraReanchorDeferredCount+1
   state.cameraReanchorPending=true; state.cameraReanchorTriggered=false
   state.cameraReanchorReason=reason; state.orangeBaselineRebuiltThisFrame=false
   state.darkBlueResetThisFrame=false; state.controllersReparentedThisFrame=false
@@ -554,6 +601,7 @@ local function deferCameraReanchor(reason,now)
     log('W','beamngVRControllerPoses','camera reattachment deferred: '..reason)
     lastCameraReanchorDeferredReason=reason
   end
+  syncCameraReanchorState()
 end
 local function rebuildTrackingBaselineFromCapture(mappedTrackingHmd,rawHmd,now)
   if not cameraReanchorPending then return nil end
@@ -570,8 +618,20 @@ local function rebuildTrackingBaselineFromCapture(mappedTrackingHmd,rawHmd,now)
   rebasedWorldFromTracking=copyPose(worldFromTracking)
   lastBaselineRigidCandidate=compose(worldFromTracking,mappedTrackingHmd)
   lastRebasedRigidCandidate=copyPose(lastBaselineRigidCandidate)
+  -- Commit discontinuity consumption only after every validation and the full
+  -- orange baseline calculation have succeeded. Never retain capture tables.
+  local acceptedSequence=geluaCapture.setterSequence
+  lastAcceptedRawAnchor=copyPose(anchor)
+  lastAcceptedRawSetterAnchor={p={geluaCapture.rawAnchorPosition[1],geluaCapture.rawAnchorPosition[2],geluaCapture.rawAnchorPosition[3]},
+    q={geluaCapture.rawAnchorQuaternion[1],geluaCapture.rawAnchorQuaternion[2],geluaCapture.rawAnchorQuaternion[3],geluaCapture.rawAnchorQuaternion[4]}}
+  lastAcceptedAnchorSequence=acceptedSequence; lastAcceptedAnchorTimestamp=geluaCapture.setterTimestamp
+  lastAcceptedAnchorContextKey=cameraContextKey; lastAcceptedAnchorGeneration=cameraReanchorGeneration
+  lastObservedRawAnchor=copyPose(anchor); lastObservedAnchorSequence=acceptedSequence
   cameraReanchorPending=false; pendingCameraRebaseReason=nil
-  cameraReanchorCount=cameraReanchorCount+1; lastCameraReanchorDeferredReason=nil
+  cameraCutDetected=false
+  cameraReanchorCompletedGeneration=cameraReanchorGeneration
+  cameraReanchorCompletedCount=cameraReanchorCompletedCount+1
+  cameraReanchorCount=cameraReanchorCompletedCount; lastCameraReanchorDeferredReason=nil
   state.cameraReanchorPending=false; state.cameraReanchorTriggered=true
   state.cameraReanchorReason=completedReason
   state.cameraReanchorCount=cameraReanchorCount
@@ -587,7 +647,11 @@ local function rebuildTrackingBaselineFromCapture(mappedTrackingHmd,rawHmd,now)
   establishDarkBlue(lastRebasedRigidCandidate,anchor,'camera tracking baseline rebuilt')
   darkBlueResetCount=darkBlueResetCount+1; darkBlueRebaseCount=darkBlueRebaseCount+1
   darkBlueRebasedThisFrame=true; darkBlueRebaseReason=state.cameraReanchorReason
-  log('I','beamngVRControllerPoses','camera reattachment completed: '..tostring(state.cameraReanchorReason)..' sequence='..geluaCapture.setterSequence)
+  log('I','beamngVRControllerPoses','camera reattachment completed: generation='..cameraReanchorGeneration..
+    ' key='..tostring(cameraContextKey)..' reason='..tostring(state.cameraReanchorReason)..
+    ' acceptedSequence='..acceptedSequence..' translation='..tostring(state.rawAnchorTranslationDiscontinuityMagnitude)..
+    ' angular='..tostring(state.rawAnchorAngularDiscontinuityMagnitude)..' completedCount='..cameraReanchorCompletedCount)
+  syncCameraReanchorState()
   return true,anchor
 end
 local function updateDarkBlue(_,orangeWorld,_)
@@ -1141,6 +1205,7 @@ function M.onPreRender(dtReal,dtSim,dtRaw)
   state.darkBlueResetThisFrame=false; state.controllersReparentedThisFrame=false; state.stalePoseSuppressed=false
   updateCameraContext()
   observeRawAnchorDiscontinuity(now)
+  syncCameraReanchorState()
   pollNativeSourcePoses(now); drawNativeSourcePoses()
   if not latest or not cameraAnchor or (now-latest.received)*1000>cfg.staleAfterMs then state.leftControllerWorld.valid=false; state.rightControllerWorld.valid=false; return end
   -- Packets from older protocol-2 publishers have no hmd member and retain the
@@ -1221,7 +1286,7 @@ function M.onPreRender(dtReal,dtSim,dtRaw)
   state.diagnostics.rebasedHybridRightControllerWorld=state.rebasedHybridRightControllerWorld
   state.diagnostics.movingHybridLeftControllerWorld=state.movingHybridLeftControllerWorld
   state.diagnostics.movingHybridRightControllerWorld=state.movingHybridRightControllerWorld
-  for _,field in ipairs({'cameraReanchorPending','cameraReanchorTriggered','cameraReanchorReason','cameraReanchorCount','cameraReanchorCaptureSequence','cameraReanchorCaptureAgeMs','cameraReanchorAnchorPosition','cameraReanchorRawAnchorQuaternion','cameraReanchorCameraToWorldQuaternion','cameraReanchorCurrentTrackingHmd','cameraReanchorWorldFromTracking','orangeBaselineRebuiltThisFrame','darkBlueResetThisFrame','controllersReparentedThisFrame','stalePoseSuppressed','rawAnchorTranslationDiscontinuityMagnitude','rawAnchorAngularDiscontinuityMagnitude','cameraContextKey','previousCameraContextKey','cameraContextChanged','cameraContextChangeReason','cameraContextChangeCount','activeCameraMode','activeControlledObjectId','activeLevelOrMissionId','cameraCutDetected','darkBlueRebasedThisFrame','darkBlueRebaseReason','darkBlueRebaseCount','darkBlueHmdWorld','orangeHmdWorld','darkBlueArtificialTransform','provisionalDarkBlueFullRigidPose','provisionalDarkBlueOrientation','finalDarkBlueOrientation','orangeOrientationUsedForDarkBlue','darkBlueOrientationSource','duplicateArtificialYawRemoved','provisionalVsFinalAngularDifferenceDegrees','darkBlueOrientationEqualsOrange','artificialMotionSourceName','artificialMotionSourceAvailable','artificialMotionSourceFailureReason','previousGameAnchor','currentGameAnchor','gameAnchorDelta','artificialTranslationDetected','artificialRotationDetected','artificialTranslationMagnitude','artificialRotationDegrees','physicalMovementDetected','artificialInputActive','artificialYawInputActive','artificialTranslationInputActive','darkBlueLeftControllerWorld','darkBlueRightControllerWorld','darkBlueResetReason','darkBlueResetCount','darkBlueValid','darkBlueOrangePositionDifference','darkBlueOrangeAngularDifference','darkBlueUnexpectedSeparationDuringPhysicalMotion','selectedControllerParentMode','selectedControllerParentTransform','controllersUseDarkBlueParent','controllerParentFallbackActive','controllerParentFallbackReason','finalLeftControllerWorld','finalRightControllerWorld'}) do state.diagnostics[field]=state[field] end
+  for _,field in ipairs({'cameraReanchorPending','cameraReanchorTriggered','cameraReanchorReason','cameraReanchorCount','cameraReanchorGeneration','cameraReanchorCompletedGeneration','cameraReanchorRequestedCount','cameraReanchorCompletedCount','cameraReanchorDeferredCount','cameraReanchorRequestedSequence','lastObservedAnchorSequence','lastAcceptedAnchorSequence','lastAcceptedAnchorTimestamp','lastAcceptedAnchorContextKey','lastAcceptedAnchorGeneration','lastAcceptedRawAnchor','lastAcceptedRawSetterAnchor','duplicateCameraReanchorSuppressed','duplicateCameraReanchorSuppressedCount','cameraReanchorCaptureSequence','cameraReanchorCaptureAgeMs','cameraReanchorAnchorPosition','cameraReanchorRawAnchorQuaternion','cameraReanchorCameraToWorldQuaternion','cameraReanchorCurrentTrackingHmd','cameraReanchorWorldFromTracking','orangeBaselineRebuiltThisFrame','darkBlueResetThisFrame','controllersReparentedThisFrame','stalePoseSuppressed','rawAnchorTranslationDiscontinuityMagnitude','rawAnchorAngularDiscontinuityMagnitude','cameraContextKey','previousCameraContextKey','cameraContextChanged','cameraContextChangeReason','cameraContextChangeCount','activeCameraMode','activeControlledObjectId','activeLevelOrMissionId','cameraCutDetected','darkBlueRebasedThisFrame','darkBlueRebaseReason','darkBlueRebaseCount','darkBlueHmdWorld','orangeHmdWorld','darkBlueArtificialTransform','provisionalDarkBlueFullRigidPose','provisionalDarkBlueOrientation','finalDarkBlueOrientation','orangeOrientationUsedForDarkBlue','darkBlueOrientationSource','duplicateArtificialYawRemoved','provisionalVsFinalAngularDifferenceDegrees','darkBlueOrientationEqualsOrange','artificialMotionSourceName','artificialMotionSourceAvailable','artificialMotionSourceFailureReason','previousGameAnchor','currentGameAnchor','gameAnchorDelta','artificialTranslationDetected','artificialRotationDetected','artificialTranslationMagnitude','artificialRotationDegrees','physicalMovementDetected','artificialInputActive','artificialYawInputActive','artificialTranslationInputActive','darkBlueLeftControllerWorld','darkBlueRightControllerWorld','darkBlueResetReason','darkBlueResetCount','darkBlueValid','darkBlueOrangePositionDifference','darkBlueOrangeAngularDifference','darkBlueUnexpectedSeparationDuringPhysicalMotion','selectedControllerParentMode','selectedControllerParentTransform','controllersUseDarkBlueParent','controllerParentFallbackActive','controllerParentFallbackReason','finalLeftControllerWorld','finalRightControllerWorld'}) do state.diagnostics[field]=state[field] end
   syncGeluaDiagnostics()
   state.artificialYawRebaseThresholdDegrees=cfg.artificialYawRebaseThresholdDegrees or 0.75
   for _,field in ipairs({'artificialYawRebaseThresholdDegrees','targetWorldFromTrackingOrientation','storedWorldFromTrackingOrientationBeforeRebase','artificialAlignmentDeltaDegrees','artificialYawRebaseTriggered','artificialYawRebaseCount','lastArtificialYawRebaseReason','lastArtificialYawRebaseTime','hmdWorldPositionBeforeArtificialRebase','hmdWorldPositionAfterArtificialRebase','artificialRebasePositionDiscontinuityMetres','rebasedWorldFromTracking','rebasedHybridHmdWorld','rebasedHybridLeftControllerWorld','rebasedHybridRightControllerWorld','rebasedHybridDiagnosticSphereWorldPosition'}) do state.diagnostics[field]=state[field] end
