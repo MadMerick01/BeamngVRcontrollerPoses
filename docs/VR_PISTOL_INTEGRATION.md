@@ -1,6 +1,6 @@
-# External VR pistol integration review
+# External VR pistol integration boundary
 
-## Review result
+## Repository boundary
 
 `BeamngVRcontrollerPoses` now contains no pistol renderer. The old
 `vrMockPistol.lua` extension, its cube settings, and its source-contract test
@@ -8,16 +8,11 @@ were removed, so failure to load an external model cannot fall back to the old
 two-`TSStatic` cube pistol. Controller tracking, diagnostics, pose calculations,
 and the public API remain unchanged.
 
-The separate `VRPistol_Visual_v0.2_controller_api_fix` files were not present in
-this repository or elsewhere in the supplied workspace, so its model path,
-materials, transform code, lifecycle, and logging could not be inspected or
-corrected here. In particular, a Lua file merely placed in
-`lua/ge/extensions/vrPistolVisual.lua` is **available** to BeamNG's extension
-manager but this project provides no evidence that it is automatically loaded.
-The separate mod must include a BeamNG-supported autoload entry point (or the
-user must explicitly call `extensions.load('vrPistolVisual')`). Do not treat the
-extension's `dependencies` table as proof that the consumer itself autoloads;
-dependencies only order/load dependencies after the consumer is requested.
+The imported pistol, its model, textures, materials, packaging, and renderer
+belong exclusively to the separate `VRPistol_Visual` mod. They must not be
+copied into this controller-pose provider. A visual consumer is responsible for
+loading itself, creating its imported model, and hiding or removing that model
+when the provider does not return a usable pose.
 
 ## Public pose contract
 
