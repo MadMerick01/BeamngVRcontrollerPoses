@@ -72,7 +72,7 @@
     "maxVisibleCandidatesPerHand": 8
   },
   "cameraTestSphere": {
-    "enabled": true,
+    "enabled": false,
     "offset": [
       0,
       1,
