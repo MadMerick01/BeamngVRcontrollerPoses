@@ -339,6 +339,32 @@ math, protocol-2 encoding/decoding, stale counters, and UDP-without-a-receiver.
 The fallback requires `pip install .[steamvr]` and SteamVR, but is not part of the
 primary installation or test route.
 
+## Visual-only right-controller mock pistol headset test
+
+`vrMockPistol` renders a disabled-by-default alignment prototype made only from
+two black unit-cube scene objects. Its barrel follows the project's confirmed
+local **+Y forward** axis; the handle starts below (-Z) and slightly behind it.
+All offsets, orientations, dimensions, colour, and maximum pose age are in
+`mod/settings/vrMockPistol.json`. The extension consumes only the final compact
+right-controller world-pose accessor and removes its owned objects when disabled
+or unloaded. It intentionally has no physics, collision, input, or gameplay.
+
+After installing the mod, run this sequence in the GE Lua console:
+
+```lua
+extensions.load('beamngVRControllerPoses')
+extensions.beamngVRControllerPoses.startGeluaCameraAnchorCapture()
+extensions.beamngVRControllerPoses.setHmdTranslationMode('baselineRigidRebasedArtificialCamera')
+extensions.load('vrMockPistol')
+extensions.vrMockPistol.setEnabled(true)
+dump(extensions.vrMockPistol.getState())
+```
+
+Verify in a headset that the two prisms remain joined through natural and stick
+motion and camera changes, hide when tracking becomes stale, and return when it
+recovers. This repository's automated tests validate only source, lifecycle,
+and transform contracts; they do **not** establish stereoscopic headset success.
+
 
 ## First Quest 3 + VDXR result
 
