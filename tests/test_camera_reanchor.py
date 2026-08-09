@@ -27,13 +27,44 @@ def test_atomic_frame_rebuilds_orange_then_resets_dark_blue():
 
 
 def test_context_and_fresh_anchor_cut_both_request_reattachment():
-    assert 'cameraReanchorRequestedAfterSequence=geluaCapture.setterSequence' in LUA
+    assert 'cameraReanchorRequestedAfterSequence=waitForSequence and geluaCapture.setterSequence' in LUA
     observe = section('local function observeRawAnchorDiscontinuity', 'local function establishDarkBlue')
     assert 'sequence<=lastObservedAnchorSequence' in observe
     assert "requestCameraReanchor('fresh raw setter-anchor discontinuity'" in observe
     settings = json.loads((ROOT / 'mod/settings/beamngVRControllerPoses.json').read_text())
     assert settings['cameraReanchorTranslationDiscontinuityMetres'] == 5.0
     assert settings['cameraReanchorAngularDiscontinuityDegrees'] == 120.0
+
+
+def test_success_commits_deep_copied_anchor_before_clearing_request():
+    block = section('local function rebuildTrackingBaselineFromCapture', 'local function updateDarkBlue')
+    commit = block.index('lastAcceptedRawAnchor=copyPose(anchor)')
+    clear = block.index('cameraReanchorPending=false')
+    assert block.index('lastRebasedRigidCandidate=copyPose(lastBaselineRigidCandidate)') < commit < clear
+    assert 'lastAcceptedRawSetterAnchor={p={' in block
+    assert 'lastAcceptedAnchorSequence=acceptedSequence' in block
+    assert 'lastObservedRawAnchor=copyPose(anchor)' in block
+    assert 'cameraReanchorCompletedGeneration=cameraReanchorGeneration' in block
+    assert 'cameraCutDetected=false' in block
+
+
+def test_deferred_paths_precede_and_cannot_mutate_accepted_anchor():
+    block = section('local function rebuildTrackingBaselineFromCapture', 'local function updateDarkBlue')
+    commit = block.index('lastAcceptedRawAnchor=copyPose(anchor)')
+    assert block.index("deferCameraReanchor('awaiting a fresh setter capture") < commit
+    assert block.index("if not anchor then deferCameraReanchor") < commit
+    assert block.index("if not mappedTrackingHmd then deferCameraReanchor") < commit
+
+
+def test_observer_compares_to_accepted_pose_and_freezes_it_while_pending():
+    observe = section('local function observeRawAnchorDiscontinuity', 'local function establishDarkBlue')
+    assert 'if cameraReanchorPending then' in observe
+    assert observe.index('if cameraReanchorPending then') < observe.index('lastAcceptedRawAnchor=copyPose(anchor)')
+    assert 'distance(anchor.p,lastAcceptedRawAnchor.p)' in observe
+    assert 'quaternionAngularDifferenceDegrees(anchor.q,lastAcceptedRawAnchor.q)' in observe
+    assert observe.index("requestCameraReanchor('fresh raw setter-anchor discontinuity'") < observe.index(
+        'lastAcceptedRawAnchor=copyPose(anchor)'
+    )
 
 
 def test_fail_closed_and_same_frame_controller_parenting():
