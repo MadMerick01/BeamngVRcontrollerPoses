@@ -1120,6 +1120,15 @@ function M.onExtensionLoaded()
   state.yellowCandidateFormula=yellowCandidateFormula; state.yellowCandidateUnavailableReason='GE Lua anchor capture unavailable'
   syncNativeSourceState(captureNow())
   log('I','beamngVRControllerPoses','listening for pose datagrams on '..cfg.listenAddress..':'..cfg.listenPort)
+  -- Optional visual consumer: failure must never affect tracking or diagnostics.
+  local attachmentLoaded,attachmentError=pcall(function()
+    if extensions and type(extensions.load)=='function' and not extensions.vrPistolAttachment then
+      extensions.load('vrPistolAttachment')
+    end
+  end)
+  if not attachmentLoaded then
+    log('W','beamngVRControllerPoses','optional vrPistolAttachment load failed: '..tostring(attachmentError))
+  end
 end
 function M.startNativeSourcePoseDiagnostics()
   if nativeSource.enabled then return true end
@@ -1382,5 +1391,9 @@ function M.getControllerWorldPose(hand)
     orientation={x=source.orientation[1],y=source.orientation[2],z=source.orientation[3],w=source.orientation[4]},
     updateCounter=source.updateCounter}
 end
-function M.onExtensionUnloaded() M.stopGeluaCameraAnchorCapture(); M.stopNativeSourcePoseDiagnostics(); if sock then sock:close(); sock=nil end end
+function M.onExtensionUnloaded() M.stopGeluaCameraAnchorCapture()
+  local attachment=extensions and extensions.vrPistolAttachment or nil
+  if attachment and type(attachment.onProviderUnloaded)=='function' then pcall(attachment.onProviderUnloaded) end
+  M.stopNativeSourcePoseDiagnostics(); if sock then sock:close(); sock=nil end
+end
 return M

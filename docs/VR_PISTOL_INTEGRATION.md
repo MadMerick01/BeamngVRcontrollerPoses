@@ -1,73 +1,66 @@
-# External VR pistol integration boundary
+# External VR pistol attachment
 
-## Repository boundary
+## Investigation and incompatibilities
 
-`BeamngVRcontrollerPoses` now contains no pistol renderer. The old
-`vrMockPistol.lua` extension, its cube settings, and its source-contract test
-were removed, so failure to load an external model cannot fall back to the old
-two-`TSStatic` cube pistol. Controller tracking, diagnostics, pose calculations,
-and the public API remain unchanged.
+The supplied `VRPistol_Visual_v0.2_controller_api_fix.zip` was inspected only as
+temporary reference material. Its case-sensitive mounted model path is
+`/art/shapes/vrpistol/vr_pistol.dae`; the material definition is
+`/art/shapes/vrpistol/main.materials.json`. The model material names are
+`wpn_p55_pi_mike2011_griptac_v0`, `wpn_p55_pi_mike2011_mag_v0`,
+`att_ammo_9p.002`, `wpn_p55_pi_mike2011_frame_v0`,
+`wpn_p55_pi_mike2011_barlong_v0`, and
+`wpn_p55_pi_mike2011_trigger_v0`. All model, texture, and material files remain
+in the separately installed visual mod; this repository only refers to their
+mounted virtual-filesystem path.
 
-The imported pistol, its model, textures, materials, packaging, and renderer
-belong exclusively to the separate `VRPistol_Visual` mod. They must not be
-copied into this controller-pose provider. A visual consumer is responsible for
-loading itself, creating its imported model, and hiding or removing that model
-when the provider does not return a usable pose.
+The ZIP's `lua/ge/extensions/auto/vrPistolVisual.lua` does have a BeamNG autoload
+route. It queries the correct provider API and calls seven-argument
+`setPosRot(x, y, z, qx, qy, qz, qw)`, but it has no grip transform, does not
+distinguish invalid from stale transitions, and deletes the object when merely
+disabled. More importantly, leaving that renderer active beside this integration
+would create a second `TSStatic`. The attachment therefore calls its public
+`setEnabled(false)` when it appears. The attachment retains the actual extension
+reference, resets suppression when that reference disappears, and disables a new
+instance after an extension reload. It also rechecks the instance's `isEnabled`
+state without repeating transition logs. This makes the supplied v0.2 visual
+package an asset provider, while this repository owns the sole attachment lifecycle.
 
-## Public pose contract
+BeamNG's mod manager mounts installed mods into one virtual filesystem. A GE Lua
+extension loaded from this controller mod can therefore resolve the absolute
+model path mounted by the visual mod. The attachment verifies the path with
+`FS:fileExists` before object creation and fails without a graphical fallback
+when the other mod is absent. Creation follows the required order: create one
+`TSStatic`, assign `shapeName` and non-collision fields, then register the object.
 
-The supported call is:
+## Loading and lifecycle
 
-```lua
-local provider = extensions and extensions.beamngVRControllerPoses
-local pose = provider and provider.getControllerWorldPose and
-  provider.getControllerWorldPose('right')
-```
+Files in `lua/ge/extensions` are not presumed to autoload. After the pose
+provider has initialized successfully, it makes an isolated optional
+`extensions.load('vrPistolAttachment')` call. The call is protected by `pcall`,
+checks whether the attachment is already loaded, and is deliberately absent
+from tracking, transport, pose calculation, and diagnostic paths. The attachment
+has no dependency declaration back to the provider, so there is no dependency
+cycle. The provider continues normally if loading or asset creation fails.
 
-For `left` or `right`, the accessor always returns a table. A valid result is:
+On each `onPreRender`, the attachment obtains
+`extensions.beamngVRControllerPoses.getControllerWorldPose('right')`. It accepts
+only a true `valid` flag, a finite `ageMs` no greater than 125 ms, present finite
+XYZ position, and a present finite nonzero XYZW orientation. Invalid, stale,
+missing-provider, and mission-end states hide the existing object immediately.
+Valid tracking shows that same instance again; unload deletes it.
 
-```lua
-{
-  valid = true,
-  ageMs = number,
-  position = {x = number, y = number, z = number},
-  orientation = {x = number, y = number, z = number, w = number},
-  updateCounter = number
-}
-```
+`gripPositionOffset` and `gripRotationOffset` are clearly named controller-local
+rigid-transform corrections in `vrPistolAttachment.lua`. The position offset is
+rotated by the controller quaternion and the rotation offset is quaternion-
+composed before all seven values are sent to `setPosRot`. Defaults are zero
+translation and identity rotation.
 
-An invalid result has `valid = false`, nil `position` and `orientation`, and may
-still report `ageMs` and `updateCounter`. An unsupported hand returns nil. The
-orientation is a BeamNG-world XYZW quaternion; it is not Euler angles and its
-component order must not be changed.
+## Manual validation still required
 
-## Required external-mod checks
-
-Before the external mod is considered ready, verify all of the following against
-its actual ZIP contents:
-
-1. `vrPistolVisual.lua` declares
-   `dependencies = {'beamngVRControllerPoses'}` and has an autoload entry point.
-2. `shapeName` is the mounted, root-relative path to the `.dae` using `/`
-   separators. It must match the archive's case exactly. Log that resolved value
-   before calling `registerObject`.
-3. Create exactly one `TSStatic`. If creation, shape assignment, or registration
-   fails, log an error, delete any partial object, and retry only the imported
-   `.dae`; never create primitive fallback objects.
-4. On every render/update, accept the pose only when `pose.valid == true`, all
-   seven position/quaternion components are finite, and `ageMs` is finite and no
-   greater than the consumer's stale threshold.
-5. Apply the complete transform with
-   `object:setPosRot(p.x, p.y, p.z, q.x, q.y, q.z, q.w)`. If the model needs an
-   authored grip offset, compose that rigid transform with the controller pose;
-   do not add Euler rotations to quaternion components.
-6. Hide the object immediately for a missing provider, invalid pose, stale pose,
-   transform failure, or model creation failure. Delete it on extension unload.
-7. Rate-limit transition logging rather than logging every frame. Log extension
-   load, provider found/missing, first valid right-hand pose (and recovery), the
-   resolved model path, model creation success/failure, and each transition to a
-   hidden invalid/stale state.
-
-Because model and material loading is performed by BeamNG, a final in-engine
-test is still required to confirm archive mounting, material-name matching,
-stereoscopic rendering, scale, grip offset, and orientation.
+Source tests cannot establish runtime archive mounting or visual correctness.
+With both mods installed, BeamNG and headset testing must still confirm model
+scale, grip position, grip orientation, all six material mappings and textures,
+and stereoscopic rendering. Logs should also be checked through loss/recovery of
+right-controller tracking, mission exit/re-entry, and extension reload. There is
+no primitive, procedural, cube, collision, firing, ammunition, damage, physics,
+or JBeam fallback.
