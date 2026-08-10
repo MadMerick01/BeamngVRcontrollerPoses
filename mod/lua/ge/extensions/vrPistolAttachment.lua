@@ -67,10 +67,12 @@ local function normaliseVector(v)
 end
 
 local function composeGripTransform(position,orientation)
-  local offset=rotateVector(orientation,gripPositionOffset)
+  local controllerOrientation=normaliseQuaternion(orientation)
+  if not controllerOrientation then return nil,nil end
+  local offset=rotateVector(controllerOrientation,gripPositionOffset)
   return {
     x=position.x+offset.x,y=position.y+offset.y,z=position.z+offset.z
-  },normaliseQuaternion(multiplyQuaternion(orientation,gripRotationOffset))
+  },normaliseQuaternion(multiplyQuaternion(controllerOrientation,gripRotationOffset))
 end
 
 
@@ -83,7 +85,7 @@ local function composePistolAndMuzzleTransform(position,orientation)
   local muzzleOrientation=normaliseQuaternion(multiplyQuaternion(pistolOrientation,muzzleLocalRotationOffset))
   local localDirection=normaliseVector(barrelLocalForwardAxis)
   if not muzzleOrientation or not localDirection then return nil end
-  local worldOffset=rotateVector(muzzleOrientation,muzzleLocalPositionOffset)
+  local worldOffset=rotateVector(pistolOrientation,muzzleLocalPositionOffset)
   local direction=normaliseVector(rotateVector(muzzleOrientation,localDirection))
   if not direction or not finite(worldOffset.x) or not finite(worldOffset.y) or not finite(worldOffset.z) then return nil end
   return {

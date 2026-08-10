@@ -114,6 +114,11 @@ def _axis_angle(axis, degrees):
     return tuple(component / length * sine for component in axis) + (math.cos(radians),)
 
 
+def _normalise(q):
+    length = math.sqrt(sum(component * component for component in q))
+    return tuple(component / length for component in q)
+
+
 def test_muzzle_api_uses_shared_authoritative_pistol_transform_and_fresh_results():
     text = source()
     assert "function M.getMuzzleWorldPose()" in text
@@ -131,6 +136,41 @@ def test_numeric_xyzw_order_rotates_offset_and_axis_for_pitch_yaw_and_roll():
     assert offset == pytest.approx((-0.204990, 0.184821, 0.180611), abs=1e-6)
     assert direction == pytest.approx((-0.553974, 0.735148, 0.390731), abs=1e-6)
     assert math.sqrt(sum(component * component for component in direction)) == pytest.approx(1)
+
+
+def test_muzzle_rotation_correction_changes_direction_without_moving_opening():
+    pistol_orientation = _multiply(
+        _axis_angle((0, 0, 1), 31), _axis_angle((1, 0, 0), -19)
+    )
+    muzzle_correction = _axis_angle((0, 0, 1), 17)
+    muzzle_orientation = _multiply(pistol_orientation, muzzle_correction)
+    local_position = (0, 0.32, 0.08)
+    local_forward = (0, 1, 0)
+
+    position_without_correction = _rotate(pistol_orientation, local_position)
+    position_with_correction = _rotate(pistol_orientation, local_position)
+    incorrectly_rotated_position = _rotate(muzzle_orientation, local_position)
+    direction_without_correction = _rotate(pistol_orientation, local_forward)
+    direction_with_correction = _rotate(muzzle_orientation, local_forward)
+
+    assert position_with_correction == pytest.approx(position_without_correction)
+    assert incorrectly_rotated_position != pytest.approx(position_without_correction)
+    assert direction_with_correction != pytest.approx(direction_without_correction)
+    text = source()
+    assert "worldOffset=rotateVector(pistolOrientation,muzzleLocalPositionOffset)" in text
+    assert "direction=normaliseVector(rotateVector(muzzleOrientation,localDirection))" in text
+
+
+def test_non_unit_controller_quaternion_cannot_scale_grip_offset():
+    unit_orientation = _axis_angle((0, 1, 0), 63)
+    scaled_orientation = tuple(component * 4.5 for component in unit_orientation)
+    grip_offset = (0.12, -0.07, 0.03)
+    assert _rotate(_normalise(scaled_orientation), grip_offset) == pytest.approx(
+        _rotate(unit_orientation, grip_offset)
+    )
+    text = source()
+    assert "controllerOrientation=normaliseQuaternion(orientation)" in text
+    assert "rotateVector(controllerOrientation,gripPositionOffset)" in text
 
 
 def test_invalid_stale_and_bad_configuration_never_expose_transform():
