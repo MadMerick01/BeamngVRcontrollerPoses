@@ -29,6 +29,7 @@ local externalRendererDisabled = false
 local externalRendererDisableFailureLogged = false
 local currentMuzzlePose = nil
 local muzzleConfigurationFailureLogged = false
+local transformFailureActive = false
 
 local function finite(value)
   return type(value)=='number' and value==value and value~=math.huge and value~=-math.huge
@@ -118,7 +119,7 @@ end
 
 local function classifyPose(pose)
   if not pose or pose.valid~=true then return nil,'invalid' end
-  if not finite(pose.ageMs) or pose.ageMs>maximumPoseAgeMs then return nil,'stale' end
+  if not finite(pose.ageMs) or pose.ageMs<0 or pose.ageMs>maximumPoseAgeMs then return nil,'stale' end
   local p,q=pose.position,pose.orientation
   if not p or not q or not finite(p.x) or not finite(p.y) or not finite(p.z) or
       not finite(q.x) or not finite(q.y) or not finite(q.z) or not finite(q.w) then
@@ -146,9 +147,9 @@ local function transitionTracking(nextState)
       log('I',tag,'right-controller tracking recovered')
     end
   elseif nextState=='stale' then
-    log('W',tag,'pistol hidden because the right-controller pose is stale')
+    log('W',tag,'right-controller tracking lost; pistol hidden because the pose is stale')
   elseif nextState=='invalid' then
-    log('W',tag,'pistol hidden because right-controller tracking is invalid')
+    log('W',tag,'right-controller tracking lost; pistol hidden')
   elseif nextState=='provider-unavailable' then
     log('W',tag,'pistol hidden because the controller-pose provider is unavailable')
   elseif nextState=='runtime-inactive' then
@@ -171,6 +172,8 @@ local function createPistol()
   end
   local candidate=nil
   local ok,obj=pcall(function()
+    local orphan=scenetree and type(scenetree.findObject)=='function' and scenetree.findObject(objectName) or nil
+    if orphan then orphan:delete() end
     candidate=createObject('TSStatic')
     if not candidate then error('createObject returned nil') end
     candidate.shapeName=pistolModelPath
@@ -301,7 +304,12 @@ function M.onPreRender()
   if not transformed then
     invalidateMuzzlePose(pose.ageMs,pose.updateCounter)
     setHidden(true)
-    log('E',tag,'pistol transform update failed: '..tostring(err))
+    if not transformFailureActive then
+      transformFailureActive=true
+      log('E',tag,'pistol transform update failed: '..tostring(err))
+    end
+  else
+    transformFailureActive=false
   end
 end
 

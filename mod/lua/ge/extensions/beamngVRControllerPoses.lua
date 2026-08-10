@@ -48,6 +48,11 @@ local geluaOriginalSetter,geluaOriginalGetter,geluaSetterWrapper,geluaGetterWrap
 local nativeSource={enabled=false,available=false,failureReason='diagnostics disabled',pollCounter=0,lastPollTimestamp=nil,lastLogTimestamp=0}
 local diagnosticVisualProfile='orangeVioletControllers'
 local legacyControllerSpheresVisible=true
+local pistolAttachmentLoaded=false
+local pistolAttachmentFirstPoseSeen=false
+local pistolAttachmentNextLoadAttempt=0
+local pistolAttachmentLoadFailureLogged=false
+local pistolAttachmentLoadRetrySeconds=2
 local visibleDiagnosticCandidates={'baselineRigidPositionBeamngRotationRebased','baselineRigidRebasedArtificialCamera','geluaNativeCameraComposition','leftApiLayerController','rightApiLayerController'}
 local hiddenDiagnosticCandidates={'beamngOnly','beamngPlusHmdDelta','beamngMinusHmdDelta','beamngFixedBaseHmdDelta','baselineRigidTracking','baselineRigidPositionBeamngRotation','baselineRigidPositionBeamngRotationRebasedMovingAnchor','nativeSourceYellowControllers','cameraAxisSpheres'}
 local yellowCandidateFormula='captured GE Lua anchor position + raw BeamNG native source position'
@@ -213,6 +218,55 @@ local function quatToXYZW(q)
 end
 local function finiteNumber(value)
   return type(value)=='number' and value==value and value~=math.huge and value~=-math.huge
+end
+local function freshCompleteControllerPose(pose)
+  if not pose or pose.valid~=true or not finiteNumber(pose.ageMs) or pose.ageMs<0 or
+      pose.ageMs>((cfg and cfg.staleAfterMs) or 125) then return false end
+  local p,q=pose.position,pose.orientation
+  if not p or not q then return false end
+  for i=1,3 do if not finiteNumber(p[i]) then return false end end
+  for i=1,4 do if not finiteNumber(q[i]) then return false end end
+  return q[1]*q[1]+q[2]*q[2]+q[3]*q[3]+q[4]*q[4]>0
+end
+local function loadPistolAttachmentAfterTracking(now)
+  if pistolAttachmentLoaded then
+    if extensions and extensions.vrPistolAttachment then return end
+    pistolAttachmentLoaded=false
+    pistolAttachmentNextLoadAttempt=now
+  end
+  local pose=state.rightControllerWorld
+  if not freshCompleteControllerPose(pose) then return end
+  if not pistolAttachmentFirstPoseSeen then
+    pistolAttachmentFirstPoseSeen=true
+    log('I','beamngVRControllerPoses','first valid right-controller pose received')
+  end
+  if extensions and extensions.vrPistolAttachment then
+    pistolAttachmentLoaded=true
+    pistolAttachmentLoadFailureLogged=false
+    log('I','beamngVRControllerPoses','VR pistol attachment already loaded')
+    return
+  end
+  if now<pistolAttachmentNextLoadAttempt then return end
+  pistolAttachmentNextLoadAttempt=now+pistolAttachmentLoadRetrySeconds
+  if not extensions or type(extensions.load)~='function' then
+    if not pistolAttachmentLoadFailureLogged then
+      pistolAttachmentLoadFailureLogged=true
+      log('W','beamngVRControllerPoses','VR pistol attachment loader is unavailable; retrying later')
+    end
+    return
+  end
+  local ok,result=pcall(extensions.load,'vrPistolAttachment')
+  if not ok or result==false or not extensions.vrPistolAttachment then
+    if not pistolAttachmentLoadFailureLogged then
+      pistolAttachmentLoadFailureLogged=true
+      local reason=not ok and result or (result==false and result or 'extension was not registered')
+      log('W','beamngVRControllerPoses','VR pistol attachment load failed: '..tostring(reason)..'; retrying later')
+    end
+    return
+  end
+  pistolAttachmentLoaded=true
+  pistolAttachmentLoadFailureLogged=false
+  log('I','beamngVRControllerPoses','VR pistol attachment loaded')
 end
 local function captureNow() return socketlib and socketlib.gettime() or os.clock() end
 local function validSeven(a,b,c,d,e,f,g)
@@ -451,6 +505,8 @@ end
 local function updateHand(name, raw, cameraWorld, now)
   local out=state[name..'ControllerWorld']; out.valid=false
   if not raw or not raw.valid then return end
+  if type(raw.p)~='table' or type(raw.q)~='table' or
+      not validSeven(raw.p[1],raw.p[2],raw.p[3],raw.q[1],raw.q[2],raw.q[3],raw.q[4]) then return end
   -- Protocol 2 is already inverse(hmdInBase) * controllerInBase, sampled at one XrTime/baseSpace.
   local rel=mappedPose(raw)
   local offset={p=cfg[name..'PositionOffset'],q=cfg[name..'RotationOffset']}
@@ -1119,16 +1175,12 @@ function M.onExtensionLoaded()
   state.nativeLeftYellowWorldCandidates={}; state.nativeRightYellowWorldCandidates={}
   state.yellowCandidateFormula=yellowCandidateFormula; state.yellowCandidateUnavailableReason='GE Lua anchor capture unavailable'
   syncNativeSourceState(captureNow())
+  pistolAttachmentLoaded=false
+  pistolAttachmentFirstPoseSeen=false
+  pistolAttachmentNextLoadAttempt=0
+  pistolAttachmentLoadFailureLogged=false
   log('I','beamngVRControllerPoses','listening for pose datagrams on '..cfg.listenAddress..':'..cfg.listenPort)
-  -- Optional visual consumer: failure must never affect tracking or diagnostics.
-  local attachmentLoaded,attachmentError=pcall(function()
-    if extensions and type(extensions.load)=='function' and not extensions.vrPistolAttachment then
-      extensions.load('vrPistolAttachment')
-    end
-  end)
-  if not attachmentLoaded then
-    log('W','beamngVRControllerPoses','optional vrPistolAttachment load failed: '..tostring(attachmentError))
-  end
+  log('I','beamngVRControllerPoses','waiting for VR controller tracking')
 end
 function M.startNativeSourcePoseDiagnostics()
   if nativeSource.enabled then return true end
@@ -1261,6 +1313,7 @@ function M.onPreRender(dtReal,dtSim,dtRaw)
   state.diagnostics.cameraWorld=hmdWorld
   if hmdWorld then
     updateHand('left',latest.left,hmdWorld,now); updateHand('right',latest.right,hmdWorld,now)
+    loadPistolAttachmentAfterTracking(now)
     state.controllersReparentedThisFrame=state.orangeBaselineRebuiltThisFrame and requestedDarkBlue
   else
     state.leftControllerWorld.valid=false; state.rightControllerWorld.valid=false

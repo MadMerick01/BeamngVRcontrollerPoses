@@ -33,6 +33,7 @@ def test_validates_complete_fresh_pose():
     text = source()
     assert "pose.valid~=true" in text
     assert "pose.ageMs>maximumPoseAgeMs" in text
+    assert "pose.ageMs<0" in text
     for field in ("p.x", "p.y", "p.z", "q.x", "q.y", "q.z", "q.w"):
         assert f"finite({field})" in text
     assert "q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w==0" in text
@@ -64,12 +65,41 @@ def test_no_primitive_or_fallback_pistol_construction():
         assert forbidden not in text
 
 
-def test_provider_optionally_loads_attachment_without_declared_dependency_cycle():
+def test_provider_lazy_loads_attachment_only_after_a_fresh_complete_right_pose():
     provider = PROVIDER.read_text(encoding="utf-8")
-    assert "pcall(function()" in provider
-    assert "extensions.load('vrPistolAttachment')" in provider
-    assert "optional vrPistolAttachment load failed" in provider
+    loaded = provider.split("function M.onExtensionLoaded()", 1)[1].split(
+        "function M.startNativeSourcePoseDiagnostics()", 1
+    )[0]
+    assert "extensions.load" not in loaded
+    assert "freshCompleteControllerPose(pose)" in provider
+    assert "pistolAttachmentNextLoadAttempt=now+pistolAttachmentLoadRetrySeconds" in provider
+    assert "pcall(extensions.load,'vrPistolAttachment')" in provider
+    assert "not validSeven(raw.p[1],raw.p[2],raw.p[3]" in provider
+    assert provider.index("updateHand('left'") < provider.index("loadPistolAttachmentAfterTracking(now)", provider.index("function M.onPreRender"))
     assert "dependencies" not in source()
+
+
+def test_attachment_load_failure_can_retry_and_only_registration_marks_success():
+    provider = PROVIDER.read_text(encoding="utf-8")
+    lazy_loader = provider.split(
+        "local function loadPistolAttachmentAfterTracking(now)", 1
+    )[1].split("\nend\nlocal function captureNow", 1)[0]
+
+    assert "if now<pistolAttachmentNextLoadAttempt then return end" in lazy_loader
+    assert "not extensions.vrPistolAttachment" in lazy_loader
+    assert "return\n  end\n  pistolAttachmentLoaded=true" in lazy_loader
+    assert "pistolAttachmentLoaded=true" in lazy_loader
+    assert "pistolAttachmentLoadFailureLogged=false" in lazy_loader
+    assert "pistolAttachmentLoaded=false\n    pistolAttachmentNextLoadAttempt=now" in lazy_loader
+    assert "pistolAttachmentLoadAttempted" not in provider
+
+
+def test_transform_failure_is_logged_once_until_an_update_succeeds():
+    text = source()
+    assert "if not transformFailureActive then" in text
+    assert "transformFailureActive=true" in text
+    assert "transformFailureActive=false" in text
+    assert "scenetree.findObject(objectName)" in text
 
 
 def test_external_renderer_is_disabled_to_avoid_duplicate_object():
