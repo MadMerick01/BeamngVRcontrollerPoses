@@ -55,9 +55,79 @@ rotated by the controller quaternion and the rotation offset is quaternion-
 composed before all seven values are sent to `setPosRot`. Defaults are zero
 translation and identity rotation.
 
+## Authoritative muzzle pose and calibration ray
+
+`vrPistolAttachment.getMuzzleWorldPose()` exposes the current barrel pose. The
+attachment obtains the current right-controller world pose, composes the existing
+controller-local grip offsets once, and uses that same final displayed-pistol
+transform as the basis for the model-local muzzle correction. It rotates the
+local muzzle position into world space, adds it to the displayed pistol position,
+and rotates and normalises the local barrel-forward axis. Thus camera, headset,
+mouse, vehicle direction, and the last valid sample are never aiming fallbacks.
+
+For a current pose the function returns a fresh table (including fresh nested
+tables) with this contract:
+
+```lua
+{
+  valid = true,
+  position = {x = ..., y = ..., z = ...},
+  direction = {x = ..., y = ..., z = ...}, -- normalised world direction
+  orientation = {x = ..., y = ..., z = ..., w = ...},
+  ageMs = ...,
+  updateCounter = ...
+}
+```
+
+`orientation` is the complete XYZW world quaternion after the pistol grip and
+muzzle-local rotation corrections. `ageMs` and `updateCounter` are copied from
+the right-controller sample. If the provider, runtime, tracking, transform, or
+configuration is unavailable, invalid, or stale, the result is instead:
+
+```lua
+{
+  valid = false,
+  position = nil,
+  direction = nil,
+  orientation = nil,
+  ageMs = ...,             -- retained only when supplied by the rejected sample
+  updateCounter = ...
+}
+```
+
+No cached transform is exposed after tracking is lost. The provisional constants
+are together near the top of `vrPistolAttachment.lua`:
+
+* `muzzleLocalPositionOffset = {x=0, y=0.32, z=0.08}` locates the barrel opening
+  relative to the pistol model origin.
+* `barrelLocalForwardAxis = {x=0, y=1, z=0}` identifies the barrel's model-space
+  forward direction.
+* `muzzleLocalRotationOffset = {x=0, y=0, z=0, w=1}` is an identity correction
+  ready for a small model-axis adjustment.
+* `debugRayLength = 5` is the temporary world-space calibration line length.
+
+Set `debugRayEnabled` to `true` in that same text block to enable the calibration
+line. It defaults to `false`. While a current muzzle pose exists, `onPreRender`
+submits one transient line with BeamNG GE Lua's existing
+`debugDrawer:drawLine(vec3(startPoint), vec3(endPoint), ColorF(...))` facility.
+The repository's captured BeamNG API inspection confirms the `debugDrawer`
+userdata/`DebugDrawer` binding, and the controller extension already exercises
+the same world-debug-drawing facility for transient spheres. The line creates no
+scene object, collision, raycast, firing action, or damage and stops being
+submitted immediately when the pose is invalid.
+
+The exact offset, model-space axis, and any small rotational correction remain
+provisional until BeamNG/headset calibration. Test pitch, yaw, and roll against
+the visible barrel; then adjust only the three muzzle constants, not the verified
+grip offsets. This stage deliberately has no shooting or JBeam damage behavior.
+The future damage stage will initially preserve the original Bolides
+`BulletDamage.lua` strength and behavior; the Bolides repository was consulted
+read-only and no part of its damage implementation is integrated here.
+
 ## Manual validation still required
 
-Source tests cannot establish runtime archive mounting or visual correctness.
+Source tests cannot establish runtime archive mounting, debug-line stereoscopic
+visibility, or visual correctness.
 With both mods installed, BeamNG and headset testing must still confirm model
 scale, grip position, grip orientation, all six material mappings and textures,
 and stereoscopic rendering. Logs should also be checked through loss/recovery of

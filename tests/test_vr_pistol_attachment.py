@@ -1,5 +1,8 @@
 import json
+import math
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).parents[1]
@@ -39,7 +42,7 @@ def test_complete_xyzw_transform_and_named_grip_offsets_are_used():
     text = source()
     assert "local gripPositionOffset" in text
     assert "local gripRotationOffset" in text
-    assert "composeGripTransform(pose.position,pose.orientation)" in text
+    assert "composePistolAndMuzzleTransform(pose.position,pose.orientation)" in text
     assert "orientation.x,orientation.y,orientation.z,orientation.w" in text
 
 
@@ -87,3 +90,72 @@ def test_external_renderer_disappearance_and_reload_reset_suppression_state():
     assert "externalRendererReference=current" in suppression
     assert "pcall(current.isEnabled)" in suppression
     assert "pcall(current.setEnabled,false)" in suppression
+
+
+def _multiply(a, b):
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return (
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+        aw * bw - ax * bx - ay * by - az * bz,
+    )
+
+
+def _rotate(q, v):
+    return _multiply(_multiply(q, (*v, 0)), (-q[0], -q[1], -q[2], q[3]))[:3]
+
+
+def _axis_angle(axis, degrees):
+    radians = math.radians(degrees) / 2
+    length = math.sqrt(sum(component * component for component in axis))
+    sine = math.sin(radians)
+    return tuple(component / length * sine for component in axis) + (math.cos(radians),)
+
+
+def test_muzzle_api_uses_shared_authoritative_pistol_transform_and_fresh_results():
+    text = source()
+    assert "function M.getMuzzleWorldPose()" in text
+    assert "composePistolAndMuzzleTransform(pose.position,pose.orientation)" in text
+    assert "transform.pistolPosition,transform.pistolOrientation" in text
+    assert "position={x=pose.position.x,y=pose.position.y,z=pose.position.z}" in text
+    assert "orientation={x=pose.orientation.x,y=pose.orientation.y,z=pose.orientation.z,w=pose.orientation.w}" in text
+
+
+def test_numeric_xyzw_order_rotates_offset_and_axis_for_pitch_yaw_and_roll():
+    # Non-commuting pitch/yaw/roll composition detects swapped multiplication order.
+    q = _multiply(_multiply(_axis_angle((0, 0, 1), 37), _axis_angle((1, 0, 0), 23)), _axis_angle((0, 1, 0), -41))
+    offset = _rotate(q, (0, 0.32, 0.08))
+    direction = _rotate(q, (0, 1, 0))
+    assert offset == pytest.approx((-0.204990, 0.184821, 0.180611), abs=1e-6)
+    assert direction == pytest.approx((-0.553974, 0.735148, 0.390731), abs=1e-6)
+    assert math.sqrt(sum(component * component for component in direction)) == pytest.approx(1)
+
+
+def test_invalid_stale_and_bad_configuration_never_expose_transform():
+    text = source()
+    assert "invalidateMuzzlePose(rawPose and rawPose.ageMs or nil" in text
+    assert "if not runtimeActive then invalidateMuzzlePose" in text
+    assert "if not poseProvider then invalidateMuzzlePose" in text
+    assert "lengthSquared<=1e-12" in text
+    assert "not finite(debugRayLength) or debugRayLength<=0" in text
+    invalid_return = text.split("function M.getMuzzleWorldPose()", 1)[1]
+    assert "return {valid=false,position=nil,direction=nil,orientation=nil" in invalid_return
+
+
+def test_debug_ray_is_transient_valid_only_and_disabled_by_default():
+    text = source()
+    assert "local debugRayEnabled = false" in text
+    assert "if debugRayEnabled then" in text
+    assert "debugDrawer:drawLine(vec3(startPoint),vec3(endPoint),ColorF" in text
+    assert text.index("publishMuzzlePose(transform,pose)") < text.index("if debugRayEnabled then")
+    assert text.count("createObject('TSStatic')") == 1
+
+
+def test_no_firing_damage_fallback_aim_or_persistent_debug_primitive():
+    text = source().lower()
+    for forbidden in ("castray", "bulletdamage", "applydamage", "breakbeam", "core_camera", "getcamera", "mouse", "target snapping"):
+        assert forbidden not in text
+    assert "createobject('tsstatic')" in text
+    assert "drawsphere" not in text

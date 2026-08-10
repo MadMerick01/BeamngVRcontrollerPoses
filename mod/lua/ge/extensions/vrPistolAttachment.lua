@@ -10,6 +10,14 @@ local maximumPoseAgeMs = 125
 local gripPositionOffset = {x=0, y=0, z=0}
 local gripRotationOffset = {x=0, y=0, z=0, w=1}
 
+-- Provisional model-local muzzle calibration. Keep the grip calibration separate:
+-- these values must be checked against the real model in BeamNG VR.
+local muzzleLocalPositionOffset = {x=0, y=0.32, z=0.08}
+local barrelLocalForwardAxis = {x=0, y=1, z=0}
+local muzzleLocalRotationOffset = {x=0, y=0, z=0, w=1}
+local debugRayEnabled = false
+local debugRayLength = 5
+
 local pistol = nil
 local runtimeActive = true
 local providerAvailable = nil
@@ -19,6 +27,8 @@ local firstValidPoseSeen = false
 local externalRendererReference = nil
 local externalRendererDisabled = false
 local externalRendererDisableFailureLogged = false
+local currentMuzzlePose = nil
+local muzzleConfigurationFailureLogged = false
 
 local function finite(value)
   return type(value)=='number' and value==value and value~=math.huge and value~=-math.huge
@@ -40,11 +50,68 @@ local function rotateVector(q,v)
   return {x=rotated.x,y=rotated.y,z=rotated.z}
 end
 
+local function normaliseQuaternion(q)
+  if not q or not finite(q.x) or not finite(q.y) or not finite(q.z) or not finite(q.w) then return nil end
+  local lengthSquared=q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w
+  if not finite(lengthSquared) or lengthSquared<=1e-12 then return nil end
+  local inverseLength=1/math.sqrt(lengthSquared)
+  return {x=q.x*inverseLength,y=q.y*inverseLength,z=q.z*inverseLength,w=q.w*inverseLength}
+end
+
+local function normaliseVector(v)
+  if not v or not finite(v.x) or not finite(v.y) or not finite(v.z) then return nil end
+  local lengthSquared=v.x*v.x+v.y*v.y+v.z*v.z
+  if not finite(lengthSquared) or lengthSquared<=1e-12 then return nil end
+  local inverseLength=1/math.sqrt(lengthSquared)
+  return {x=v.x*inverseLength,y=v.y*inverseLength,z=v.z*inverseLength}
+end
+
 local function composeGripTransform(position,orientation)
   local offset=rotateVector(orientation,gripPositionOffset)
   return {
     x=position.x+offset.x,y=position.y+offset.y,z=position.z+offset.z
-  },multiplyQuaternion(orientation,gripRotationOffset)
+  },normaliseQuaternion(multiplyQuaternion(orientation,gripRotationOffset))
+end
+
+
+-- Produces both outputs from one authoritative transform chain, preventing the
+-- displayed pistol and its muzzle pose from acquiring independent transforms.
+local function composePistolAndMuzzleTransform(position,orientation)
+  if not finite(debugRayLength) or debugRayLength<=0 then return nil end
+  local pistolPosition,pistolOrientation=composeGripTransform(position,orientation)
+  if not pistolOrientation then return nil end
+  local muzzleOrientation=normaliseQuaternion(multiplyQuaternion(pistolOrientation,muzzleLocalRotationOffset))
+  local localDirection=normaliseVector(barrelLocalForwardAxis)
+  if not muzzleOrientation or not localDirection then return nil end
+  local worldOffset=rotateVector(muzzleOrientation,muzzleLocalPositionOffset)
+  local direction=normaliseVector(rotateVector(muzzleOrientation,localDirection))
+  if not direction or not finite(worldOffset.x) or not finite(worldOffset.y) or not finite(worldOffset.z) then return nil end
+  return {
+    pistolPosition=pistolPosition,
+    pistolOrientation=pistolOrientation,
+    muzzlePosition={
+      x=pistolPosition.x+worldOffset.x,
+      y=pistolPosition.y+worldOffset.y,
+      z=pistolPosition.z+worldOffset.z
+    },
+    muzzleDirection=direction,
+    muzzleOrientation=muzzleOrientation
+  }
+end
+
+local function invalidateMuzzlePose(ageMs,updateCounter)
+  currentMuzzlePose={valid=false,ageMs=ageMs,updateCounter=updateCounter}
+end
+
+local function publishMuzzlePose(transform,pose)
+  currentMuzzlePose={
+    valid=true,
+    position=transform.muzzlePosition,
+    direction=transform.muzzleDirection,
+    orientation=transform.muzzleOrientation,
+    ageMs=pose.ageMs,
+    updateCounter=pose.updateCounter
+  }
 end
 
 local function classifyPose(pose)
@@ -161,6 +228,7 @@ local function disableBundledRenderer()
 end
 
 local function cleanup(reason)
+  invalidateMuzzlePose(nil,nil)
   if pistol then
     setHidden(true)
     pcall(function() pistol:delete() end)
@@ -188,33 +256,72 @@ end
 function M.onExtensionLoaded()
   log('I',tag,'attachment extension loaded')
   log('I',tag,'resolved external pistol model path: '..pistolModelPath)
+  log('I',tag,'muzzle debug ray is '..(debugRayEnabled and 'enabled' or 'disabled'))
 end
 
 function M.onPreRender()
   disableBundledRenderer()
-  if not runtimeActive then setHidden(true); transitionTracking('runtime-inactive'); return end
+  if not runtimeActive then invalidateMuzzlePose(nil,nil); setHidden(true); transitionTracking('runtime-inactive'); return end
   local poseProvider=provider()
-  if not poseProvider then setHidden(true); transitionTracking('provider-unavailable'); return end
+  if not poseProvider then invalidateMuzzlePose(nil,nil); setHidden(true); transitionTracking('provider-unavailable'); return end
   local ok,rawPose=pcall(poseProvider.getControllerWorldPose,'right')
   local pose,state=classifyPose(ok and rawPose or nil)
-  if not pose then setHidden(true); transitionTracking(state); return end
+  if not pose then
+    invalidateMuzzlePose(rawPose and rawPose.ageMs or nil,rawPose and rawPose.updateCounter or nil)
+    setHidden(true); transitionTracking(state); return
+  end
   transitionTracking('valid')
-  if not createPistol() then return end
-  local position,orientation=composeGripTransform(pose.position,pose.orientation)
+  if not createPistol() then invalidateMuzzlePose(pose.ageMs,pose.updateCounter); return end
+  local transform=composePistolAndMuzzleTransform(pose.position,pose.orientation)
+  if not transform then
+    invalidateMuzzlePose(pose.ageMs,pose.updateCounter)
+    setHidden(true)
+    if not muzzleConfigurationFailureLogged then
+      muzzleConfigurationFailureLogged=true
+      log('E',tag,'invalid muzzle transform configuration')
+    end
+    return
+  end
+  muzzleConfigurationFailureLogged=false
+  publishMuzzlePose(transform,pose)
   local transformed,err=pcall(function()
-    pistol:setPosRot(position.x,position.y,position.z,
-      orientation.x,orientation.y,orientation.z,orientation.w)
+    local position,orientation=transform.pistolPosition,transform.pistolOrientation
+    pistol:setPosRot(position.x,position.y,position.z,orientation.x,orientation.y,orientation.z,orientation.w)
     setHidden(false)
+    if debugRayEnabled then
+      local startPoint=transform.muzzlePosition
+      local direction=transform.muzzleDirection
+      local endPoint={x=startPoint.x+direction.x*debugRayLength,
+        y=startPoint.y+direction.y*debugRayLength,z=startPoint.z+direction.z*debugRayLength}
+      debugDrawer:drawLine(vec3(startPoint),vec3(endPoint),ColorF(1,0.15,0.05,1))
+    end
   end)
   if not transformed then
+    invalidateMuzzlePose(pose.ageMs,pose.updateCounter)
     setHidden(true)
     log('E',tag,'pistol transform update failed: '..tostring(err))
   end
 end
 
+function M.getMuzzleWorldPose()
+  local pose=currentMuzzlePose
+  if not pose or pose.valid~=true then
+    return {valid=false,position=nil,direction=nil,orientation=nil,
+      ageMs=pose and pose.ageMs or nil,updateCounter=pose and pose.updateCounter or nil}
+  end
+  return {
+    valid=true,
+    position={x=pose.position.x,y=pose.position.y,z=pose.position.z},
+    direction={x=pose.direction.x,y=pose.direction.y,z=pose.direction.z},
+    orientation={x=pose.orientation.x,y=pose.orientation.y,z=pose.orientation.z,w=pose.orientation.w},
+    ageMs=pose.ageMs,
+    updateCounter=pose.updateCounter
+  }
+end
+
 function M.onClientPostStartMission() runtimeActive=true end
-function M.onClientEndMission() runtimeActive=false; setHidden(true); transitionTracking('runtime-inactive') end
-function M.onProviderUnloaded() providerAvailable=false; setHidden(true); transitionTracking('provider-unavailable') end
+function M.onClientEndMission() runtimeActive=false; invalidateMuzzlePose(nil,nil); setHidden(true); transitionTracking('runtime-inactive') end
+function M.onProviderUnloaded() providerAvailable=false; invalidateMuzzlePose(nil,nil); setHidden(true); transitionTracking('provider-unavailable') end
 function M.onExtensionUnloaded() cleanup('extension unloaded') end
 
 return M
