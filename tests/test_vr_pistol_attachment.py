@@ -72,11 +72,26 @@ def test_provider_lazy_loads_attachment_only_after_a_fresh_complete_right_pose()
     )[0]
     assert "extensions.load" not in loaded
     assert "freshCompleteControllerPose(pose)" in provider
-    assert "pistolAttachmentLoadAttempted=true" in provider
+    assert "pistolAttachmentNextLoadAttempt=now+pistolAttachmentLoadRetrySeconds" in provider
     assert "pcall(extensions.load,'vrPistolAttachment')" in provider
     assert "not validSeven(raw.p[1],raw.p[2],raw.p[3]" in provider
-    assert provider.index("updateHand('left'") < provider.index("loadPistolAttachmentAfterTracking()", provider.index("function M.onPreRender"))
+    assert provider.index("updateHand('left'") < provider.index("loadPistolAttachmentAfterTracking(now)", provider.index("function M.onPreRender"))
     assert "dependencies" not in source()
+
+
+def test_attachment_load_failure_can_retry_and_only_registration_marks_success():
+    provider = PROVIDER.read_text(encoding="utf-8")
+    lazy_loader = provider.split(
+        "local function loadPistolAttachmentAfterTracking(now)", 1
+    )[1].split("\nend\nlocal function captureNow", 1)[0]
+
+    assert "if now<pistolAttachmentNextLoadAttempt then return end" in lazy_loader
+    assert "not extensions.vrPistolAttachment" in lazy_loader
+    assert "return\n  end\n  pistolAttachmentLoaded=true" in lazy_loader
+    assert "pistolAttachmentLoaded=true" in lazy_loader
+    assert "pistolAttachmentLoadFailureLogged=false" in lazy_loader
+    assert "pistolAttachmentLoaded=false\n    pistolAttachmentNextLoadAttempt=now" in lazy_loader
+    assert "pistolAttachmentLoadAttempted" not in provider
 
 
 def test_transform_failure_is_logged_once_until_an_update_succeeds():
