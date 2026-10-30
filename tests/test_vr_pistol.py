@@ -27,8 +27,13 @@ def frame(rt, text):
     rt.globals().vrPistol.onPreRender()
 
 
+def all_commands(rt):
+    return [rt.globals().mock.commands[i + 1] for i in range(len(rt.globals().mock.commands))]
+
+
 def commands(rt):
-    return [rt.globals().mock.commands[i + 1].name for i in range(len(rt.globals().mock.commands))]
+    """Vehicles that were sent a hit (sound commands are left out)."""
+    return [c.name for c in all_commands(rt) if "vrPistolHit" in c.cmd]
 
 
 def add(rt, name, center, half):
@@ -48,7 +53,7 @@ def test_trigger_fires_once_per_pull_at_nearest_vehicle(lua):
     frame(lua, packet(right_aim=AIM, trigger=0.9))
     frame(lua, packet(right_aim=AIM, trigger=0.95))  # still held: no second shot
     assert commands(lua) == ["near"]
-    cmd = lua.globals().mock.commands[1].cmd
+    cmd = [c.cmd for c in all_commands(lua) if "vrPistolHit" in c.cmd][0]
     assert "vrPistolHit.hit(10.5000,20.0000,1.5000,1.000000,0.000000,0.000000" in cmd
 
     lua.globals().mock.time += 1
@@ -139,7 +144,7 @@ def test_recoil_moves_the_model_but_not_the_shot(model):
     frame(model, packet(right_aim=AIM, trigger=0.9))
     hammer_kicked = part(model, "hammer").pos
     assert hammer_kicked.x < hammer_rest.x - 0.01      # pushed back toward the shooter
-    cmd = model.globals().mock.commands[1].cmd
+    cmd = [c.cmd for c in all_commands(model) if "vrPistolHit" in c.cmd][0]
     assert "vrPistolHit.hit(10.5000,20.0000,1.5000,1.000000,0.000000,0.000000" in cmd
 
 
@@ -149,4 +154,24 @@ def test_missing_model_files_leave_shooting_working(lua):
     frame(lua, packet(right_aim=AIM, trigger=0.0))
     frame(lua, packet(right_aim=AIM, trigger=0.9))
     assert dict(lua.globals().mock.objects) == {}
+    assert commands(lua) == ["car"]
+
+
+def test_each_shot_plays_the_gunshot_on_the_player_vehicle(lua):
+    face_plus_x(lua)
+    lua.globals().mock.player = add(lua, "player", (0, -50, 0), (2, 1, 1))  # off the line of fire
+    frame(lua, packet(right_aim=AIM, trigger=0.0))
+    frame(lua, packet(right_aim=AIM, trigger=0.9))
+    sounds = [c for c in all_commands(lua) if "playSFX" in c.cmd]
+    assert [c.name for c in sounds] == ["player"]
+    assert "/art/sound/vrpistol/revolver_shot.wav" in sounds[0].cmd
+    # The command must be valid Lua for the vehicle VM.
+    lua.eval("function(s) return assert(loadstring(s)) end")(sounds[0].cmd)
+
+
+def test_gunshot_without_player_vehicle_does_not_break_shooting(lua):
+    face_plus_x(lua)
+    add(lua, "car", (30, 20, 1), (2, 1, 1))
+    frame(lua, packet(right_aim=AIM, trigger=0.0))
+    frame(lua, packet(right_aim=AIM, trigger=0.9))
     assert commands(lua) == ["car"]
