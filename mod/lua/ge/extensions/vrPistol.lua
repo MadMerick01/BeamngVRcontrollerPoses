@@ -185,6 +185,11 @@ function M.getConfig() return cfg end
 
 -- ------------------------------------------------------------- hooks ---
 
+-- Stay loaded across level changes (BeamNG unloads "auto" extensions).
+function M.onInit()
+  if setExtensionUnloadMode then setExtensionUnloadMode(M, 'manual') end
+end
+
 function M.onPreRender()
   local aim = vrHands.getPose(cfg.hand, 'aim')
   placeModel(aim)

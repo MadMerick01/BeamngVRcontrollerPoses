@@ -37,30 +37,34 @@ profiles, and supports the OpenXR 1.1 batch `xrLocateSpaces` call.
 
 ## Install
 
-1. Download `BeamNGVRcontrollerPoses-windows-x64.zip` from the latest successful
-   **Windows x64 layer** workflow run and extract it to a clean folder, for example
-   `C:\BeamNGVRcontrollerPoses`.
-2. Zip the `mod` folder's **contents** (`lua/...`) as `vrControllerPoses.zip` and
-   put that zip in `%LOCALAPPDATA%\BeamNG\BeamNG.drive\current\mods\`.
-   Remove any older build of this mod.
-3. Optional: install `VRPistol_Visual_v0.2_controller_api_fix.zip` from this repo
-   as a mod for the pistol model. Its own renderer waits for the v2 API and stays
-   idle, so v3 creates the only pistol. Shooting works without the model.
-4. Launch BeamNG through the layer (process-scoped, no registry changes):
+1. Download `BeamNGVRcontrollerPoses-windows-x64.zip` from the
+   [latest release](https://github.com/MadMerick01/BeamngVRcontrollerPoses/releases)
+   and extract it anywhere.
+2. Double-click **`Install.cmd`** and accept the admin prompt. It:
+   - copies the layer to `%ProgramData%\BeamNGVRControllerPoses` and registers it as
+     an implicit OpenXR layer, so it loads on its own. The layer only activates when
+     the app is BeamNG.drive and passes every other VR app straight through;
+   - puts `vrControllerPoses.zip` in `%LOCALAPPDATA%\BeamNG\BeamNG.drive\current\mods`.
+     The mod loads itself (`scripts/vrControllerPoses/modScript.lua`).
+3. Start BeamNG and turn on VR. The pistol and laser appear on your right
+   controller. Pull the trigger to shoot.
 
-```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-C:\BeamNGVRcontrollerPoses\scripts\Enable-BeamNGVRPoses.ps1 `
-  -PackageDirectory C:\BeamNGVRcontrollerPoses `
-  -BeamNGExecutable 'C:\Program Files (x86)\Steam\steamapps\common\BeamNG.drive\BeamNG.drive.exe'
-```
+`Uninstall.cmd` undoes both steps. To skip the layer for one launch, set the
+environment variable `BEAMNG_VR_POSES_DISABLE=1`.
+
+Optional: install `VRPistol_Visual_v0.2_controller_api_fix.zip` from this repo as
+a mod for the pistol model. Its own renderer waits for the v2 API and stays idle,
+so v3 creates the only pistol. Shooting works without the model.
+
+Publishing a release: push a tag such as `v3.0.0` (or `v3.0.0-beta.1` for a
+pre-release). CI builds and tests everything, then attaches the zip to a GitHub
+release.
 
 ## Use
 
-In the GE Lua console (`~`), after VR is on:
+Everything loads automatically. For diagnostics, open the GE Lua console (`~`):
 
 ```lua
-extensions.load('vrPistol')        -- loads vrHands too
 vrHands.setDebug(true)             -- yellow grip spheres + RGB axes, aim rays
 dump(vrHands.getStatus())          -- packets, age, which poses are valid
 ```

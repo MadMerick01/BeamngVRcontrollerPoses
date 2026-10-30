@@ -82,7 +82,11 @@ struct HandState {
 };
 
 std::mutex mutex;  // guards everything below; a handful of locks per frame
-std::unordered_map<XrInstance, Dispatch> instances;
+std::unordered_map<XrInstance, Dispatch> instances;  // BeamNG instances we observe
+// Every instance's next GetInstanceProcAddr. Installed as an implicit layer the
+// DLL loads into every OpenXR app; anything that isn't BeamNG is passed straight
+// through.
+std::unordered_map<XrInstance, PFN_xrGetInstanceProcAddr> nextGipa;
 std::unordered_map<XrSession, SessionInfo> sessions;
 std::unordered_map<XrActionSet, XrInstance> actionSets;
 std::unordered_map<XrAction, ActionInfo> actions;
@@ -215,6 +219,7 @@ XRAPI_ATTR XrResult XRAPI_CALL hookDestroyInstance(XrInstance instance) {
   {
     std::lock_guard lock(mutex);
     instances.erase(instance);
+    nextGipa.erase(instance);
     for (auto it = actions.begin(); it != actions.end();)
       it = it->second.instance == instance ? actions.erase(it) : std::next(it);
     for (auto it = actionSets.begin(); it != actionSets.end();)
@@ -488,20 +493,22 @@ XRAPI_ATTR XrResult XRAPI_CALL hookGetInstanceProcAddr(XrInstance instance, cons
       {"xrLocateSpacesKHR", reinterpret_cast<PFN_xrVoidFunction>(hookLocateSpacesKHR)},
       {"xrGetActionStateFloat", reinterpret_cast<PFN_xrVoidFunction>(hookGetActionStateFloat)},
   };
-  if (name) {
+  bool observed;
+  PFN_xrGetInstanceProcAddr next{};
+  {
+    std::lock_guard lock(mutex);
+    observed = instances.count(instance) != 0;
+    auto it = nextGipa.find(instance);
+    if (it != nextGipa.end()) next = it->second;
+    else if (!nextGipa.empty()) next = nextGipa.begin()->second;
+  }
+  if (observed && name) {
     for (const Entry& e : hooks) {
       if (!std::strcmp(name, e.name)) {
         *function = e.fn;
         return XR_SUCCESS;
       }
     }
-  }
-  PFN_xrGetInstanceProcAddr next{};
-  {
-    std::lock_guard lock(mutex);
-    auto it = instances.find(instance);
-    if (it != instances.end()) next = it->second.gipa;
-    else if (!instances.empty()) next = instances.begin()->second.gipa;
   }
   return next ? next(instance, name, function) : XR_ERROR_HANDLE_INVALID;
 }
@@ -514,6 +521,13 @@ XRAPI_ATTR XrResult XRAPI_CALL hookCreateApiLayerInstance(const XrInstanceCreate
   const XrResult r =
       layerInfo->nextInfo->nextCreateApiLayerInstance(info, &next, instance);
   if (XR_FAILED(r)) return r;
+
+  const bool isBeamNG = info && std::strstr(info->applicationInfo.applicationName, "BeamNG");
+  {
+    std::lock_guard lock(mutex);
+    nextGipa[*instance] = layerInfo->nextInfo->nextGetInstanceProcAddr;
+  }
+  if (!isBeamNG && !std::getenv("BEAMNG_VR_POSES_ANY_APP")) return r;
 
   Dispatch d;
   d.gipa = layerInfo->nextInfo->nextGetInstanceProcAddr;

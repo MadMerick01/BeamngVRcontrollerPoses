@@ -1,8 +1,13 @@
 name: Windows x64 layer
 on:
   push:
+    branches: ['**']
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: write  # publish releases for v* tags
 
 jobs:
   build:
@@ -82,8 +87,15 @@ jobs:
           $package=Join-Path $pwd package
           New-Item $package -ItemType Directory | Out-Null
           Copy-Item "$dist\*" $package
-          Copy-Item openxr-layer/scripts,mod,docs,tools $package -Recurse
+          New-Item (Join-Path $package scripts) -ItemType Directory | Out-Null
+          Copy-Item openxr-layer/scripts/*.ps1 (Join-Path $package scripts)
+          Copy-Item openxr-layer/scripts/*.cmd $package
           Copy-Item README.md $package
+          # Mod zips need forward-slash entry names, so build them with Python.
+          python -c "import sys,zipfile,pathlib;src=pathlib.Path(sys.argv[1]);z=zipfile.ZipFile(sys.argv[2],'w',zipfile.ZIP_DEFLATED);[z.write(f,f.relative_to(src).as_posix()) for f in sorted(src.rglob('*')) if f.is_file()];z.close()" mod (Join-Path $package vrControllerPoses.zip)
+          if ($LASTEXITCODE -ne 0) { throw "Mod zip failed" }
+          python -c "import sys,zipfile,pathlib;src=pathlib.Path(sys.argv[1]);z=zipfile.ZipFile(sys.argv[2],'w',zipfile.ZIP_DEFLATED);[z.write(f,f.relative_to(src).as_posix()) for f in sorted(src.rglob('*')) if f.is_file()];z.close()" tools/vrPoseDump (Join-Path $package vrPoseDump.zip)
+          if ($LASTEXITCODE -ne 0) { throw "Dump tool zip failed" }
           Get-ChildItem $package -File -Recurse | Get-FileHash -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  $($_.Path.Substring($package.Length+1))" } | Set-Content (Join-Path $package SHA256SUMS.txt)
           Compress-Archive "$package\*" BeamNGVRcontrollerPoses-windows-x64.zip
       - uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
@@ -91,3 +103,20 @@ jobs:
           name: BeamNGVRcontrollerPoses-windows-x64
           path: BeamNGVRcontrollerPoses-windows-x64.zip
           if-no-files-found: error
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = '${{ github.ref_name }}'
+          $notes = @"
+          **Install:** download ``BeamNGVRcontrollerPoses-windows-x64.zip``, extract it anywhere, double-click ``Install.cmd`` and accept the admin prompt. Then start BeamNG and turn on VR; the pistol appears on your right controller.
+
+          **Uninstall:** double-click ``Uninstall.cmd`` from the same folder.
+          "@
+          $flags = @('--title', "BeamNG VR controller poses $tag", '--notes', $notes)
+          if ($tag -match '-') { $flags += '--prerelease' }
+          gh release create $tag BeamNGVRcontrollerPoses-windows-x64.zip @flags
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed with exit code $LASTEXITCODE" }
