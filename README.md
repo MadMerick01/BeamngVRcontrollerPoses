@@ -71,8 +71,10 @@ dump(vrHands.getStatus())          -- packets, age, which poses are valid
 ```
 
 Pull the right trigger to shoot. A red laser shows the aim ray. Orange spheres
-mark vehicle hits and grey spheres mark world hits. A hit breaks a few beams
-around the struck node, and a hit near a wheel hub deflates that tyre. Your own
+mark vehicle hits and grey spheres mark world hits. A hit uses the same
+impact model as Bolides' `BulletDamage.lua`: a mass-scaled push on the struck node
+along the bullet's path, plus a 1.3 m falloff blast that dents the panel around
+it. A hit near a wheel hub also deflates that tyre. Your own
 vehicle is never hit.
 
 Tuning (console):
@@ -80,7 +82,7 @@ Tuning (console):
 ```lua
 vrPistol.setModelOffset(0, -0.04, -0.03, 0)  -- x right, y along barrel, z up (m), pitch (deg)
 vrPistol.setLaser(false)
-vrPistol.getConfig().maxBeamsPerShot = 8     -- also hitRadius, damageRadius, range, cooldown
+vrPistol.getConfig().impactForce = 9000      -- also blastRadius, blastForce, deflateTyres, range, cooldown
 vrPistol.fireFromCamera()                    -- desktop test along the camera view
 ```
 

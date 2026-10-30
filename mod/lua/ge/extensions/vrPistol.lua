@@ -23,8 +23,12 @@ local cfg = {
   triggerRelease = 0.3,
   cooldown = 0.12,
   hitRadius = 0.3,       -- how far from the ray a vehicle node still counts as hit
-  damageRadius = 0.25,   -- beams with a node this close to the hit node are broken
-  maxBeamsPerShot = 4,
+  -- Impact physics, same model and defaults as Bolides' BulletDamage.lua:
+  impactForce = 6000,    -- push on the hit node along the bullet, scaled by node mass
+  blastRadius = 1.3,     -- nodes within this radius get a falloff push (dents)
+  blastForce = 70,
+  blastInversion = 0.3,  -- chance a node is pulled instead of pushed
+  deflateTyres = true,   -- a hit near a wheel hub also flattens that tyre
   allowSelfHit = false,
 }
 
@@ -157,17 +161,18 @@ function M.shoot(origin, dir)
   local target = candidates[1]
   if target then
     target.veh:queueLuaCommand(string.format(
-      "extensions.load('vrPistolHit'); extensions.vrPistolHit.hit(%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.2f,%.3f,%.3f,%d)",
-      origin.x, origin.y, origin.z, dir.x, dir.y, dir.z, wallDist, cfg.hitRadius, cfg.damageRadius, cfg.maxBeamsPerShot))
+      "extensions.load('vrPistolHit'); extensions.vrPistolHit.hit(%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.2f,%.3f,%.1f,%.3f,%.1f,%.3f,%s)",
+      origin.x, origin.y, origin.z, dir.x, dir.y, dir.z, wallDist, cfg.hitRadius,
+      cfg.impactForce, cfg.blastRadius, cfg.blastForce, cfg.blastInversion, tostring(cfg.deflateTyres)))
   elseif wallDist < cfg.range then
     addMarker(origin + dir * wallDist, missColour)
   end
 end
 
 -- Called from vehicle Lua when a shot connects.
-function M.onVehicleHit(vehId, x, y, z, beamsBroken)
+function M.onVehicleHit(vehId, x, y, z, nodesPushed)
   addMarker(vec3(x, y, z), hitColour)
-  log('D', 'vrPistol', string.format('hit vehicle %d, broke %d beams', vehId, beamsBroken))
+  log('D', 'vrPistol', string.format('hit vehicle %d, pushed %d nodes', vehId, nodesPushed))
 end
 
 function M.fireFromCamera()
