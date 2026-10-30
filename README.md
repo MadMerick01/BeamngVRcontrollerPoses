@@ -56,9 +56,10 @@ Optional: install `VRPistol_Visual_v0.2_controller_api_fix.zip` from this repo a
 a mod for the pistol model. Its own renderer waits for the v2 API and stays idle,
 so v3 creates the only pistol. Shooting works without the model.
 
-Publishing a release: push a tag such as `v3.0.0` (or `v3.0.0-beta.1` for a
-pre-release). CI builds and tests everything, then attaches the zip to a GitHub
-release.
+Releases are automatic. Every merge to `main` builds, tests and publishes
+`v3.0.<run>` with the zip attached. A manual run of the **Windows x64 layer**
+workflow (Actions tab, any branch) publishes a `-beta` pre-release. Pushing a
+`v*` tag releases that tag.
 
 ## Use
 

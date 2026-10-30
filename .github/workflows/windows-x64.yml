@@ -104,13 +104,19 @@ jobs:
           path: BeamNGVRcontrollerPoses-windows-x64.zip
           if-no-files-found: error
       - name: Publish GitHub release
-        if: startsWith(github.ref, 'refs/tags/v')
+        # Tag push v*: release that tag. Push to main: release v3.0.<run>.
+        # Manual run (Actions tab, any branch): pre-release v3.0.<run>-beta.
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
           $tag = '${{ github.ref_name }}'
+          if ('${{ github.ref_type }}' -ne 'tag') {
+            $tag = "v3.0.${{ github.run_number }}"
+            if ('${{ github.event_name }}' -eq 'workflow_dispatch') { $tag += '-beta' }
+          }
           $notes = @"
           **Install:** download ``BeamNGVRcontrollerPoses-windows-x64.zip``, extract it anywhere, double-click ``Install.cmd`` and accept the admin prompt. Then start BeamNG and turn on VR; the pistol appears on your right controller.
 
@@ -118,5 +124,5 @@ jobs:
           "@
           $flags = @('--title', "BeamNG VR controller poses $tag", '--notes', $notes)
           if ($tag -match '-') { $flags += '--prerelease' }
-          gh release create $tag BeamNGVRcontrollerPoses-windows-x64.zip @flags
+          gh release create $tag BeamNGVRcontrollerPoses-windows-x64.zip --target '${{ github.sha }}' @flags
           if ($LASTEXITCODE -ne 0) { throw "gh release create failed with exit code $LASTEXITCODE" }
