@@ -1,5 +1,6 @@
 """Runs vrPistol.lua's targeting and trigger logic under LuaJIT with mocks."""
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -71,3 +72,81 @@ def test_no_shot_without_tracking(lua):
     add(lua, "car", (30, 20, 1), (2, 1, 1))
     frame(lua, packet(right_aim=None, trigger=0.9))
     assert commands(lua) == []
+
+
+# ------------------------------------------------------------ revolver model ---
+
+@pytest.fixture
+def model(lua):
+    lua.globals().FS = lua.table_from({"fileExists": lambda _self, _path: True})
+    face_plus_x(lua)
+    return lua
+
+
+def part(rt, name):
+    return rt.globals().mock.objects["vrPistolModel_" + name]
+
+
+def test_model_parts_follow_the_aim_pose(model):
+    frame(model, packet(right_aim=AIM, trigger=0.0))
+    names = sorted(model.globals().mock.objects.keys())
+    assert names == ["vrPistolModel_" + n for n in ("cylinder", "flash", "frame", "hammer", "trigger")]
+    f = part(model, "frame")
+    assert not f.hidden
+    # Aim at (10.5, 20, 1.5) facing +X; the gun origin sits 2 cm back and 5 cm up.
+    assert (round(f.pos.x, 4), round(f.pos.y, 4), round(f.pos.z, 4)) == (10.48, 20.0, 1.55)
+    assert part(model, "flash").hidden
+
+    frame(model, packet(right_aim=None, trigger=0.0))
+    assert all(part(model, n).hidden for n in ("frame", "cylinder", "hammer", "trigger"))
+
+
+def test_double_action_cocks_then_drops_hammer_and_indexes_cylinder(model):
+    frame(model, packet(right_aim=AIM, trigger=0.0))
+    vp = model.globals().vrPistol
+    rest = vp.getActionState(0.0)
+    assert rest.hammer == 0 and rest.cylinder == 0 and rest.shotsFired == 0
+
+    half = vp.getActionState(0.35)  # half way to the 0.7 break
+    assert 0 < half.hammer < math.radians(48)
+    assert half.trigger < 0
+    assert 0 < half.cylinder <= math.radians(60)
+
+    frame(model, packet(right_aim=AIM, trigger=0.9))  # breaks: shot fired
+    model.globals().mock.time += 0.02
+    frame(model, packet(right_aim=AIM, trigger=0.9))
+    fired = vp.getActionState(0.9)
+    assert fired.shotsFired == 1
+    assert fired.hammer == 0                           # hammer has fallen
+    assert fired.cylinder == pytest.approx(math.radians(60))
+    assert fired.flash and fired.recoil > 0
+    assert not part(model, "flash").hidden
+
+    model.globals().mock.time += 1
+    frame(model, packet(right_aim=AIM, trigger=0.0))
+    settled = vp.getActionState(0.0)
+    assert settled.recoil == 0 and not settled.flash
+    assert settled.cylinder == pytest.approx(math.radians(60))
+    assert part(model, "flash").hidden
+
+
+def test_recoil_moves_the_model_but_not_the_shot(model):
+    add(model, "car", (30, 20, 1), (2, 1, 1))
+    frame(model, packet(right_aim=AIM, trigger=0.0))
+    hammer_rest = part(model, "hammer").pos
+    frame(model, packet(right_aim=AIM, trigger=0.9))
+    model.globals().mock.time += 0.02  # near the peak of the kick
+    frame(model, packet(right_aim=AIM, trigger=0.9))
+    hammer_kicked = part(model, "hammer").pos
+    assert hammer_kicked.x < hammer_rest.x - 0.01      # pushed back toward the shooter
+    cmd = model.globals().mock.commands[1].cmd
+    assert "vrPistolHit.hit(10.5000,20.0000,1.5000,1.000000,0.000000,0.000000" in cmd
+
+
+def test_missing_model_files_leave_shooting_working(lua):
+    face_plus_x(lua)
+    add(lua, "car", (30, 20, 1), (2, 1, 1))
+    frame(lua, packet(right_aim=AIM, trigger=0.0))
+    frame(lua, packet(right_aim=AIM, trigger=0.9))
+    assert dict(lua.globals().mock.objects) == {}
+    assert commands(lua) == ["car"]

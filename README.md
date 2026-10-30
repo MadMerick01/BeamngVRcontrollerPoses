@@ -1,7 +1,7 @@
 # BeamNG VR Controller Poses (v3, BeamNG.drive 0.40+)
 
-World-space VR controller poses in BeamNG.drive, plus a handgun on the right
-controller that shoots traffic.
+World-space VR controller poses in BeamNG.drive, plus an animated revolver on the
+right controller that shoots traffic.
 
 ```text
 BeamNG ── OpenXR loader ── BeamNGVRPosesLayer.dll ── runtime (VDXR, SteamVR, Oculus…)
@@ -46,15 +46,14 @@ profiles, and supports the OpenXR 1.1 batch `xrLocateSpaces` call.
      the app is BeamNG.drive and passes every other VR app straight through;
    - puts `vrControllerPoses.zip` in `%LOCALAPPDATA%\BeamNG\BeamNG.drive\current\mods`.
      The mod loads itself (`scripts/vrControllerPoses/modScript.lua`).
-3. Start BeamNG and turn on VR. The pistol and laser appear on your right
+3. Start BeamNG and turn on VR. The revolver and laser appear on your right
    controller. Pull the trigger to shoot.
 
 `Uninstall.cmd` undoes both steps. To skip the layer for one launch, set the
 environment variable `BEAMNG_VR_POSES_DISABLE=1`.
 
-Optional: install `VRPistol_Visual_v0.2_controller_api_fix.zip` from this repo as
-a mod for the pistol model. Its own renderer waits for the v2 API and stays idle,
-so v3 creates the only pistol. Shooting works without the model.
+The revolver model ships inside the mod (`mod/art/shapes/vrrevolver`). The older
+`VRPistol_Visual_v0.2_controller_api_fix.zip` is no longer used.
 
 Releases are automatic. Every merge to `main` builds, tests and publishes
 `v3.0.<run>` with the zip attached. A manual run of the **Windows x64 layer**
@@ -70,7 +69,10 @@ vrHands.setDebug(true)             -- yellow grip spheres + RGB axes, aim rays
 dump(vrHands.getStatus())          -- packets, age, which poses are valid
 ```
 
-Pull the right trigger to shoot. A red laser shows the aim ray. Orange spheres
+Pull the right trigger to shoot. The revolver is double action: as you squeeze,
+the hammer comes back and the cylinder turns, and at the break the hammer drops,
+the muzzle flashes and the gun kicks up and back in your hand. A red laser from
+the muzzle shows the aim ray. Orange spheres
 mark vehicle hits and grey spheres mark world hits. A hit uses the same
 impact model as Bolides' `BulletDamage.lua`: a mass-scaled push on the struck node
 along the bullet's path, plus a 1.3 m falloff blast that dents the panel around
@@ -80,11 +82,25 @@ vehicle is never hit.
 Tuning (console):
 
 ```lua
-vrPistol.setModelOffset(0, -0.04, -0.03, 0)  -- x right, y along barrel, z up (m), pitch (deg)
+vrPistol.setModelOffset(0, -0.02, 0.05, 0)   -- gun origin (bore, rear of cylinder) in aim space: x right, y along barrel, z up (m), pitch (deg)
+vrPistol.getConfig().recoilPitchDeg = 22     -- also recoilBack, hammerCockDeg, triggerTravelDeg, flashTime
 vrPistol.setLaser(false)
 vrPistol.getConfig().impactForce = 9000      -- also blastRadius, blastForce, deflateTyres, range, cooldown
 vrPistol.fireFromCamera()                    -- desktop test along the camera view
 ```
+
+### Revolver model
+
+A 1960s-style large-frame .44 with a 6.5" barrel: blued steel, colour
+case-hardened hammer and trigger, checkered wood target grips, red ramp front
+sight, six rounds visible in the cylinder. It was modelled for this mod, so there
+are no third-party asset rights to worry about.
+
+`tools/revolverModel/build_revolver.py` builds it with Blender's Python module
+(`pip install bpy`, then run the script). It writes the shapes, textures and
+`main.materials.json` into `mod/art/shapes/vrrevolver`. The frame, cylinder,
+hammer, trigger and muzzle flash are separate shapes, each with its origin on its
+own pivot. `vrPistol.lua` places all five every frame.
 
 ### Lua API
 

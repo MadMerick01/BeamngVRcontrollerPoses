@@ -11,11 +11,13 @@ V.__mul = function(a, b)
   if type(a) == 'number' then a, b = b, a end
   return vec3(a.x * b, a.y * b, a.z * b)
 end
+function V:cross(b) return vec3(self.y * b.z - self.z * b.y, self.z * b.x - self.x * b.z, self.x * b.y - self.y * b.x) end
 function V:dot(b) return self.x * b.x + self.y * b.y + self.z * b.z end
 function V:squaredLength() return self:dot(self) end
 function V:length() return math.sqrt(self:dot(self)) end
 function V:normalized() local l = self:length() return vec3(self.x / l, self.y / l, self.z / l) end
 function quatFromDir(dir, up) return {dir = dir, up = up} end
+
 function ColorF(r, g, b, a) return {r, g, b, a} end
 debugDrawer = {drawLine = function() end, drawSphere = function() end}
 logs = {}
@@ -70,3 +72,16 @@ be = {
   getObjectCount = function() return #mock.vehicles end,
   getObject = function(_, i) return mock.vehicles[i + 1] end,
 }
+
+-- Scene objects for the pistol model: each records its last pose.
+mock.objects = {}
+scenetree = {findObject = function(name) return mock.objects[name] end}
+function createObject(class)
+  local o = {class = class, fields = {}, hidden = false}
+  function o:setField(k, _, v) self.fields[k] = v end
+  function o:registerObject(name) self.name = name mock.objects[name] = self end
+  function o:setHidden(h) self.hidden = h end
+  function o:setPosRot(x, y, z) self.pos = vec3(x, y, z) end
+  function o:delete() mock.objects[self.name] = nil self.deleted = true end
+  return o
+end
