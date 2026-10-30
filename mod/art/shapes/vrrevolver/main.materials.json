@@ -1,0 +1,175 @@
+{
+  "vrrevolver_blued": {
+    "name": "vrrevolver_blued",
+    "mapTo": "vrrevolver_blued",
+    "class": "Material",
+    "version": 1.5,
+    "Stages": [
+      {
+        "baseColorFactor": [
+          0.035,
+          0.04,
+          0.055,
+          1
+        ],
+        "metallicFactor": 1.0,
+        "roughnessFactor": 0.22
+      },
+      {},
+      {},
+      {}
+    ],
+    "activeLayers": 1
+  },
+  "vrrevolver_bore": {
+    "name": "vrrevolver_bore",
+    "mapTo": "vrrevolver_bore",
+    "class": "Material",
+    "version": 1.5,
+    "Stages": [
+      {
+        "baseColorFactor": [
+          0.01,
+          0.01,
+          0.01,
+          1
+        ],
+        "metallicFactor": 0.6,
+        "roughnessFactor": 0.7
+      },
+      {},
+      {},
+      {}
+    ],
+    "activeLayers": 1
+  },
+  "vrrevolver_red": {
+    "name": "vrrevolver_red",
+    "mapTo": "vrrevolver_red",
+    "class": "Material",
+    "version": 1.5,
+    "Stages": [
+      {
+        "baseColorFactor": [
+          0.75,
+          0.04,
+          0.03,
+          1
+        ],
+        "metallicFactor": 0.0,
+        "roughnessFactor": 0.35
+      },
+      {},
+      {},
+      {}
+    ],
+    "activeLayers": 1
+  },
+  "vrrevolver_wood": {
+    "name": "vrrevolver_wood",
+    "mapTo": "vrrevolver_wood",
+    "class": "Material",
+    "version": 1.5,
+    "Stages": [
+      {
+        "baseColorMap": "/art/shapes/vrrevolver/revolver_wood_baseColor.png",
+        "normalMap": "/art/shapes/vrrevolver/revolver_wood_normal.png",
+        "metallicFactor": 0.0,
+        "roughnessFactor": 0.38
+      },
+      {},
+      {},
+      {}
+    ],
+    "activeLayers": 1
+  },
+  "vrrevolver_casehardened": {
+    "name": "vrrevolver_casehardened",
+    "mapTo": "vrrevolver_casehardened",
+    "class": "Material",
+    "version": 1.5,
+    "Stages": [
+      {
+        "baseColorMap": "/art/shapes/vrrevolver/revolver_casehardened_baseColor.png",
+        "metallicFactor": 1.0,
+        "roughnessFactor": 0.28
+      },
+      {},
+      {},
+      {}
+    ],
+    "activeLayers": 1
+  },
+  "vrrevolver_brass": {
+    "name": "vrrevolver_brass",
+    "mapTo": "vrrevolver_brass",
+    "class": "Material",
+    "version": 1.5,
+    "Stages": [
+      {
+        "baseColorFactor": [
+          0.78,
+          0.58,
+          0.27,
+          1
+        ],
+        "metallicFactor": 1.0,
+        "roughnessFactor": 0.3
+      },
+      {},
+      {},
+      {}
+    ],
+    "activeLayers": 1
+  },
+  "vrrevolver_lead": {
+    "name": "vrrevolver_lead",
+    "mapTo": "vrrevolver_lead",
+    "class": "Material",
+    "version": 1.5,
+    "Stages": [
+      {
+        "baseColorFactor": [
+          0.42,
+          0.42,
+          0.44,
+          1
+        ],
+        "metallicFactor": 0.8,
+        "roughnessFactor": 0.55
+      },
+      {},
+      {},
+      {}
+    ],
+    "activeLayers": 1
+  },
+  "vrrevolver_flash": {
+    "name": "vrrevolver_flash",
+    "mapTo": "vrrevolver_flash",
+    "class": "Material",
+    "version": 1.5,
+    "Stages": [
+      {
+        "baseColorMap": "/art/shapes/vrrevolver/revolver_flash.png",
+        "emissiveMap": "/art/shapes/vrrevolver/revolver_flash.png",
+        "emissiveFactor": [
+          6,
+          4,
+          1.6
+        ],
+        "metallicFactor": 0.0,
+        "roughnessFactor": 1.0
+      },
+      {},
+      {},
+      {}
+    ],
+    "activeLayers": 1,
+    "translucent": true,
+    "translucentBlendOp": "AddAlpha",
+    "translucentZWrite": false,
+    "doubleSided": true,
+    "castShadows": false
+  }
+}

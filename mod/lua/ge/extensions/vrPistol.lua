@@ -1,4 +1,4 @@
--- vrPistol: a handgun on the right VR controller that shoots traffic.
+-- vrPistol: a revolver on the right VR controller that shoots traffic.
 --
 --   extensions.load('vrPistol')       -- also loads vrHands
 --   vrPistol.setLaser(true|false)     -- aiming laser (on by default)
@@ -7,16 +7,28 @@
 --
 -- The shot always travels along the controller's aim ray (OpenXR aim pose), so
 -- the model offset only changes how the gun looks, never where it hits.
+--
+-- The model is a double-action revolver (mod/art/shapes/vrrevolver, built by
+-- tools/revolverModel/build_revolver.py). Squeezing the trigger cocks the
+-- hammer and turns the cylinder; at the break point the hammer drops, the gun
+-- kicks and the muzzle flashes.
 
 local M = {}
 M.dependencies = {'vrHands'}
 
 local cfg = {
   hand = 'right',
-  modelPath = '/art/shapes/vrpistol/vr_pistol.dae',  -- from the VRPistol_Visual mod; optional
-  -- Model placement in aim-pose space, metres: x right, y along the aim ray, z up.
-  modelOffset = {x = 0, y = -0.04, z = -0.03},
+  modelDir = '/art/shapes/vrrevolver/',
+  -- Where the gun's origin (bore axis, rear face of the cylinder) sits in
+  -- aim-pose space, metres: x right, y along the aim ray, z up.
+  modelOffset = {x = 0, y = -0.02, z = 0.05},
   modelPitchDeg = 0,
+  -- Action and recoil.
+  hammerCockDeg = 48,
+  triggerTravelDeg = 20,
+  recoilBack = 0.035,    -- metres the gun kicks back
+  recoilPitchDeg = 22,   -- muzzle flip
+  flashTime = 0.045,
   laser = true,
   range = 300,
   triggerPress = 0.7,
@@ -32,8 +44,9 @@ local cfg = {
   allowSelfHit = false,
 }
 
-local model, modelMissingLogged
+local parts, modelMissingLogged
 local triggerHeld, lastShot = false, -math.huge
+local shotsFired, flashRoll = 0, 0
 local markers = {}  -- {pos, untilTime, colour}
 
 local laserColour = ColorF(1, 0.1, 0.1, 0.8)
@@ -48,48 +61,162 @@ end)
 
 -- --------------------------------------------------------------- model ---
 
-local function ensureModel()
-  if model then return true end
-  if not FS:fileExists(cfg.modelPath) then
-    if not modelMissingLogged then
-      modelMissingLogged = true
-      log('W', 'vrPistol', 'pistol model not found (' .. cfg.modelPath .. '), shooting works without it')
-    end
-    return false
-  end
-  local ok, obj = pcall(function()
-    local old = scenetree.findObject('vrPistolModel')
-    if old then old:delete() end
-    local o = createObject('TSStatic')
-    o.shapeName = cfg.modelPath
-    o:setField('collisionType', 0, 'None')
-    o:setField('decalType', 0, 'None')
-    o:setField('castShadows', 0, '0')
-    o:setField('canSave', 0, '0')
-    o:registerObject('vrPistolModel')
-    return o
-  end)
-  if ok and obj then model = obj else
-    log('E', 'vrPistol', 'could not create pistol model: ' .. tostring(obj))
-    modelMissingLogged = true
-  end
-  return model ~= nil
+-- Each part's shape has its origin on its pivot; PARTS gives that pivot in gun
+-- space (x right, y along the barrel, z up), matching build_revolver.py.
+local PARTS = {
+  {name = 'frame', pivot = vec3(0, 0, 0)},
+  {name = 'cylinder', pivot = vec3(0, 0, -0.0155)},
+  {name = 'hammer', pivot = vec3(0, -0.0175, -0.006)},
+  {name = 'trigger', pivot = vec3(0, 0.012, -0.040)},
+  {name = 'flash', pivot = vec3(0, 0.218, 0)},
+}
+local MUZZLE = vec3(0, 0.218, 0)
+local RECOIL_PIVOT = vec3(0, -0.045, -0.08)  -- in the hand: the gun flips about the grip
+
+local function deleteParts()
+  for _, p in pairs(parts or {}) do pcall(function() p:delete() end) end
+  parts = nil
 end
 
-local function placeModel(aim)
+local function ensureModel()
+  if parts then return true end
+  if modelMissingLogged then return false end
+  for _, p in ipairs(PARTS) do
+    if not FS:fileExists(cfg.modelDir .. p.name .. '.dae') then
+      modelMissingLogged = true
+      log('W', 'vrPistol', 'revolver model not found (' .. cfg.modelDir .. p.name .. '.dae), shooting works without it')
+      return false
+    end
+  end
+  local ok, err = pcall(function()
+    parts = {}
+    for _, p in ipairs(PARTS) do
+      local name = 'vrPistolModel_' .. p.name
+      local old = scenetree.findObject(name)
+      if old then old:delete() end
+      local o = createObject('TSStatic')
+      o.shapeName = cfg.modelDir .. p.name .. '.dae'
+      o:setField('collisionType', 0, 'None')
+      o:setField('decalType', 0, 'None')
+      o:setField('castShadows', 0, p.name == 'flash' and '0' or '1')
+      o:setField('canSave', 0, '0')
+      o:registerObject(name)
+      parts[p.name] = o
+    end
+  end)
+  if not ok then
+    log('E', 'vrPistol', 'could not create revolver model: ' .. tostring(err))
+    deleteParts()
+    modelMissingLogged = true
+  end
+  return parts ~= nil
+end
+
+-- Rotates v about the unit axis by angle (radians).
+local function rotate(v, axis, angle)
+  local c, s = math.cos(angle), math.sin(angle)
+  return v * c + axis:cross(v) * s + axis * (axis:dot(v) * (1 - c))
+end
+
+local function smoothstep(x)
+  x = math.max(0, math.min(1, x))
+  return x * x * (3 - 2 * x)
+end
+
+-- Recoil envelope: snaps back in a few ms, settles over ~0.3 s. Peaks near 1.
+local function recoilKick(t)
+  if t < 0 or t > 0.6 then return 0 end
+  return 1.25 * (1 - math.exp(-t / 0.006)) * math.exp(-t / 0.075)
+end
+
+-- Gun-space frame for this frame: origin and right/forward/up in world space.
+local function gunFrame(aim, t)
+  local o = cfg.modelOffset
+  local a = math.rad(cfg.modelPitchDeg)
+  local r = aim.right
+  local f = aim.dir * math.cos(a) + aim.up * math.sin(a)
+  local u = aim.up * math.cos(a) - aim.dir * math.sin(a)
+  local origin = aim.pos + aim.right * o.x + aim.dir * o.y + aim.up * o.z
+
+  local kick = recoilKick(t - lastShot)
+  if kick > 0 then
+    -- Flip the muzzle up about the grip, then push the whole gun back.
+    local p = math.rad(cfg.recoilPitchDeg) * kick
+    local pivot = origin + r * RECOIL_PIVOT.x + f * RECOIL_PIVOT.y + u * RECOIL_PIVOT.z
+    origin = pivot + rotate(origin - pivot, r, p) - f * (cfg.recoilBack * kick)
+    f, u = rotate(f, r, p), rotate(u, r, p)
+  end
+  return origin, r, f, u
+end
+
+local function toWorld(origin, r, f, u, v)
+  return origin + r * v.x + f * v.y + u * v.z
+end
+
+-- Pose of each moving part in its own frame: angles in radians.
+--   hammer:   about +X, positive tips the spur back (cocking)
+--   trigger:  about +X, negative swings the blade back (pulling)
+--   cylinder: about +Y, positive turns the top chamber to the left
+local function actionAngles(trigger, t)
+  local pull = math.max(0, math.min(1, trigger / cfg.triggerPress))
+  local hammer, cylinderTurn = 0, 0
+  if not triggerHeld then
+    -- Double action: the cylinder indexes in the first part of the pull, the
+    -- hammer comes back all the way to the break.
+    hammer = math.rad(cfg.hammerCockDeg) * smoothstep(pull)
+    cylinderTurn = smoothstep(pull * 1.3)
+  end
+  return {
+    hammer = hammer,
+    trigger = -math.rad(cfg.triggerTravelDeg) * pull,
+    cylinder = math.rad(60) * (shotsFired + cylinderTurn),
+    flash = t - lastShot < cfg.flashTime,
+  }
+end
+
+local function placePart(o, pos, f, u)
+  local rot = quatFromDir(f, u)
+  o:setHidden(false)
+  o:setPosRot(pos.x, pos.y, pos.z, rot.x, rot.y, rot.z, rot.w)
+end
+
+local function placeModel(aim, trigger, t)
   if not ensureModel() then return end
   if not aim.valid then
-    model:setHidden(true)
+    for _, o in pairs(parts) do o:setHidden(true) end
     return
   end
+  local origin, r, f, u = gunFrame(aim, t)
+  local ang = actionAngles(trigger, t)
+  local function at(name) for _, p in ipairs(PARTS) do if p.name == name then return toWorld(origin, r, f, u, p.pivot) end end end
+
+  placePart(parts.frame, at('frame'), f, u)
+  placePart(parts.cylinder, at('cylinder'), f, rotate(u, f, -ang.cylinder))
+  placePart(parts.hammer, at('hammer'), rotate(f, r, ang.hammer), rotate(u, r, ang.hammer))
+  placePart(parts.trigger, at('trigger'), rotate(f, r, ang.trigger), rotate(u, r, ang.trigger))
+  if ang.flash then
+    placePart(parts.flash, at('flash'), f, rotate(u, f, flashRoll))
+  else
+    parts.flash:setHidden(true)
+  end
+end
+
+-- Muzzle in world space at rest (no recoil), for the laser.
+local function muzzlePos(aim)
+  if not parts then return aim.pos end
   local o = cfg.modelOffset
-  local pos = aim.pos + aim.right * o.x + aim.dir * o.y + aim.up * o.z
   local a = math.rad(cfg.modelPitchDeg)
-  local dir = aim.dir * math.cos(a) + aim.up * math.sin(a)
-  local up = aim.up * math.cos(a) - aim.dir * math.sin(a)
-  local rot = quatFromDir(dir, up)
-  model:setHidden(false)
-  model:setPosRot(pos.x, pos.y, pos.z, rot.x, rot.y, rot.z, rot.w)
+  local f = aim.dir * math.cos(a) + aim.up * math.sin(a)
+  local u = aim.up * math.cos(a) - aim.dir * math.sin(a)
+  local origin = aim.pos + aim.right * o.x + aim.dir * o.y + aim.up * o.z
+  return toWorld(origin, aim.right, f, u, MUZZLE)
+end
+
+-- Advances the cylinder and starts the recoil and muzzle flash.
+local function cycleAction(t)
+  shotsFired = shotsFired + 1
+  lastShot = t
+  flashRoll = math.random() * math.pi * 2
 end
 
 -- -------------------------------------------------------------- hits ---
@@ -176,6 +303,7 @@ function M.onVehicleHit(vehId, x, y, z, nodesPushed)
 end
 
 function M.fireFromCamera()
+  cycleAction(now())
   M.shoot(getCameraPosition(), core_camera.getForward())
 end
 
@@ -188,6 +316,15 @@ end
 
 function M.getConfig() return cfg end
 
+-- For tests and tuning: the action state the model is drawn with.
+function M.getActionState(trigger)
+  local t = now()
+  local a = actionAngles(trigger or 0, t)
+  a.shotsFired = shotsFired
+  a.recoil = recoilKick(t - lastShot)
+  return a
+end
+
 -- ------------------------------------------------------------- hooks ---
 
 -- Stay loaded across level changes (BeamNG unloads "auto" extensions).
@@ -197,20 +334,23 @@ end
 
 function M.onPreRender()
   local aim = vrHands.getPose(cfg.hand, 'aim')
-  placeModel(aim)
+  local trigger = aim.valid and vrHands.getTrigger(cfg.hand) or 0
+  local t = now()
 
   if aim.valid then
     if cfg.laser then
+      -- Drawn from the muzzle; the shot itself still uses the aim ray.
       local dist = staticHitDistance(aim.pos, aim.dir)
-      debugDrawer:drawLine(aim.pos, aim.pos + aim.dir * math.min(dist, 60), laserColour)
+      local from = muzzlePos(aim)
+      debugDrawer:drawLine(from, aim.pos + aim.dir * math.min(dist, 60), laserColour)
     end
-    local trigger = vrHands.getTrigger(cfg.hand)
     if not triggerHeld and trigger >= cfg.triggerPress then
       triggerHeld = true
-      local t = now()
       if t - lastShot >= cfg.cooldown then
-        lastShot = t
+        cycleAction(t)
         M.shoot(aim.pos, aim.dir)
+      else
+        shotsFired = shotsFired + 1  -- too soon: the action still cycles, no shot
       end
     elseif triggerHeld and trigger <= cfg.triggerRelease then
       triggerHeld = false
@@ -219,7 +359,8 @@ function M.onPreRender()
     triggerHeld = false
   end
 
-  local t = now()
+  placeModel(aim, trigger, t)
+
   for i = #markers, 1, -1 do
     local m = markers[i]
     if t > m.untilTime then table.remove(markers, i)
@@ -228,8 +369,7 @@ function M.onPreRender()
 end
 
 function M.onClientEndMission()
-  if model then pcall(function() model:delete() end) end
-  model = nil
+  deleteParts()
 end
 
 function M.onExtensionUnloaded()
