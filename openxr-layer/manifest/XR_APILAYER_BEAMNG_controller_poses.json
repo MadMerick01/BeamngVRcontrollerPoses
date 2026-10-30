@@ -4,8 +4,8 @@
     "name": "XR_APILAYER_BEAMNG_controller_poses",
     "library_path": ".\\BeamNGVRPosesLayer.dll",
     "api_version": "1.0",
-    "implementation_version": "1",
-    "description": "Read-only BeamNG controller pose publisher",
+    "implementation_version": "3",
+    "description": "Publishes head-relative BeamNG controller poses and triggers over loopback UDP (read-only)",
     "disable_environment": "BEAMNG_VR_POSES_DISABLE"
   }
 }

@@ -34,12 +34,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Layer build failed with exit code $LASTEXITCODE" }
           cmake --install openxr-layer/build/windows-x64 --config Release
           if ($LASTEXITCODE -ne 0) { throw "Layer install failed with exit code $LASTEXITCODE" }
-      - name: Run Python tests
+      - name: Run Lua tests (LuaJIT via lupa)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
-          python -m pip install --disable-pip-version-check pytest==8.3.5
+          python -m pip install --disable-pip-version-check pytest==8.3.5 lupa==2.8
           if ($LASTEXITCODE -ne 0) { throw "pytest installation failed with exit code $LASTEXITCODE" }
           python -m pytest
           if ($LASTEXITCODE -ne 0) { throw "Python tests failed with exit code $LASTEXITCODE" }
@@ -82,7 +82,7 @@ jobs:
           $package=Join-Path $pwd package
           New-Item $package -ItemType Directory | Out-Null
           Copy-Item "$dist\*" $package
-          Copy-Item openxr-layer/scripts,mod,docs $package -Recurse
+          Copy-Item openxr-layer/scripts,mod,docs,tools $package -Recurse
           Copy-Item README.md $package
           Get-ChildItem $package -File -Recurse | Get-FileHash -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  $($_.Path.Substring($package.Length+1))" } | Set-Content (Join-Path $package SHA256SUMS.txt)
           Compress-Archive "$package\*" BeamNGVRcontrollerPoses-windows-x64.zip
