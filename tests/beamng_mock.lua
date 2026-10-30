@@ -113,3 +113,6 @@ function createObject(class)
   function o:delete() mock.objects[self.name] = nil self.deleted = true end
   return o
 end
+
+mock.materialFiles = {}
+function loadJsonMaterialsFile(path) mock.materialFiles[#mock.materialFiles + 1] = path end

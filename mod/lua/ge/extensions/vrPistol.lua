@@ -34,6 +34,7 @@ local cfg = {
   hapticSeconds = 0.06,
   flashTime = 0.045,
   -- Gunshot from Bolides (PlayerGunShot.wav), same playback and volume as its FirstPersonShoot.
+  -- vrPistol.testSound() plays it from the console.
   shotSound = '/art/sound/vrpistol/revolver_shot.wav',
   shotVolume = 12,
   laser = true,
@@ -60,7 +61,7 @@ local cfg = {
   predictSeconds = 0,    -- shift the model along the camera's motion by this much time
 }
 
-local parts, modelMissingLogged
+local parts, modelMissingLogged, materialsLoaded
 local triggerHeld, lastShot = false, -math.huge
 local shotsFired, flashRoll = 0, 0
 local markers = {}  -- {pos, untilTime, colour}
@@ -103,6 +104,14 @@ local function ensureModel()
       log('W', 'vrPistol', 'revolver model not found (' .. cfg.modelDir .. p.name .. '.dae), shooting works without it')
       return false
     end
+  end
+  -- Shape materials in /art/shapes are not loaded automatically outside a
+  -- level's own folders, so the revolver came out orange (no material).
+  if not materialsLoaded then
+    materialsLoaded = true
+    local file = cfg.modelDir .. 'main.materials.json'
+    local okM, errM = pcall(function() loadJsonMaterialsFile(file) end)
+    if not okM then log('W', 'vrPistol', 'could not load ' .. file .. ': ' .. tostring(errM)) end
   end
   local ok, err = pcall(function()
     parts = {}
@@ -335,33 +344,59 @@ local function muzzlePos(aim)
   return toWorld(origin, aim.right, f, u, MUZZLE)
 end
 
--- Plays the gunshot as a 2D sound, so it sits in your head like your own shot.
--- Like Bolides, it goes through the player vehicle's SFX sources (a pool of 3,
--- so quick shots overlap). With no player vehicle it falls back to the GUI channel.
+-- Gunshot, played exactly the way Bolides' FirstPersonShoot plays it: a pool
+-- of 2D SFX sources on the player vehicle, created by one queued command and
+-- played by a second (a source created and played in the same command can
+-- stay silent). With no player vehicle it falls back to the GUI channel.
+local SOUND_POOL = 4
+local soundVehId
+
+local function ensureShotSources(veh)
+  local id = veh.getID and veh:getID() or 0
+  if soundVehId == id then return end
+  soundVehId = id
+  veh:queueLuaCommand(string.format([[
+    _G.__vrPistolShot = _G.__vrPistolShot or {ids = {}, index = 1}
+    local S = _G.__vrPistolShot
+    for i = 1, %d do
+      if not S.ids[i] then
+        local ok, id = pcall(function() return obj:createSFXSource(%q, "Audio2D", "vrPistolShot_" .. i, 0) end)
+        if ok and id then S.ids[i] = id else log('W', 'vrPistol', 'createSFXSource failed: ' .. tostring(id)) end
+      end
+    end]], SOUND_POOL, cfg.shotSound))
+end
+
 local function playShotSound()
   if not cfg.shotSound or cfg.shotSound == '' then return end
   local veh = be:getPlayerVehicle(0)
-  if veh then
-    veh:queueLuaCommand(string.format([[
-      local S = _G.__vrPistolShot or {ids = {}, next = 1}
-      _G.__vrPistolShot = S
-      local i = S.next
-      S.next = i %% 3 + 1
-      if not S.ids[i] then
-        local ok, id = pcall(function() return obj:createSFXSource(%q, 'Audio2D', 'vrPistolShot' .. i, 0) end)
-        if ok then S.ids[i] = id end
-      end
-      local id = S.ids[i]
-      if id then
-        pcall(function() obj:setSFXSourceVolume(id, %.3f) end)
-        pcall(function() obj:playSFX(id) end)
-      else
-        pcall(function() obj:playSFXOnce(%q, 0, %.3f, 1) end)
-      end]], cfg.shotSound, cfg.shotVolume, cfg.shotSound, cfg.shotVolume))
-  else
-    pcall(function() Engine.Audio.playOnce('AudioGui', cfg.shotSound) end)
+  if not veh then
+    soundVehId = nil
+    local ok, err = pcall(function() Engine.Audio.playOnce('AudioGui', cfg.shotSound) end)
+    if not ok then log('W', 'vrPistol', 'no player vehicle and Engine.Audio.playOnce failed: ' .. tostring(err)) end
+    return
   end
+  ensureShotSources(veh)
+  local vol = cfg.shotVolume
+  veh:queueLuaCommand(string.format([[
+    local S = _G.__vrPistolShot
+    if not S then return end
+    local i = S.index or 1
+    S.index = i %% %d + 1
+    local id = S.ids[i]
+    local played = false
+    if id then
+      pcall(function() obj:setSFXSourceLooping(id, false) end)
+      pcall(function() obj:setSFXSourceVolume(id, 1.0) end)
+      played = pcall(function() obj:playSFX(id) end)
+      pcall(function() obj:setSFXSourceVolume(id, %.3f) end)
+    end
+    if not played then
+      pcall(function() obj:playSFXOnce(%q, 0, %.3f, 1) end)
+    end]], SOUND_POOL, vol, cfg.shotSound, vol))
 end
+
+-- Console check for the gunshot without shooting anything.
+function M.testSound() playShotSound() end
 
 -- Advances the cylinder, starts the recoil and muzzle flash, and fires the sound.
 local function cycleAction(t)
