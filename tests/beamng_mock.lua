@@ -37,6 +37,11 @@ package.preload.socket = function()
         settimeout = function() end,
         setsockname = function() return 1 end,
         close = function() end,
+        sendto = function(_, data, ip, port)
+          mock.sent = mock.sent or {}
+          mock.sent[#mock.sent + 1] = {data = data, ip = ip, port = port}
+          return #data
+        end,
         receive = function()
           local msg = table.remove(mock.inbox, 1)
           if msg then return msg end

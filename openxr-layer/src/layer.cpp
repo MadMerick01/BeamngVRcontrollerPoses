@@ -24,6 +24,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace {
 
@@ -48,6 +49,11 @@ struct Dispatch {
   PFN_xrLocateSpaces locateSpaces{};
   PFN_xrLocateSpacesKHR locateSpacesKHR{};
   PFN_xrGetActionStateFloat getActionStateFloat{};
+  PFN_xrCreateActionSet createActionSet{};
+  PFN_xrSuggestInteractionProfileBindings suggestBindings{};
+  PFN_xrAttachSessionActionSets attachActionSets{};
+  PFN_xrSyncActions syncActions{};
+  PFN_xrApplyHapticFeedback applyHaptic{};
   XrPath leftPath{XR_NULL_PATH}, rightPath{XR_NULL_PATH};
 };
 
@@ -96,6 +102,20 @@ unsigned long long sequence = 0;
 
 SOCKET sock = INVALID_SOCKET;
 sockaddr_in target{};
+
+// Haptics. BeamNG binds no vibration outputs, so the layer adds its own action
+// set with one vibration action, merges its bindings into BeamNG's suggested
+// bindings, attaches and syncs it alongside BeamNG's sets. Lua asks for a pulse
+// with a datagram "pulse <left|right> <amplitude 0-1> <seconds>" to port 44442.
+// Every step falls back to BeamNG's original call if the runtime refuses it.
+struct Haptics {
+  XrInstance instance{};
+  XrActionSet set{XR_NULL_HANDLE};
+  XrAction action{XR_NULL_HANDLE};
+  XrPath hand[2]{XR_NULL_PATH, XR_NULL_PATH};
+  bool attached{};
+  SOCKET rx{INVALID_SOCKET};
+} haptics;
 
 // ------------------------------------------------------------------ helpers --
 
@@ -159,6 +179,21 @@ void openSocket() {
   target.sin_family = AF_INET;
   target.sin_port = htons(static_cast<u_short>(port));
   target.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+}
+
+void openHapticSocket() {
+  haptics.rx = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+  if (haptics.rx == INVALID_SOCKET) return;
+  u_long nonBlocking = 1;
+  ioctlsocket(haptics.rx, FIONBIO, &nonBlocking);
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(static_cast<u_short>(ntohs(target.sin_port) + 1));
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  if (bind(haptics.rx, reinterpret_cast<const sockaddr*>(&addr), sizeof addr) != 0) {
+    closesocket(haptics.rx);
+    haptics.rx = INVALID_SOCKET;
+  }
 }
 
 int appendPose(char* out, size_t size, const PoseState& s) {
@@ -476,6 +511,137 @@ XRAPI_ATTR XrResult XRAPI_CALL hookCreateActionSet(XrInstance instance,
   return r;
 }
 
+// Creates the haptic action set once BeamNG has started defining its actions.
+// Caller holds no lock.
+void ensureHapticActions(const Dispatch& d, XrInstance instance) {
+  {
+    std::lock_guard lock(mutex);
+    if (haptics.set != XR_NULL_HANDLE) return;
+  }
+  if (!d.createActionSet || !d.createAction || !d.stringToPath) return;
+  XrPath hand[2];
+  if (XR_FAILED(d.stringToPath(instance, "/user/hand/left", &hand[0])) ||
+      XR_FAILED(d.stringToPath(instance, "/user/hand/right", &hand[1])))
+    return;
+  XrActionSetCreateInfo setInfo{XR_TYPE_ACTION_SET_CREATE_INFO};
+  std::strcpy(setInfo.actionSetName, "beamng_vr_poses_haptics");
+  std::strcpy(setInfo.localizedActionSetName, "BeamNG VR poses haptics");
+  XrActionSet set = XR_NULL_HANDLE;
+  if (XR_FAILED(d.createActionSet(instance, &setInfo, &set))) return;
+  XrActionCreateInfo actionInfo{XR_TYPE_ACTION_CREATE_INFO};
+  std::strcpy(actionInfo.actionName, "vibrate");
+  std::strcpy(actionInfo.localizedActionName, "Vibrate");
+  actionInfo.actionType = XR_ACTION_TYPE_VIBRATION_OUTPUT;
+  actionInfo.countSubactionPaths = 2;
+  actionInfo.subactionPaths = hand;
+  XrAction action = XR_NULL_HANDLE;
+  if (XR_FAILED(d.createAction(set, &actionInfo, &action))) return;
+  std::lock_guard lock(mutex);
+  haptics.instance = instance;
+  haptics.set = set;
+  haptics.action = action;
+  haptics.hand[0] = hand[0];
+  haptics.hand[1] = hand[1];
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL hookSuggestBindings(
+    XrInstance instance, const XrInteractionProfileSuggestedBinding* suggested) {
+  Dispatch d;
+  if (!dispatchFor(instance, d)) return XR_ERROR_HANDLE_INVALID;
+  ensureHapticActions(d, instance);
+  XrAction action;
+  {
+    std::lock_guard lock(mutex);
+    action = haptics.action;
+  }
+  if (!suggested || action == XR_NULL_HANDLE) return d.suggestBindings(instance, suggested);
+
+  XrPath outputs[2];
+  if (XR_FAILED(d.stringToPath(instance, "/user/hand/left/output/haptic", &outputs[0])) ||
+      XR_FAILED(d.stringToPath(instance, "/user/hand/right/output/haptic", &outputs[1])))
+    return d.suggestBindings(instance, suggested);
+  std::vector<XrActionSuggestedBinding> merged(
+      suggested->suggestedBindings, suggested->suggestedBindings + suggested->countSuggestedBindings);
+  merged.push_back({action, outputs[0]});
+  merged.push_back({action, outputs[1]});
+  XrInteractionProfileSuggestedBinding withHaptics = *suggested;
+  withHaptics.countSuggestedBindings = static_cast<uint32_t>(merged.size());
+  withHaptics.suggestedBindings = merged.data();
+  const XrResult r = d.suggestBindings(instance, &withHaptics);
+  // Profiles without haptic outputs reject the whole call: fall back to BeamNG's own.
+  return XR_SUCCEEDED(r) ? r : d.suggestBindings(instance, suggested);
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL hookAttachActionSets(XrSession session,
+                                                    const XrSessionActionSetsAttachInfo* info) {
+  Dispatch d;
+  if (!dispatchFor(session, d)) return XR_ERROR_HANDLE_INVALID;
+  XrActionSet set;
+  {
+    std::lock_guard lock(mutex);
+    set = haptics.set;
+  }
+  if (!info || set == XR_NULL_HANDLE) return d.attachActionSets(session, info);
+  std::vector<XrActionSet> sets(info->actionSets, info->actionSets + info->countActionSets);
+  sets.push_back(set);
+  XrSessionActionSetsAttachInfo withHaptics = *info;
+  withHaptics.countActionSets = static_cast<uint32_t>(sets.size());
+  withHaptics.actionSets = sets.data();
+  XrResult r = d.attachActionSets(session, &withHaptics);
+  const bool attached = XR_SUCCEEDED(r);
+  if (!attached) r = d.attachActionSets(session, info);
+  std::lock_guard lock(mutex);
+  haptics.attached = attached;
+  return r;
+}
+
+// Applies pulses Lua asked for since the last frame. Called on BeamNG's input thread.
+void applyPendingPulses(const Dispatch& d, XrSession session) {
+  if (haptics.rx == INVALID_SOCKET || !d.applyHaptic) return;
+  char buf[128];
+  int n;
+  while ((n = recv(haptics.rx, buf, sizeof buf - 1, 0)) > 0) {
+    buf[n] = 0;
+    char hand[16]{};
+    float amplitude = 0, seconds = 0;
+    if (std::sscanf(buf, "pulse %15s %f %f", hand, &amplitude, &seconds) != 3) continue;
+    XrHapticActionInfo info{XR_TYPE_HAPTIC_ACTION_INFO};
+    XrHapticVibration vibration{XR_TYPE_HAPTIC_VIBRATION};
+    {
+      std::lock_guard lock(mutex);
+      info.action = haptics.action;
+      info.subactionPath = haptics.hand[std::strcmp(hand, "left") ? 1 : 0];
+    }
+    vibration.amplitude = amplitude < 0 ? 0 : amplitude > 1 ? 1 : amplitude;
+    vibration.duration = static_cast<XrDuration>((seconds > 0 ? seconds : 0.01f) * 1e9f);
+    vibration.frequency = XR_FREQUENCY_UNSPECIFIED;
+    d.applyHaptic(session, &info, reinterpret_cast<const XrHapticBaseHeader*>(&vibration));
+  }
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL hookSyncActions(XrSession session, const XrActionsSyncInfo* info) {
+  Dispatch d;
+  if (!dispatchFor(session, d)) return XR_ERROR_HANDLE_INVALID;
+  XrActionSet set;
+  bool attached;
+  {
+    std::lock_guard lock(mutex);
+    set = haptics.set;
+    attached = haptics.attached;
+  }
+  if (!info || !attached) return d.syncActions(session, info);
+  std::vector<XrActiveActionSet> active(info->activeActionSets,
+                                        info->activeActionSets + info->countActiveActionSets);
+  active.push_back({set, XR_NULL_PATH});
+  XrActionsSyncInfo withHaptics = *info;
+  withHaptics.countActiveActionSets = static_cast<uint32_t>(active.size());
+  withHaptics.activeActionSets = active.data();
+  XrResult r = d.syncActions(session, &withHaptics);
+  if (XR_FAILED(r)) return d.syncActions(session, info);
+  applyPendingPulses(d, session);
+  return r;
+}
+
 XRAPI_ATTR XrResult XRAPI_CALL hookGetInstanceProcAddr(XrInstance instance, const char* name,
                                                        PFN_xrVoidFunction* function) {
   struct Entry { const char* name; PFN_xrVoidFunction fn; };
@@ -492,6 +658,9 @@ XRAPI_ATTR XrResult XRAPI_CALL hookGetInstanceProcAddr(XrInstance instance, cons
       {"xrLocateSpaces", reinterpret_cast<PFN_xrVoidFunction>(hookLocateSpaces)},
       {"xrLocateSpacesKHR", reinterpret_cast<PFN_xrVoidFunction>(hookLocateSpacesKHR)},
       {"xrGetActionStateFloat", reinterpret_cast<PFN_xrVoidFunction>(hookGetActionStateFloat)},
+      {"xrSuggestInteractionProfileBindings", reinterpret_cast<PFN_xrVoidFunction>(hookSuggestBindings)},
+      {"xrAttachSessionActionSets", reinterpret_cast<PFN_xrVoidFunction>(hookAttachActionSets)},
+      {"xrSyncActions", reinterpret_cast<PFN_xrVoidFunction>(hookSyncActions)},
   };
   bool observed;
   PFN_xrGetInstanceProcAddr next{};
@@ -546,10 +715,18 @@ XRAPI_ATTR XrResult XRAPI_CALL hookCreateApiLayerInstance(const XrInstanceCreate
   get("xrLocateSpaces", d.locateSpaces);
   get("xrLocateSpacesKHR", d.locateSpacesKHR);
   get("xrGetActionStateFloat", d.getActionStateFloat);
+  get("xrCreateActionSet", d.createActionSet);
+  get("xrSuggestInteractionProfileBindings", d.suggestBindings);
+  get("xrAttachSessionActionSets", d.attachActionSets);
+  get("xrSyncActions", d.syncActions);
+  get("xrApplyHapticFeedback", d.applyHaptic);
 
   std::lock_guard lock(mutex);
   instances[*instance] = d;
-  if (sock == INVALID_SOCKET) openSocket();
+  if (sock == INVALID_SOCKET) {
+    openSocket();
+    openHapticSocket();
+  }
   return r;
 }
 

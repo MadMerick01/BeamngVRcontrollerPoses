@@ -28,6 +28,8 @@ local cfg = {
   triggerTravelDeg = 20,
   recoilBack = 0.035,    -- metres the gun kicks back
   recoilPitchDeg = 22,   -- muzzle flip
+  hapticAmplitude = 1.0, -- controller vibration per shot (0 disables)
+  hapticSeconds = 0.06,
   flashTime = 0.045,
   -- Gunshot from Bolides (PlayerGunShot.wav), same playback and volume as its FirstPersonShoot.
   shotSound = '/art/sound/vrpistol/revolver_shot.wav',
@@ -249,6 +251,7 @@ local function cycleAction(t)
   lastShot = t
   flashRoll = math.random() * math.pi * 2
   playShotSound()
+  if cfg.hapticAmplitude > 0 then vrHands.pulse(cfg.hand, cfg.hapticAmplitude, cfg.hapticSeconds) end
 end
 
 -- -------------------------------------------------------------- hits ---

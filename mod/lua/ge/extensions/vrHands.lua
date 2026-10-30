@@ -13,6 +13,7 @@
 --     from quatFromDir(dir, up), ready for TSStatic:setPosRot.
 --   vrHands.getTrigger('right')       -> 0..1
 --   vrHands.getSqueeze('right')       -> 0..1
+--   vrHands.pulse('right', 0.8, 0.05) -> controller vibration (amplitude, seconds)
 --   vrHands.setDebug(true|false)      -> draw controller axes and aim rays
 --   vrHands.getStatus()               -> diagnostics table
 
@@ -143,6 +144,13 @@ end
 
 function M.getTrigger(hand) return value(hand, 'trigger') end
 function M.getSqueeze(hand) return value(hand, 'squeeze') end
+
+-- Vibrates a controller through the OpenXR layer (amplitude 0..1, seconds).
+function M.pulse(hand, amplitude, seconds)
+  if not udp then return end
+  pcall(udp.sendto, udp, string.format('pulse %s %.3f %.3f', hand, amplitude or 1, seconds or 0.05),
+    '127.0.0.1', cfg.port + 1)
+end
 
 function M.setDebug(enabled) cfg.debug = enabled and true or false end
 

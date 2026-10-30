@@ -175,3 +175,13 @@ def test_gunshot_without_player_vehicle_does_not_break_shooting(lua):
     frame(lua, packet(right_aim=AIM, trigger=0.0))
     frame(lua, packet(right_aim=AIM, trigger=0.9))
     assert commands(lua) == ["car"]
+
+
+def test_each_shot_vibrates_the_controller(lua):
+    face_plus_x(lua)
+    frame(lua, packet(right_aim=AIM, trigger=0.0))
+    frame(lua, packet(right_aim=AIM, trigger=0.9))
+    sent = lua.globals().mock.sent
+    assert sent is not None and len(sent) == 1
+    assert sent[1].data == "pulse right 1.000 0.060"
+    assert (sent[1].ip, sent[1].port) == ("127.0.0.1", 44442)

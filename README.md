@@ -112,6 +112,7 @@ local aim = vrHands.getPose('right', 'aim')   -- or 'grip'; 'left' works too
 -- aim.rot  (quatFromDir(dir, up), for TSStatic:setPosRot), aim.ageMs
 vrHands.getTrigger('right')                    -- 0..1
 vrHands.getSqueeze('right')                    -- 0..1
+vrHands.pulse('right', 0.8, 0.05)              -- vibrate (amplitude 0..1, seconds)
 ```
 
 Read poses in `onPreRender`, after the camera update. A pose is invalid when
@@ -129,6 +130,15 @@ tracking is lost or no packet has arrived for 150 ms.
 `p`/`q` are in OpenXR VIEW space (+X right, +Y up, -Z forward), so
 `inverse(head) × controller` is evaluated at the controller's own XrTime. Set
 `BEAMNG_VR_POSES_PORT` to change the port.
+
+Haptics go the other way: `vrHands.pulse` sends `pulse <left|right> <amplitude> <seconds>`
+to the port + 1 (44442). BeamNG binds no vibration outputs, so the layer adds
+its own action set with one vibration action. It merges those bindings into
+BeamNG's suggested bindings, attaches the set, and keeps it active in
+`xrSyncActions`. Any call the runtime rejects falls back to BeamNG's original,
+so BeamNG's own input never depends on the haptics working. The pistol pulses
+the right controller on every shot (`vrPistol.getConfig().hapticAmplitude`,
+0 disables).
 
 ## Tests
 
