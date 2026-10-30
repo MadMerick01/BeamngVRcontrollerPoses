@@ -121,3 +121,27 @@ def test_newest_packet_wins(lua):
     )
     lua.globals().hands.onPreRender()
     assert close(vec(lua.globals().hands.getPose("right", "aim").pos), (11, 20, 1.5))
+
+
+
+@pytest.mark.parametrize("conjugate", [False, True])
+def test_head_offset_turns_with_the_anchor(lua, conjugate):
+    # BeamNG adds the tracked head offset to the anchor without turning it by the
+    # anchor's yaw. With the anchor facing +X (yaw -90), a head 0.1 m right and
+    # 0.2 m forward of the tracking origin really sits at anchor + (0.2, -0.1, 0).
+    g = lua.globals()
+    z = S if conjugate else -S
+    lua.execute("mock.xrHead = {0.1, 0.2, 0, 0, 0, 0, 1}")
+    g.OpenXR.setGeluaCameraPosRot(0, 0, 1, 0, 0, z, S)
+    g.OpenXR.getCameraPosRotPredictedXYZXYZW()
+    g.mock.camPos = g.vec3(0.1, 0.2, 1)
+    g.mock.camQuat = lua.table_from({"x": 0, "y": 0, "z": z, "w": S})
+    g.mock.camForward = g.vec3(1, 0, 0)
+    send(lua, packet(right_aim=([0, 0, -0.5], [0, 0, 0, 1])))
+    pose = g.hands.getPose("right", "aim")
+    assert pose.valid
+    assert close(vec(pose.pos), (0.7, -0.1, 1))
+    assert close(vec(pose.dir), (1, 0, 0))
+
+    g.hands.getConfig().fixHeadOffset = False
+    assert close(vec(g.hands.getPose("right", "aim").pos), (0.6, 0.2, 1))

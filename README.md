@@ -25,7 +25,11 @@ A dump from BeamNG 0.40.4 (`tools/vrPoseDump`) shows two things:
    `getCameraPosition()` and `getCameraQuat()` return that **exact rendered head pose**
    (matched to 1e-13 over 1,847 frames of live capture).
 
-So `controllerWorld = headWorld × controllerRelativeToHead`. No tracking-space
+So `controllerWorld = headWorld × controllerRelativeToHead`. One catch: gameengine.lua
+adds the tracked head offset to the anchor without turning it by the anchor's yaw,
+so `getCameraPosition()` only follows your real head while the anchor faces north.
+`vrHands` records the anchor rotation and offset from those two OpenXR calls and
+uses `anchor + anchorRot × offset` instead (`vrHands.getConfig().fixHeadOffset`). No tracking-space
 baselines, recenter handling, stick-turn rebasing or camera-context tracking are
 needed. v2's ~1,450 lines of camera reconstruction are gone.
 

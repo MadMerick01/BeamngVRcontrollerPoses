@@ -23,11 +23,15 @@ local cfg = {
   port = 44441,
   staleMs = 150,
   debug = false,
+  fixHeadOffset = true,
 }
 
 local socketlib, udp
 local packet, packetTime, packetCount, lastError = nil, nil, 0, nil
 local headConvention = 'unknown'
+
+-- What gameengine.lua passed to and got from OpenXR this frame (see wrapOpenXR).
+local xrFrame = {anchorRot = nil, headOffset = nil, time = nil}
 
 local emptyPose = {valid = false}
 
@@ -76,7 +80,45 @@ local function headTransform()
   end
   if headConvention == 'conjugate' then hq = {-hq[1], -hq[2], -hq[3], hq[4]} end
 
-  return {p.x, p.y, p.z}, function(v) return qrot(hq, v) end
+  local head = {p.x, p.y, p.z}
+
+  -- gameengine.lua adds the headset's tracked offset to the camera anchor without
+  -- turning it by the anchor's yaw, so getCameraPosition() only follows the real
+  -- head while the anchor faces north. The headset view is rendered correctly, so
+  -- rebuild the true head position: anchor + anchorRot * offset.
+  local o, a = xrFrame.headOffset, xrFrame.anchorRot
+  if cfg.fixHeadOffset and o and a and socketlib and socketlib.gettime() - xrFrame.time < 0.25 then
+    if headConvention == 'conjugate' then a = {-a[1], -a[2], -a[3], a[4]} end
+    local r = qrot(a, o)
+    head = {head[1] + r[1] - o[1], head[2] + r[2] - o[2], head[3] + r[3] - o[3]}
+  end
+
+  return head, function(v) return qrot(hq, v) end
+end
+
+-- Records the camera anchor rotation and the headset offset that gameengine.lua
+-- exchanges with OpenXR each frame. The originals are kept on the OpenXR table so
+-- reloading this extension never wraps twice.
+local function wrapOpenXR()
+  if type(OpenXR) ~= 'table' then return end
+  local okS, origSet = pcall(function() return OpenXR._vrHandsSet or OpenXR.setGeluaCameraPosRot end)
+  local okG, origGet = pcall(function() return OpenXR._vrHandsGet or OpenXR.getCameraPosRotPredictedXYZXYZW end)
+  if not (okS and okG and type(origSet) == 'function' and type(origGet) == 'function') then return end
+  local ok, err = pcall(function()
+    OpenXR._vrHandsSet, OpenXR._vrHandsGet = origSet, origGet
+    OpenXR.setGeluaCameraPosRot = function(px, py, pz, rx, ry, rz, rw, ...)
+      xrFrame.anchorRot = {rx, ry, rz, rw}
+      return origSet(px, py, pz, rx, ry, rz, rw, ...)
+    end
+    OpenXR.getCameraPosRotPredictedXYZXYZW = function(...)
+      local px, py, pz, rx, ry, rz, rw = origGet(...)
+      if px and socketlib then
+        xrFrame.headOffset, xrFrame.time = {px, py, pz}, socketlib.gettime()
+      end
+      return px, py, pz, rx, ry, rz, rw
+    end
+  end)
+  if not ok then log('W', 'vrHands', 'cannot hook OpenXR camera calls: ' .. tostring(err)) end
 end
 
 -- ------------------------------------------------------------ network ---
@@ -153,6 +195,7 @@ function M.pulse(hand, amplitude, seconds)
 end
 
 function M.setDebug(enabled) cfg.debug = enabled and true or false end
+function M.getConfig() return cfg end
 
 function M.getStatus()
   return {
@@ -162,6 +205,7 @@ function M.getStatus()
     packetAgeMs = packetAgeMs(),
     lastError = lastError,
     headConvention = headConvention,
+    headOffsetFix = cfg.fixHeadOffset and xrFrame.headOffset ~= nil,
     left = {grip = M.getPose('left', 'grip').valid, aim = M.getPose('left', 'aim').valid, trigger = M.getTrigger('left')},
     right = {grip = M.getPose('right', 'grip').valid, aim = M.getPose('right', 'aim').valid, trigger = M.getTrigger('right')},
   }
@@ -204,6 +248,7 @@ function M.onExtensionLoaded()
     return
   end
   socketlib = lib
+  wrapOpenXR()
   udp = socketlib.udp()
   udp:settimeout(0)
   local bound, err = udp:setsockname('127.0.0.1', cfg.port)

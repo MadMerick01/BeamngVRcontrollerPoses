@@ -26,6 +26,12 @@ function log(level, tag, msg) logs[#logs + 1] = level .. ' ' .. tag .. ' ' .. ms
 mock = {time = 100, inbox = {}, camPos = vec3(), camQuat = {x = 0, y = 0, z = 0, w = 1}, camForward = vec3(0, 1, 0)}
 function getCameraPosition() return mock.camPos end
 function getCameraQuat() return mock.camQuat end
+-- OpenXR camera calls as gameengine.lua makes them; mock.xrHead is the tracked offset.
+mock.xrHead = {0, 0, 0, 0, 0, 0, 1}
+OpenXR = {
+  setGeluaCameraPosRot = function() end,
+  getCameraPosRotPredictedXYZXYZW = function() return unpack(mock.xrHead) end,
+}
 core_camera = {getForward = function() return mock.camForward end}
 function jsonDecode(s) return mock.decode(s) end
 
