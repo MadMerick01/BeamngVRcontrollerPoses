@@ -71,7 +71,8 @@ dump(vrHands.getStatus())          -- packets, age, which poses are valid
 
 Pull the right trigger to shoot. The revolver is double action: as you squeeze,
 the hammer comes back and the cylinder turns, and at the break the hammer drops,
-the muzzle flashes and the gun kicks up and back in your hand. A red laser from
+the gun goes bang (the Bolides player gunshot), the muzzle flashes and it
+kicks up and back in your hand. A red laser from
 the muzzle shows the aim ray. Orange spheres
 mark vehicle hits and grey spheres mark world hits. A hit uses the same
 impact model as Bolides' `BulletDamage.lua`: a mass-scaled push on the struck node
@@ -84,6 +85,7 @@ Tuning (console):
 ```lua
 vrPistol.setModelOffset(0, -0.02, 0.05, 0)   -- gun origin (bore, rear of cylinder) in aim space: x right, y along barrel, z up (m), pitch (deg)
 vrPistol.getConfig().recoilPitchDeg = 22     -- also recoilBack, hammerCockDeg, triggerTravelDeg, flashTime
+vrPistol.getConfig().shotVolume = 12         -- shotSound = '' mutes it
 vrPistol.setLaser(false)
 vrPistol.getConfig().impactForce = 9000      -- also blastRadius, blastForce, deflateTyres, range, cooldown
 vrPistol.fireFromCamera()                    -- desktop test along the camera view

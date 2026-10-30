@@ -29,6 +29,9 @@ local cfg = {
   recoilBack = 0.035,    -- metres the gun kicks back
   recoilPitchDeg = 22,   -- muzzle flip
   flashTime = 0.045,
+  -- Gunshot from Bolides (PlayerGunShot.wav), same playback and volume as its FirstPersonShoot.
+  shotSound = '/art/sound/vrpistol/revolver_shot.wav',
+  shotVolume = 12,
   laser = true,
   range = 300,
   triggerPress = 0.7,
@@ -212,11 +215,40 @@ local function muzzlePos(aim)
   return toWorld(origin, aim.right, f, u, MUZZLE)
 end
 
--- Advances the cylinder and starts the recoil and muzzle flash.
+-- Plays the gunshot as a 2D sound, so it sits in your head like your own shot.
+-- Like Bolides, it goes through the player vehicle's SFX sources (a pool of 3,
+-- so quick shots overlap). With no player vehicle it falls back to the GUI channel.
+local function playShotSound()
+  if not cfg.shotSound or cfg.shotSound == '' then return end
+  local veh = be:getPlayerVehicle(0)
+  if veh then
+    veh:queueLuaCommand(string.format([[
+      local S = _G.__vrPistolShot or {ids = {}, next = 1}
+      _G.__vrPistolShot = S
+      local i = S.next
+      S.next = i %% 3 + 1
+      if not S.ids[i] then
+        local ok, id = pcall(function() return obj:createSFXSource(%q, 'Audio2D', 'vrPistolShot' .. i, 0) end)
+        if ok then S.ids[i] = id end
+      end
+      local id = S.ids[i]
+      if id then
+        pcall(function() obj:setSFXSourceVolume(id, %.3f) end)
+        pcall(function() obj:playSFX(id) end)
+      else
+        pcall(function() obj:playSFXOnce(%q, 0, %.3f, 1) end)
+      end]], cfg.shotSound, cfg.shotVolume, cfg.shotSound, cfg.shotVolume))
+  else
+    pcall(function() Engine.Audio.playOnce('AudioGui', cfg.shotSound) end)
+  end
+end
+
+-- Advances the cylinder, starts the recoil and muzzle flash, and fires the sound.
 local function cycleAction(t)
   shotsFired = shotsFired + 1
   lastShot = t
   flashRoll = math.random() * math.pi * 2
+  playShotSound()
 end
 
 -- -------------------------------------------------------------- hits ---
