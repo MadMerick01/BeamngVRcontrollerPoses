@@ -50,6 +50,7 @@ def face_plus_x(rt, conjugate=False):
     # Head at (10, 20, 1.5) looking along world +X (yaw -90 degrees about Z).
     rt.globals().mock.camPos = rt.globals().vec3(10, 20, 1.5)
     z = S if conjugate else -S
+    (rt.globals().hands or rt.globals().vrHands).getConfig().cameraQuat = "conjugate" if conjugate else "hamilton"
     rt.globals().mock.camQuat = rt.table_from({"x": 0, "y": 0, "z": z, "w": S})
     rt.globals().mock.camForward = rt.globals().vec3(1, 0, 0)
 
@@ -132,6 +133,7 @@ def test_head_offset_turns_with_the_anchor(lua, conjugate):
     # 0.2 m forward of the tracking origin really sits at anchor + (0.2, -0.1, 0).
     g = lua.globals()
     z = S if conjugate else -S
+    g.hands.getConfig().cameraQuat = "conjugate" if conjugate else "hamilton"
     lua.execute("mock.xrHead = {0.1, 0.2, 0, 0, 0, 0, 1}")
     g.OpenXR.setGeluaCameraPosRot(0, 0, 1, 0, 0, z, S)
     g.OpenXR.getCameraPosRotPredictedXYZXYZW()
@@ -198,3 +200,26 @@ def test_capture_writes_frames(lua):
     frame = json.loads(lines[0])
     assert frame["packet"]["v"] == 3
     assert frame["gunPos"] == [0, 0.5, 0]
+
+
+@pytest.mark.parametrize("capture", ["still_controller_onfoot", "still_controller_car"])
+def test_resting_controller_stays_put_in_real_captures(lua, capture):
+    # Frames from BeamNG 0.40.4 (on foot, and in the car facing south) with the
+    # controller resting on a desk while the head turns, tilts and leans.
+    g = lua.globals()
+    points = []
+    for line in (ROOT / "tests" / "data" / (capture + ".jsonl")).read_text().splitlines():
+        r = json.loads(line)
+        g.mock.camPos = g.vec3(*r["camPos"])
+        q = r["camQuat"]
+        g.mock.camQuat = lua.table_from({"x": q[0], "y": q[1], "z": q[2], "w": q[3]})
+        g.OpenXR.setGeluaCameraPosRot(*(r["anchorPos"] + r["anchorRot"]))
+        g.mock.xrHead = lua.table_from(r["headOffset"] + r["headRot"])
+        g.OpenXR.getCameraPosRotPredictedXYZXYZW()
+        send(lua, json.dumps(r["packet"]))
+        pose = g.hands.getPose("right", "grip")
+        assert pose.valid
+        points.append(vec(pose.pos))
+    mean = [sum(c) / len(points) for c in zip(*points)]
+    drift = max(math.dist(p, mean) for p in points)
+    assert drift < 0.02, f"controller drifts {drift * 100:.1f} cm"

@@ -23,12 +23,13 @@ local cfg = {
   port = 44441,
   staleMs = 150,
   debug = false,
-  fixHeadOffset = false,  -- experimental, see README
+  fixHeadOffset = true,
+  cameraQuat = 'conjugate',  -- or 'hamilton'
 }
 
 local socketlib, udp
 local packet, packetTime, packetCount, lastError = nil, nil, 0, nil
-local headConvention = 'unknown'
+local headConvention = cfg.cameraQuat
 
 -- What gameengine.lua passed to and got from OpenXR this frame (see wrapOpenXR).
 local xrFrame = {anchorPos = nil, anchorRot = nil, headOffset = nil, headRot = nil, time = nil}
@@ -69,18 +70,12 @@ local function headTransform()
   if not okP or not okQ or not p or not q then return nil end
   local hq = {q.x, q.y, q.z, q.w}
 
-  -- getCameraQuat is camera-to-world. Confirm its handedness once against the
-  -- engine's own forward vector instead of assuming a quaternion convention.
-  if headConvention == 'unknown' and core_camera and core_camera.getForward then
-    local okF, f = pcall(core_camera.getForward)
-    if okF and f then
-      local fwd = {f.x, f.y, f.z}
-      if dot(qrot(hq, {0, 1, 0}), fwd) > 0.98 then headConvention = 'hamilton'
-      elseif dot(qrot({-hq[1], -hq[2], -hq[3], hq[4]}, {0, 1, 0}), fwd) > 0.98 then headConvention = 'conjugate' end
-      if headConvention ~= 'unknown' then log('I', 'vrHands', 'camera quaternion convention: ' .. headConvention) end
-    end
-  end
-  if headConvention == 'conjugate' then hq = {-hq[1], -hq[2], -hq[3], hq[4]} end
+  -- getCameraQuat is camera-to-world but, with this file's Hamilton qrot, needs
+  -- its conjugate: captures from BeamNG 0.40.4 hold a resting controller within
+  -- 1 cm that way and drift by tens of cm the other. (Checking against
+  -- core_camera.getForward picked the wrong one in game.)
+  headConvention = cfg.cameraQuat
+  if headConvention ~= 'hamilton' then hq = {-hq[1], -hq[2], -hq[3], hq[4]} end
 
   local head = {p.x, p.y, p.z}
 
@@ -90,7 +85,7 @@ local function headTransform()
   -- rebuild the true head position: anchor + anchorRot * offset.
   local o, a = xrFrame.headOffset, xrFrame.anchorRot
   if cfg.fixHeadOffset and o and a and socketlib and socketlib.gettime() - xrFrame.time < 0.25 then
-    if headConvention == 'conjugate' then a = {-a[1], -a[2], -a[3], a[4]} end
+    if headConvention ~= 'hamilton' then a = {-a[1], -a[2], -a[3], a[4]} end
     local r = qrot(a, o)
     head = {head[1] + r[1] - o[1], head[2] + r[2] - o[2], head[3] + r[3] - o[3]}
   end

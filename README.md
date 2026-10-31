@@ -29,8 +29,11 @@ So `controllerWorld = headWorld × controllerRelativeToHead`. One catch: gameeng
 adds the tracked head offset to the anchor without turning it by the anchor's yaw,
 so `getCameraPosition()` only follows your real head while the anchor faces north.
 `vrHands` records the anchor rotation and offset from those two OpenXR calls and
-can use `anchor + anchorRot × offset` instead (`vrHands.getConfig().fixHeadOffset = true`).
-That correction is still experimental and off by default. No tracking-space
+uses `anchor + anchorRot × offset` instead (`vrHands.getConfig().fixHeadOffset`).
+BeamNG's camera quaternions also need conjugating before use (`cameraQuat = 'conjugate'`).
+Captures from Rowan's headset, on foot and in the car, confirm both: a controller
+resting on a desk stays within 1 cm while the head turns, tilts and leans
+(`tests/data`). No tracking-space
 baselines, recenter handling, stick-turn rebasing or camera-context tracking are
 needed. v2's ~1,450 lines of camera reconstruction are gone.
 
