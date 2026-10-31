@@ -33,7 +33,14 @@ uses `anchor + anchorRot × offset` instead (`vrHands.getConfig().fixHeadOffset`
 BeamNG's camera quaternions also need conjugating before use (`cameraQuat = 'conjugate'`).
 Captures from Rowan's headset, on foot and in the car, confirm both: a controller
 resting on a desk stays within 1 cm while the head turns, tilts and leans
-(`tests/data`). No tracking-space
+(`tests/data`).
+
+Since the layer also sends each controller's pose in BeamNG's tracking space,
+`vrHands` now places it the way BeamNG places its own controller models:
+`anchor + anchorRot × pose`, with no head pose involved (`useTrackingSpace`). It
+runs after `core_camera` so the anchor is this frame's. A frame late, the gun
+trailed the car by one frame of travel and jittered at speed.
+`vrHands.getStatus().cameraLagMs` should read close to 0. No tracking-space
 baselines, recenter handling, stick-turn rebasing or camera-context tracking are
 needed. v2's ~1,450 lines of camera reconstruction are gone.
 

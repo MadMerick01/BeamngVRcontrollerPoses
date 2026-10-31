@@ -202,11 +202,14 @@ def test_capture_writes_frames(lua):
     assert frame["gunPos"] == [0, 0.5, 0]
 
 
+@pytest.mark.parametrize("tracking", [True, False])
 @pytest.mark.parametrize("capture", ["still_controller_onfoot", "still_controller_car"])
-def test_resting_controller_stays_put_in_real_captures(lua, capture):
+def test_resting_controller_stays_put_in_real_captures(lua, capture, tracking):
     # Frames from BeamNG 0.40.4 (on foot, and in the car facing south) with the
-    # controller resting on a desk while the head turns, tilts and leans.
+    # controller resting on a desk while the head turns, tilts and leans. Both the
+    # tracking-space path and the head-relative fallback must hold it still.
     g = lua.globals()
+    g.hands.getConfig().useTrackingSpace = tracking
     points = []
     for line in (ROOT / "tests" / "data" / (capture + ".jsonl")).read_text().splitlines():
         r = json.loads(line)
@@ -219,6 +222,7 @@ def test_resting_controller_stays_put_in_real_captures(lua, capture):
         send(lua, json.dumps(r["packet"]))
         pose = g.hands.getPose("right", "grip")
         assert pose.valid
+        assert g.hands.getStatus().trackingSpace == tracking
         points.append(vec(pose.pos))
     mean = [sum(c) / len(points) for c in zip(*points)]
     drift = max(math.dist(p, mean) for p in points)

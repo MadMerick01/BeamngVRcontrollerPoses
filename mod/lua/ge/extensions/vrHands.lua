@@ -18,6 +18,10 @@
 --   vrHands.getStatus()               -> diagnostics table
 
 local M = {}
+-- Run onPreRender after core_camera's, so the camera (and the anchor recorded
+-- from it) is this frame's and not last frame's. A frame late, the gun trails
+-- the car by one frame of travel, which shows as jitter at speed.
+M.dependencies = {'core_camera'}
 
 local cfg = {
   port = 44441,
@@ -25,6 +29,7 @@ local cfg = {
   debug = false,
   fixHeadOffset = true,
   cameraQuat = 'conjugate',  -- or 'hamilton'
+  useTrackingSpace = true,
 }
 
 local socketlib, udp
@@ -93,6 +98,16 @@ local function headTransform()
   return head, function(v) return qrot(hq, v) end
 end
 
+-- This frame's camera anchor: origin of BeamNG's tracking space in the world and
+-- a function turning tracking-space vectors (BeamNG axes) into world ones.
+local function baseTransform()
+  local a, A = xrFrame.anchorRot, xrFrame.anchorPos
+  if not (cfg.useTrackingSpace and a and A and xrFrame.anchorTime and socketlib) then return nil end
+  if socketlib.gettime() - xrFrame.anchorTime > 0.25 then return nil end
+  if cfg.cameraQuat ~= 'hamilton' then a = {-a[1], -a[2], -a[3], a[4]} end
+  return {A[1], A[2], A[3]}, function(v) return qrot(a, v) end
+end
+
 -- Records the camera anchor rotation and the headset offset that gameengine.lua
 -- exchanges with OpenXR each frame. The OpenXR table may not exist until VR
 -- starts, so onPreRender keeps retrying. The originals live in a Lua global
@@ -115,6 +130,7 @@ local function wrapOpenXR()
 
   hooks.set = function(px, py, pz, rx, ry, rz, rw, ...)
     xrFrame.anchorPos, xrFrame.anchorRot = {px, py, pz}, {rx, ry, rz, rw}
+    if socketlib then xrFrame.anchorTime = socketlib.gettime() end
     return origSet(px, py, pz, rx, ry, rz, rw, ...)
   end
   hooks.get = function(...)
@@ -170,11 +186,19 @@ local function computePose(hand, kind)
   local s = h and h[kind]
   if not s or not s.ok or type(s.p) ~= 'table' or type(s.q) ~= 'table' then return emptyPose end
 
-  local headPos, toWorld = headTransform()
-  if not headPos then return emptyPose end
-
-  local q = s.q
-  local offset = toWorld(xrToCamera(s.p))
+  -- Preferred: the controller's pose in BeamNG's tracking space, placed with this
+  -- frame's camera anchor, the same way BeamNG places its own controller models.
+  -- Fallback: head-relative pose on top of the final camera.
+  local origin, toWorld, p, q = baseTransform()
+  if origin and type(s.rp) == 'table' and type(s.rq) == 'table' then
+    p, q = s.rp, s.rq
+  else
+    origin, toWorld = headTransform()
+    if not origin then return emptyPose end
+    p, q = s.p, s.q
+  end
+  local headPos = origin
+  local offset = toWorld(xrToCamera(p))
   local dir = toWorld(xrToCamera(qrot(q, {0, 0, -1})))
   local up = toWorld(xrToCamera(qrot(q, {0, 1, 0})))
   local right = toWorld(xrToCamera(qrot(q, {1, 0, 0})))
@@ -268,6 +292,8 @@ function M.getStatus()
     packetAgeMs = packetAgeMs(),
     lastError = lastError,
     headConvention = headConvention,
+    cameraLagMs = xrFrame.anchorTime and socketlib and (socketlib.gettime() - xrFrame.anchorTime) * 1000 or nil,
+    trackingSpace = baseTransform() ~= nil and packet ~= nil and packet.head ~= nil,
     openxrHooked = hooks.set ~= nil and type(OpenXR) == 'table' and OpenXR.setGeluaCameraPosRot == hooks.set,
     headOffsetFix = cfg.fixHeadOffset and xrFrame.time ~= nil and socketlib ~= nil and socketlib.gettime() - xrFrame.time < 0.25,
     left = {grip = M.getPose('left', 'grip').valid, aim = M.getPose('left', 'aim').valid, trigger = M.getTrigger('left')},
