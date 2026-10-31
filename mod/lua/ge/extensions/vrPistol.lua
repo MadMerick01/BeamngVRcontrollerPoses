@@ -11,7 +11,9 @@
 -- The model is a double-action revolver (mod/art/shapes/vrrevolver, built by
 -- tools/revolverModel/build_revolver.py). Squeezing the trigger cocks the
 -- hammer and turns the cylinder; at the break point the hammer drops, the gun
--- kicks and the muzzle flashes.
+-- kicks and the muzzle flashes. By default a low-poly copy (vrPistolMesh.lua) is
+-- drawn with the debug drawer every frame instead, so it never lags at speed;
+-- set getConfig().modelStyle = 'textured' for the full model.
 
 local M = {}
 M.dependencies = {'vrHands'}
@@ -47,7 +49,12 @@ local cfg = {
   blastInversion = 0.3,  -- chance a node is pulled instead of pushed
   deflateTyres = true,   -- a hit near a wheel hub also flattens that tyre
   allowSelfHit = false,
-  -- How the model follows the hand (see startModelTest):
+  -- 'simple' draws a low-poly gun with the debug drawer, fresh every frame like
+  -- the laser, so it never trails the car. 'textured' uses the full revolver
+  -- model, which BeamNG redraws late (it lags at speed).
+  modelStyle = 'simple',
+  simpleDoubleSided = false,  -- also draw each triangle's back face
+  -- How the textured model follows the hand (see startModelTest):
   -- 'server' moves the scene object, 'client' also moves its rendered copy directly.
   placeMode = 'server',
   predictSeconds = 0,    -- shift the model along the camera's motion by this much time
@@ -211,34 +218,115 @@ local function placePart(o, pos, f, u)
   end
 end
 
+-- Low-poly gun drawn with the debug drawer (mod/lua/ge/extensions/vrPistolMesh.lua,
+-- built by tools/revolverModel/build_lowpoly.py).
+local simpleMesh, simpleMissing
+local LIGHT = {0.3, -0.4, 0.85}
+do local l = math.sqrt(LIGHT[1] ^ 2 + LIGHT[2] ^ 2 + LIGHT[3] ^ 2) LIGHT = {LIGHT[1] / l, LIGHT[2] / l, LIGHT[3] / l} end
+local SHADES = 12
+local colourCache = {}
+local va, vb, vc
+
+local function loadSimpleMesh()
+  if simpleMesh or simpleMissing then return simpleMesh end
+  -- lua/ge/extensions is on the require path (core/cameraUpdate requires 'core/cameraInput').
+  local ok, mesh = pcall(require, 'vrPistolMesh')
+  if not ok or type(mesh) ~= 'table' then
+    simpleMissing = true
+    log('W', 'vrPistol', 'simple gun mesh missing: ' .. tostring(mesh))
+    return nil
+  end
+  -- Precompute each triangle's normal in part space.
+  for _, part in pairs(mesh) do
+    local t, n = part.tris, {}
+    for i = 1, #t, 9 do
+      local ax, ay, az = t[i + 3] - t[i], t[i + 4] - t[i + 1], t[i + 5] - t[i + 2]
+      local bx, by, bz = t[i + 6] - t[i], t[i + 7] - t[i + 1], t[i + 8] - t[i + 2]
+      local nx, ny, nz = ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx
+      local l = math.sqrt(nx * nx + ny * ny + nz * nz)
+      if l < 1e-12 then l = 1 end
+      n[#n + 1], n[#n + 2], n[#n + 3] = nx / l, ny / l, nz / l
+    end
+    part.normals = n
+  end
+  va, vb, vc = vec3(0, 0, 0), vec3(0, 0, 0), vec3(0, 0, 0)
+  simpleMesh = mesh
+  return mesh
+end
+
+local function shadedColour(r, g, b, level)
+  local key = r * 65536 + g * 256 + b + level * 16777216
+  local c = colourCache[key]
+  if not c then
+    -- Lift very dark materials (blued steel) so their shape still reads.
+    local k = 0.35 + 0.65 * level / SHADES
+    local function ch(x) return math.min(255, math.floor((x * 1.1 + 22) * k + 0.5)) end
+    c = (ColorI or color)(ch(r), ch(g), ch(b), 255)
+    colourCache[key] = c
+  end
+  return c
+end
+
+local function drawSimplePart(name, pos, f, u)
+  local part = simpleMesh and simpleMesh[name]
+  if not part then return end
+  local r = f:cross(u)
+  local px, py, pz = pos.x, pos.y, pos.z
+  local rx, ry, rz, fx, fy, fz, ux, uy, uz = r.x, r.y, r.z, f.x, f.y, f.z, u.x, u.y, u.z
+  local t, n, col = part.tris, part.normals, part.colours
+  local both = cfg.simpleDoubleSided
+  for i = 0, #t / 9 - 1 do
+    local j = i * 9
+    local function corner(v, k)
+      local x, y, z = t[k + 1], t[k + 2], t[k + 3]
+      v:set(px + rx * x + fx * y + ux * z, py + ry * x + fy * y + uy * z, pz + rz * x + fz * y + uz * z)
+    end
+    corner(va, j) corner(vb, j + 3) corner(vc, j + 6)
+    local nx, ny, nz = n[i * 3 + 1], n[i * 3 + 2], n[i * 3 + 3]
+    local wx, wy, wz = rx * nx + fx * ny + ux * nz, ry * nx + fy * ny + uy * nz, rz * nx + fz * ny + uz * nz
+    local d = math.abs(wx * LIGHT[1] + wy * LIGHT[2] + wz * LIGHT[3])
+    local c = shadedColour(col[i * 3 + 1], col[i * 3 + 2], col[i * 3 + 3], math.floor(d * SHADES + 0.5))
+    debugDrawer:drawTriSolid(va, vb, vc, c)
+    if both then debugDrawer:drawTriSolid(va, vc, vb, c) end
+  end
+end
+
 local function placeModel(aim, trigger, t)
-  if not ensureModel() then return end
+  local simple = cfg.modelStyle == 'simple' and loadSimpleMesh()
+  if simple then
+    if parts then deleteParts() end
+  elseif not ensureModel() then
+    return
+  end
   predictShift = vec3(0, 0, 0)
   if cfg.predictSeconds ~= 0 and vrHands.getAnchorMotion then
     predictShift = vrHands.getAnchorMotion().vel * cfg.predictSeconds
   end
   if not aim.valid then
-    for _, o in pairs(parts) do o:setHidden(true) end
+    for _, o in pairs(parts or {}) do o:setHidden(true) end
     return
   end
   local origin, r, f, u = gunFrame(aim, t)
   local ang = actionAngles(trigger, t)
   local function at(name) for _, p in ipairs(PARTS) do if p.name == name then return toWorld(origin, r, f, u, p.pivot) end end end
 
-  placePart(parts.frame, at('frame'), f, u)
-  placePart(parts.cylinder, at('cylinder'), f, rotate(u, f, -ang.cylinder))
-  placePart(parts.hammer, at('hammer'), rotate(f, r, ang.hammer), rotate(u, r, ang.hammer))
-  placePart(parts.trigger, at('trigger'), rotate(f, r, ang.trigger), rotate(u, r, ang.trigger))
+  local function put(name, pos, pf, pu)
+    if simple then drawSimplePart(name, pos, pf, pu) else placePart(parts[name], pos, pf, pu) end
+  end
+  put('frame', at('frame'), f, u)
+  put('cylinder', at('cylinder'), f, rotate(u, f, -ang.cylinder))
+  put('hammer', at('hammer'), rotate(f, r, ang.hammer), rotate(u, r, ang.hammer))
+  put('trigger', at('trigger'), rotate(f, r, ang.trigger), rotate(u, r, ang.trigger))
   if ang.flash then
-    placePart(parts.flash, at('flash'), f, rotate(u, f, flashRoll))
-  else
+    put('flash', at('flash'), f, rotate(u, f, flashRoll))
+  elseif not simple then
     parts.flash:setHidden(true)
   end
 end
 
 -- Muzzle in world space at rest (no recoil), for the laser.
 local function muzzlePos(aim)
-  if not parts then return aim.pos end
+  if not parts and not simpleMesh then return aim.pos end
   local o = cfg.modelOffset
   local a = math.rad(cfg.modelPitchDeg)
   local f = aim.dir * math.cos(a) + aim.up * math.sin(a)

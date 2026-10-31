@@ -108,8 +108,14 @@ vrPistol.fireFromCamera()                    -- desktop test along the camera vi
 vrPistol.startModelTest()                     -- gun smoothness test, see below
 ```
 
-The laser is drawn straight to the screen each frame, but the revolver is a scene
-object. Lua moves the engine's server copy, and the copy that gets drawn follows
+By default the gun is a low-poly copy of the revolver (about 1,400 triangles,
+one colour per material) drawn with the debug drawer, painted fresh every frame
+like the laser, so it stays locked to your hand at any speed
+(`vrPistol.getConfig().modelStyle = 'simple'`). `tools/revolverModel/build_lowpoly.py`
+builds it into `mod/lua/ge/extensions/vrPistolMesh.lua` from the full model. Set
+`modelStyle = 'textured'` for the full textured revolver, which looks better but
+lags at speed: the laser is drawn straight to the screen each frame, but the
+textured revolver is a scene object. Lua moves the engine's server copy, and the copy that gets drawn follows
 over the engine's internal network, which can lag. `vrPistol.startModelTest()`
 spends 8 s on each of five ways of moving the model while you drive (A as now,
 B also moving the drawn copy, C/D leading the car by 1/2 frames, E both). It

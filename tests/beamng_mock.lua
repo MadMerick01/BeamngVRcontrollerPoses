@@ -15,11 +15,17 @@ function V:cross(b) return vec3(self.y * b.z - self.z * b.y, self.z * b.x - self
 function V:dot(b) return self.x * b.x + self.y * b.y + self.z * b.z end
 function V:squaredLength() return self:dot(self) end
 function V:length() return math.sqrt(self:dot(self)) end
+function V:set(x, y, z) self.x, self.y, self.z = x, y, z end
 function V:normalized() local l = self:length() return vec3(self.x / l, self.y / l, self.z / l) end
 function quatFromDir(dir, up) return {dir = dir, up = up} end
 
 function ColorF(r, g, b, a) return {r, g, b, a} end
-debugDrawer = {drawLine = function() end, drawSphere = function() end}
+function ColorI(r, g, b, a) return {r, g, b, a} end
+debugDrawer = {drawLine = function() end, drawSphere = function() end,
+  drawTriSolid = function(_, a, b, c, col)
+    mock.tris = mock.tris or {}
+    mock.tris[#mock.tris + 1] = {a = {a.x, a.y, a.z}, b = {b.x, b.y, b.z}, c = {c.x, c.y, c.z}, col = col}
+  end}
 logs = {}
 function log(level, tag, msg) logs[#logs + 1] = level .. ' ' .. tag .. ' ' .. msg end
 

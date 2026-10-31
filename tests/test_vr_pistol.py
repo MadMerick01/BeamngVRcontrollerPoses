@@ -13,6 +13,7 @@ from tests.test_vr_hands import ROOT, lua_impl, packet, face_plus_x  # noqa: E40
 def lua():
     rt = lua_impl.LuaRuntime(unpack_returned_tuples=True)
     rt.execute((ROOT / "tests" / "beamng_mock.lua").read_text())
+    rt.execute(f"package.path = '{ROOT}/mod/lua/ge/extensions/?.lua;' .. package.path")
     rt.globals().mock.decode = lambda s: rt.table_from(json.loads(s), recursive=True)
     hands = rt.execute((ROOT / "mod/lua/ge/extensions/vrHands.lua").read_text())
     hands.onExtensionLoaded()
@@ -84,6 +85,7 @@ def test_no_shot_without_tracking(lua):
 @pytest.fixture
 def model(lua):
     lua.globals().FS = lua.table_from({"fileExists": lambda _self, _path: True})
+    lua.globals().vrPistol.getConfig().modelStyle = "textured"
     face_plus_x(lua)
     return lua
 
@@ -220,3 +222,50 @@ def test_model_test_cycles_phases_and_saves(model):
     assert phases[0] == "A" and phases[-1] == "E" and set(phases) == set("ABCDE")
     assert g.vrPistol.getConfig().placeMode == "server"  # restored afterwards
     assert g.vrPistol.getConfig().predictSeconds == 0
+
+
+# ------------------------------------------------------------- simple gun ---
+
+def simple_tris(rt):
+    tris = rt.globals().mock.tris
+    out = []
+    for i in range(len(tris) if tris else 0):
+        t = tris[i + 1]
+        out.append([tuple(c[k] for k in (1, 2, 3)) for c in (t.a, t.b, t.c)])
+    rt.globals().mock.tris = rt.table_from([])
+    return out
+
+
+def mesh_counts(rt):
+    mesh = rt.eval("require('vrPistolMesh')")
+    return {name: len(mesh[name].tris) // 9 for name in ("frame", "cylinder", "hammer", "trigger", "flash")}
+
+
+def test_simple_gun_is_drawn_every_frame_at_the_hand(lua):
+    face_plus_x(lua)
+    counts = mesh_counts(lua)
+    frame(lua, packet(right_aim=AIM))
+    tris = simple_tris(lua)
+    assert len(tris) == sum(counts.values()) - counts["flash"]
+    assert not any(k.startswith("vrPistolModel_") for k in lua.globals().mock.objects.keys())
+    xs = [v[0] for t in tris for v in t]
+    ys = [v[1] for t in tris for v in t]
+    zs = [v[2] for t in tris for v in t]
+    # Aim pose at (10.5, 20, 1.5) pointing +X: the barrel runs along +X from there.
+    assert 10.3 < min(xs) and max(xs) < 10.9 and max(xs) - min(xs) > 0.25
+    assert 19.95 < min(ys) and max(ys) < 20.05
+    assert 1.35 < min(zs) and max(zs) < 1.65
+    # Next frame draws it again (nothing persists between frames).
+    frame(lua, packet(right_aim=AIM))
+    assert len(simple_tris(lua)) == len(tris)
+
+
+def test_simple_gun_flashes_and_kicks_on_a_shot(lua):
+    face_plus_x(lua)
+    counts = mesh_counts(lua)
+    frame(lua, packet(right_aim=AIM, trigger=0.0))
+    rest = simple_tris(lua)
+    frame(lua, packet(right_aim=AIM, trigger=1.0))
+    shot = simple_tris(lua)
+    assert len(shot) == len(rest) + counts["flash"]
+    assert max(v[2] for t in shot for v in t) > max(v[2] for t in rest for v in t) + 0.01
