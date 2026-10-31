@@ -41,6 +41,7 @@ local cfg = {
   equipSound = '/art/sound/vrpistol/pistol_equip.wav',  -- played when the gun is drawn ('' mutes it)
   equipVolume = 12,
   laser = false,
+  hitMarkers = false,    -- orange/grey spheres where shots land
   -- Hold the grip to draw the gun; let go to put it away (no gun, no shots).
   -- While it is drawn BeamNG's own controller pointer (black line and orange
   -- ball) is switched off, and switched back on when the gun is put away.
@@ -507,6 +508,7 @@ local function staticHitDistance(origin, dir)
 end
 
 local function addMarker(pos, colour)
+  if not cfg.hitMarkers then return end
   markers[#markers + 1] = {pos = pos, untilTime = now() + 1.5, colour = colour}
 end
 

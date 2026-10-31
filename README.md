@@ -92,7 +92,8 @@ away. Drawing it plays a holster sound. Pull the right trigger to shoot. The rev
 the hammer comes back and the cylinder turns, and at the break the hammer drops,
 the gun goes bang (the Bolides player gunshot), the muzzle flashes and it
 kicks up and back in your hand. An optional red laser from
-the muzzle (`vrPistol.setLaser(true)`) shows the aim ray. Orange spheres
+the muzzle (`vrPistol.setLaser(true)`) shows the aim ray. With
+`vrPistol.getConfig().hitMarkers = true`, orange spheres
 mark vehicle hits and grey spheres mark world hits. A hit uses the same
 impact model as Bolides' `BulletDamage.lua`: a mass-scaled push on the struck node
 along the bullet's path, plus a 1.3 m falloff blast that dents the panel around
