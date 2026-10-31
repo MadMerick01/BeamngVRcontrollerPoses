@@ -261,7 +261,9 @@ local function shadedColour(r, g, b, level)
     -- Lift very dark materials (blued steel) so their shape still reads.
     local k = 0.35 + 0.65 * level / SHADES
     local function ch(x) return math.min(255, math.floor((x * 1.1 + 22) * k + 0.5)) end
-    c = (ColorI or color)(ch(r), ch(g), ch(b), 255)
+    -- drawTriSolid takes a packed colour number (BeamNG's color() helper).
+    if type(color) == 'function' then c = color(ch(r), ch(g), ch(b), 255) end
+    if type(c) ~= 'number' then c = ch(r) + ch(g) * 256 + ch(b) * 65536 + 255 * 16777216 end
     colourCache[key] = c
   end
   return c
@@ -291,8 +293,10 @@ local function drawSimplePart(name, pos, f, u)
   end
 end
 
+local simpleFailed
+
 local function placeModel(aim, trigger, t)
-  local simple = cfg.modelStyle == 'simple' and loadSimpleMesh()
+  local simple = cfg.modelStyle == 'simple' and not simpleFailed and loadSimpleMesh()
   if simple then
     if parts then deleteParts() end
   elseif not ensureModel() then
@@ -311,7 +315,16 @@ local function placeModel(aim, trigger, t)
   local function at(name) for _, p in ipairs(PARTS) do if p.name == name then return toWorld(origin, r, f, u, p.pivot) end end end
 
   local function put(name, pos, pf, pu)
-    if simple then drawSimplePart(name, pos, pf, pu) else placePart(parts[name], pos, pf, pu) end
+    if simple then
+      local ok, err = pcall(drawSimplePart, name, pos, pf, pu)
+      if not ok and not simpleFailed then
+        -- Don't throw every frame: fall back to the textured model.
+        simpleFailed = true
+        log('E', 'vrPistol', 'simple gun cannot be drawn, using the textured model: ' .. tostring(err))
+      end
+    else
+      placePart(parts[name], pos, pf, pu)
+    end
   end
   put('frame', at('frame'), f, u)
   put('cylinder', at('cylinder'), f, rotate(u, f, -ang.cylinder))

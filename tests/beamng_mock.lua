@@ -21,8 +21,11 @@ function quatFromDir(dir, up) return {dir = dir, up = up} end
 
 function ColorF(r, g, b, a) return {r, g, b, a} end
 function ColorI(r, g, b, a) return {r, g, b, a} end
+-- Like BeamNG's helper: a packed colour number, which drawTriSolid requires.
+function color(r, g, b, a) return r + g * 256 + b * 65536 + (a or 255) * 16777216 end
 debugDrawer = {drawLine = function() end, drawSphere = function() end,
   drawTriSolid = function(_, a, b, c, col)
+    if type(col) ~= 'number' then error("bad argument #4 to 'drawTriSolid' (number expected, got " .. type(col) .. ')') end
     mock.tris = mock.tris or {}
     mock.tris[#mock.tris + 1] = {a = {a.x, a.y, a.z}, b = {b.x, b.y, b.z}, c = {c.x, c.y, c.z}, col = col}
   end}
