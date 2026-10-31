@@ -61,8 +61,8 @@ profiles, and supports the OpenXR 1.1 batch `xrLocateSpaces` call.
      the app is BeamNG.drive and passes every other VR app straight through;
    - puts `vrControllerPoses.zip` in `%LOCALAPPDATA%\BeamNG\BeamNG.drive\current\mods`.
      The mod loads itself (`scripts/vrControllerPoses/modScript.lua`).
-3. Start BeamNG and turn on VR. The revolver and laser appear on your right
-   controller. Pull the trigger to shoot.
+3. Start BeamNG and turn on VR. Hold the right grip to draw the revolver and
+   pull the trigger to shoot; let go of the grip to put it away.
 
 `Uninstall.cmd` undoes both steps. To skip the layer for one launch, set the
 environment variable `BEAMNG_VR_POSES_DISABLE=1`.
@@ -85,11 +85,14 @@ dump(vrHands.getStatus())          -- packets, age, which poses are valid
 vrHands.startCapture(20)           -- record 20 s of camera + pose data to <user folder>/vrHandsCapture/
 ```
 
-Pull the right trigger to shoot. The revolver is double action: as you squeeze,
+Hold the right grip to draw the gun. While it is drawn BeamNG's own controller
+pointer (the black line and orange ball) is switched off, and it comes back
+when you let go, so you can still open doors and use menus with the gun put
+away. Pull the right trigger to shoot. The revolver is double action: as you squeeze,
 the hammer comes back and the cylinder turns, and at the break the hammer drops,
 the gun goes bang (the Bolides player gunshot), the muzzle flashes and it
-kicks up and back in your hand. A red laser from
-the muzzle shows the aim ray. Orange spheres
+kicks up and back in your hand. An optional red laser from
+the muzzle (`vrPistol.setLaser(true)`) shows the aim ray. Orange spheres
 mark vehicle hits and grey spheres mark world hits. A hit uses the same
 impact model as Bolides' `BulletDamage.lua`: a mass-scaled push on the struck node
 along the bullet's path, plus a 1.3 m falloff blast that dents the panel around
@@ -101,9 +104,10 @@ Tuning (console):
 ```lua
 vrPistol.setModelOffset(0, -0.02, 0.05, 0)   -- gun origin (bore, rear of cylinder) in aim space: x right, y along barrel, z up (m), pitch (deg)
 vrPistol.getConfig().recoilPitchDeg = 22     -- also recoilBack, hammerCockDeg, triggerTravelDeg, flashTime
-vrPistol.getConfig().shotVolume = 12         -- shotSound = '' mutes it
+vrPistol.getConfig().shotVolume = 18         -- shotSound = '' mutes it
 vrPistol.testSound()                         -- plays the gunshot once (check the console for "created SFX source")
-vrPistol.setLaser(false)
+vrPistol.setLaser(true)                      -- aiming laser (off by default)
+vrPistol.getConfig().equipOnGrip = false     -- gun always drawn; hideGamePointer = false keeps BeamNG's pointer
 vrPistol.getConfig().impactForce = 9000      -- also blastRadius, blastForce, deflateTyres, range, cooldown
 vrPistol.fireFromCamera()                    -- desktop test along the camera view
 vrPistol.startModelTest()                     -- gun smoothness test, see below

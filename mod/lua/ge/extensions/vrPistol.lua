@@ -1,7 +1,7 @@
 -- vrPistol: a revolver on the right VR controller that shoots traffic.
 --
 --   extensions.load('vrPistol')       -- also loads vrHands
---   vrPistol.setLaser(true|false)     -- aiming laser (on by default)
+--   vrPistol.setLaser(true|false)     -- aiming laser (off by default)
 --   vrPistol.setModelOffset(x, y, z, pitchDeg)  -- fit the model to your hand
 --   vrPistol.fireFromCamera()         -- desktop test: shoot along the camera view
 --
@@ -36,9 +36,16 @@ local cfg = {
   -- Gunshot from Bolides (PlayerGunShot.wav), same playback and volume as its FirstPersonShoot.
   -- vrPistol.testSound() plays it from the console.
   shotSound = '/art/sound/vrpistol/revolver_shot.wav',
-  shotVolume = 12,
+  shotVolume = 18,
   shotPitch = 1.0,
-  laser = true,
+  laser = false,
+  -- Hold the grip to draw the gun; let go to put it away (no gun, no shots).
+  -- While it is drawn BeamNG's own controller pointer (black line and orange
+  -- ball) is switched off, and switched back on when the gun is put away.
+  equipOnGrip = true,
+  gripPress = 0.6,
+  gripRelease = 0.4,
+  hideGamePointer = true,
   range = 300,
   triggerPress = 0.7,
   triggerRelease = 0.3,
@@ -64,6 +71,7 @@ local cfg = {
 
 local parts, modelMissingLogged, materialsLoaded
 local triggerHeld, lastShot = false, -math.huge
+local equipped, savedPointerSetting = false, nil
 local shotsFired, flashRoll = 0, 0
 local markers = {}  -- {pos, untilTime, colour}
 
@@ -632,6 +640,40 @@ function M.getActionState(trigger)
   return a
 end
 
+-- ---------------------------------------------------------- equipping ---
+
+-- BeamNG's pointer is the 'openXRuseControllers' setting. Its value is saved
+-- when the gun is drawn and put back when it is put away.
+local function setGamePointerHidden(hidden)
+  if not settings or not settings.setValue then return end
+  if hidden then
+    if savedPointerSetting ~= nil then return end
+    local ok, current = pcall(settings.getValue, 'openXRuseControllers')
+    savedPointerSetting = (ok and current ~= nil) and current or true
+    pcall(settings.setValue, 'openXRuseControllers', false)
+  elseif savedPointerSetting ~= nil then
+    pcall(settings.setValue, 'openXRuseControllers', savedPointerSetting)
+    savedPointerSetting = nil
+  end
+end
+
+local function updateEquipped(aim)
+  local want = true
+  if cfg.equipOnGrip then
+    local grip = aim.valid and vrHands.getSqueeze(cfg.hand) or 0
+    if equipped then want = aim.valid and grip > cfg.gripRelease
+    else want = aim.valid and grip >= cfg.gripPress end
+  end
+  if want ~= equipped then
+    equipped = want
+    triggerHeld = false
+    if cfg.hideGamePointer or not want then setGamePointerHidden(want) end
+  end
+  return equipped
+end
+
+function M.isEquipped() return equipped end
+
 -- ------------------------------------------------------------- hooks ---
 
 -- Stay loaded across level changes (BeamNG unloads "auto" extensions).
@@ -641,6 +683,7 @@ end
 
 function M.onPreRender(dtReal)
   local aim = vrHands.getPose(cfg.hand, 'aim')
+  if not updateEquipped(aim) then aim = {valid = false} end
   local trigger = aim.valid and vrHands.getTrigger(cfg.hand) or 0
   local t = now()
 
@@ -682,6 +725,8 @@ end
 
 function M.onExtensionUnloaded()
   M.onClientEndMission()
+  setGamePointerHidden(false)
+  equipped = false
 end
 
 return M

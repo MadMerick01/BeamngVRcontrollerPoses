@@ -19,6 +19,7 @@ def lua():
     hands.onExtensionLoaded()
     rt.globals().vrHands = hands
     rt.globals().vrPistol = rt.execute((ROOT / "mod/lua/ge/extensions/vrPistol.lua").read_text())
+    rt.globals().vrPistol.getConfig().equipOnGrip = False  # most tests just shoot
     return rt
 
 
@@ -289,3 +290,38 @@ def test_simple_gun_flashes_and_kicks_on_a_shot(lua):
     shot = simple_tris(lua)
     assert len(shot) == len(rest) + counts["flash"]
     assert max(v[2] for t in shot for v in t) > max(v[2] for t in rest for v in t) + 0.01
+
+
+def test_gun_is_drawn_only_while_the_grip_is_held(lua):
+    face_plus_x(lua)
+    lua.globals().vrPistol.getConfig().equipOnGrip = True
+    add(lua, "car", (30, 20, 1), (2, 1, 1))
+    pointer = lambda: lua.globals().mock.settings.openXRuseControllers
+    tris = lambda: len(lua.globals().mock.tris or {})
+
+    # Grip open: no gun, no shot, BeamNG's pointer untouched.
+    frame(lua, packet(right_aim=AIM, trigger=0.0))
+    frame(lua, packet(right_aim=AIM, trigger=0.9))
+    assert commands(lua) == [] and not lua.globals().vrPistol.isEquipped()
+    assert pointer() is True
+
+    # Grip held: gun drawn, pointer hidden, it shoots.
+    frame(lua, packet(right_aim=AIM, trigger=0.0, squeeze=1.0))
+    assert lua.globals().vrPistol.isEquipped() and pointer() is False
+    before = tris()
+    frame(lua, packet(right_aim=AIM, trigger=0.0, squeeze=0.5))  # inside the hysteresis: still drawn
+    assert tris() > before
+    frame(lua, packet(right_aim=AIM, trigger=0.9, squeeze=1.0))
+    assert commands(lua) == ["car"]
+
+    # Let go: put away, pointer back, no more shots.
+    frame(lua, packet(right_aim=AIM, trigger=0.0, squeeze=0.0))
+    assert not lua.globals().vrPistol.isEquipped() and pointer() is True
+    lua.globals().mock.time += 1
+    frame(lua, packet(right_aim=AIM, trigger=0.9, squeeze=0.0))
+    assert commands(lua) == ["car"]
+
+
+def test_laser_is_off_and_volume_is_18_by_default(lua):
+    c = lua.globals().vrPistol.getConfig()
+    assert c.laser is False and c.shotVolume == 18

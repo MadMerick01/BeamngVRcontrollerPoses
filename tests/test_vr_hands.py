@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 S = math.sqrt(0.5)
 
 
-def packet(right_aim=None, right_grip=None, trigger=0.0):
+def packet(right_aim=None, right_grip=None, trigger=0.0, squeeze=0.0):
     def pose(p):
         if p is None:
             return {"ok": False, "t": 1, "p": [0, 0, 0], "q": [0, 0, 0, 1]}
@@ -25,7 +25,7 @@ def packet(right_aim=None, right_grip=None, trigger=0.0):
         "v": 3, "seq": 1, "t": 1,
         "hands": {
             "left": {"grip": pose(None), "aim": pose(None), "trigger": 0, "squeeze": 0},
-            "right": {"grip": pose(right_grip), "aim": pose(right_aim), "trigger": trigger, "squeeze": 0},
+            "right": {"grip": pose(right_grip), "aim": pose(right_aim), "trigger": trigger, "squeeze": squeeze},
         },
     })
 

@@ -119,3 +119,10 @@ end
 
 mock.materialFiles = {}
 function loadJsonMaterialsFile(path) mock.materialFiles[#mock.materialFiles + 1] = path end
+
+-- settings: the game's options store.
+mock.settings = {openXRuseControllers = true}
+settings = {
+  getValue = function(k) return mock.settings[k] end,
+  setValue = function(k, v) mock.settings[k] = v end,
+}
