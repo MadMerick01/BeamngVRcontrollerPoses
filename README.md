@@ -102,6 +102,7 @@ Tuning (console):
 vrPistol.setModelOffset(0, -0.02, 0.05, 0)   -- gun origin (bore, rear of cylinder) in aim space: x right, y along barrel, z up (m), pitch (deg)
 vrPistol.getConfig().recoilPitchDeg = 22     -- also recoilBack, hammerCockDeg, triggerTravelDeg, flashTime
 vrPistol.getConfig().shotVolume = 12         -- shotSound = '' mutes it
+vrPistol.testSound()                         -- plays the gunshot once (check the console for "created SFX source")
 vrPistol.setLaser(false)
 vrPistol.getConfig().impactForce = 9000      -- also blastRadius, blastForce, deflateTyres, range, cooldown
 vrPistol.fireFromCamera()                    -- desktop test along the camera view

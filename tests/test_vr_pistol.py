@@ -169,13 +169,26 @@ def test_each_shot_plays_the_gunshot_on_the_player_vehicle(lua):
         frame(lua, packet(right_aim=AIM, trigger=0.0))
         lua.globals().mock.time += 1
     to_player = [c.cmd for c in all_commands(lua) if c.name == "player"]
-    # Sources are created once, in their own command, then each shot plays one.
-    assert len(to_player) == 3
-    assert "createSFXSource" in to_player[0] and "playSFX(" not in to_player[0]
-    assert all("playSFX(id)" in c for c in to_player[1:])
-    assert "/art/sound/vrpistol/revolver_shot.wav" in to_player[0]
-    for c in to_player:  # valid Lua for the vehicle VM
-        lua.eval("function(s) return assert(loadstring(s)) end")(c)
+    # Each shot makes sure the pool exists, then plays from it (as Bolides does).
+    assert len(to_player) == 4
+    assert all("/art/sound/vrpistol/revolver_shot.wav" in c for c in to_player[0::2])
+    # Run the commands in a fake vehicle VM: sources made once, two different ones played.
+    vm = lua.eval("""function(cmds)
+      local made, played = {}, {}
+      local env = setmetatable({_G = {}, log = function() end}, {__index = _G})
+      env._G = env
+      env.obj = {
+        createSFXSource = function(_, path, desc, nm, x) made[#made + 1] = nm; return 100 + #made end,
+        playSFX = function(_, id) played[#played + 1] = id end,
+        setSFXSourceVolume = function() end, setSFXSourceLooping = function() end,
+      }
+      for i = 1, #cmds do
+        local f = assert(loadstring(cmds[i])); setfenv(f, env); f()
+      end
+      return #made, played[1], played[2], #played
+    end""")
+    made, first, second, n = vm(lua.table_from(to_player))
+    assert made == 6 and n == 2 and first != second
 
 
 def test_gunshot_without_player_vehicle_does_not_break_shooting(lua):

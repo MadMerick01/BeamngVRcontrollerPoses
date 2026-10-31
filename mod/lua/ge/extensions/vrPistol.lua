@@ -37,6 +37,7 @@ local cfg = {
   -- vrPistol.testSound() plays it from the console.
   shotSound = '/art/sound/vrpistol/revolver_shot.wav',
   shotVolume = 12,
+  shotPitch = 1.0,
   laser = true,
   range = 300,
   triggerPress = 0.7,
@@ -357,55 +358,91 @@ local function muzzlePos(aim)
   return toWorld(origin, aim.right, f, u, MUZZLE)
 end
 
--- Gunshot, played exactly the way Bolides' FirstPersonShoot plays it: a pool
--- of 2D SFX sources on the player vehicle, created by one queued command and
--- played by a second (a source created and played in the same command can
--- stay silent). With no player vehicle it falls back to the GUI channel.
-local SOUND_POOL = 4
-local soundVehId
+-- Gunshot, played step for step the way Bolides' FirstPersonShoot plays its
+-- player shot: every shot first makes sure a pool of 2D SFX sources exists in
+-- the player vehicle's Lua (so it survives a vehicle reload or switch), then a
+-- second queued command plays the next source in the pool, trying each playSFX
+-- signature BeamNG has used, with playSFXOnce as the last resort. With no
+-- player vehicle it falls back to the GUI channel.
+local SOUND_POOL = 6
+local SOUND_NAME = 'vrPistolShot'
 
 local function ensureShotSources(veh)
-  local id = veh.getID and veh:getID() or 0
-  if soundVehId == id then return end
-  soundVehId = id
   veh:queueLuaCommand(string.format([[
-    _G.__vrPistolShot = _G.__vrPistolShot or {ids = {}, index = 1}
-    local S = _G.__vrPistolShot
-    for i = 1, %d do
-      if not S.ids[i] then
-        local ok, id = pcall(function() return obj:createSFXSource(%q, "Audio2D", "vrPistolShot_" .. i, 0) end)
-        if ok and id then S.ids[i] = id else log('W', 'vrPistol', 'createSFXSource failed: ' .. tostring(id)) end
-      end
-    end]], SOUND_POOL, cfg.shotSound))
+    _G.__vrPistolShotAudio = _G.__vrPistolShotAudio or { ids = {}, pools = {} }
+    local A = _G.__vrPistolShotAudio.ids
+    local P = _G.__vrPistolShotAudio.pools
+    local function mk(path, nm)
+      if A[nm] then return end
+      local id = obj:createSFXSource(path, "Audio2D", nm, 0)
+      A[nm] = id
+      log('I', 'vrPistol', 'created SFX source ' .. nm .. ' = ' .. tostring(id))
+    end
+    local base = %q
+    local path = %q
+    local count = %d
+    P[base] = P[base] or { ids = {}, index = 1 }
+    local pool = P[base]
+    for i = 1, count do
+      local nm = base .. "_" .. tostring(i)
+      mk(path, nm)
+      pool.ids[i] = nm
+    end
+    if (pool.index or 1) < 1 or (pool.index or 1) > count then
+      pool.index = 1
+    end
+  ]], SOUND_NAME, cfg.shotSound, SOUND_POOL))
 end
 
 local function playShotSound()
   if not cfg.shotSound or cfg.shotSound == '' then return end
   local veh = be:getPlayerVehicle(0)
-  if not veh then
-    soundVehId = nil
+  if not veh or not veh.queueLuaCommand then
     local ok, err = pcall(function() Engine.Audio.playOnce('AudioGui', cfg.shotSound) end)
     if not ok then log('W', 'vrPistol', 'no player vehicle and Engine.Audio.playOnce failed: ' .. tostring(err)) end
     return
   end
   ensureShotSources(veh)
-  local vol = cfg.shotVolume
+  local vol, pitch, file = cfg.shotVolume, cfg.shotPitch or 1.0, cfg.shotSound
   veh:queueLuaCommand(string.format([[
-    local S = _G.__vrPistolShot
-    if not S then return end
-    local i = S.index or 1
-    S.index = i %% %d + 1
-    local id = S.ids[i]
+    if not (_G.__vrPistolShotAudio and _G.__vrPistolShotAudio.ids) then return end
+    local A = _G.__vrPistolShotAudio.ids
+    local P = _G.__vrPistolShotAudio.pools or {}
+    local pool = P[%q]
+    if not pool or not pool.ids or #pool.ids == 0 then return end
+    local idx = pool.index or 1
+    if idx > #pool.ids then idx = 1 end
+    local nm = pool.ids[idx]
+    pool.index = idx + 1
+    if pool.index > #pool.ids then pool.index = 1 end
+    local id = A[nm]
+    if not id then return end
+
+    if obj.setSFXSourceLooping then pcall(function() obj:setSFXSourceLooping(id, false) end) end
+    if obj.setSFXSourceLoop then pcall(function() obj:setSFXSourceLoop(id, false) end) end
+
+    if obj.setSFXSourceVolume then pcall(function() obj:setSFXSourceVolume(id, 1.0) end) end
+    if obj.setSFXVolume then      pcall(function() obj:setSFXVolume(id, 1.0) end) end
+    if obj.setVolume then         pcall(function() obj:setVolume(id, 1.0) end) end
+
     local played = false
-    if id then
-      pcall(function() obj:setSFXSourceLooping(id, false) end)
-      pcall(function() obj:setSFXSourceVolume(id, 1.0) end)
-      played = pcall(function() obj:playSFX(id) end)
-      pcall(function() obj:setSFXSourceVolume(id, %.3f) end)
+    if obj.playSFX then
+      played = played or pcall(function() obj:playSFX(id) end)
+      played = played or pcall(function() obj:playSFX(id, 0) end)
+      played = played or pcall(function() obj:playSFX(id, false) end)
+      played = played or pcall(function() obj:playSFX(id, 0, false) end)
+      played = played or pcall(function() obj:playSFX(id, 0, %0.3f, %0.3f, false) end)
+      played = played or pcall(function() obj:playSFX(id, %0.3f, %0.3f, false) end)
+      played = played or pcall(function() obj:playSFX(id, 0, false, %0.3f, %0.3f) end)
     end
-    if not played then
-      pcall(function() obj:playSFXOnce(%q, 0, %.3f, 1) end)
-    end]], SOUND_POOL, vol, cfg.shotSound, vol))
+
+    if (not played) and obj.playSFXOnce and %q ~= "" then
+      pcall(function() obj:playSFXOnce(%q, 0, %0.3f, %0.3f) end)
+    end
+
+    if obj.setSFXSourceVolume then pcall(function() obj:setSFXSourceVolume(id, %0.3f) end) end
+    if obj.setSFXSourcePitch  then pcall(function() obj:setSFXSourcePitch(id, %0.3f) end) end
+  ]], SOUND_NAME, vol, pitch, vol, pitch, vol, pitch, file, file, vol, pitch, vol, pitch))
 end
 
 -- Console check for the gunshot without shooting anything.
