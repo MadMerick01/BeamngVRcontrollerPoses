@@ -328,3 +328,112 @@ def test_gun_is_drawn_only_while_the_grip_is_held(lua):
 def test_laser_is_off_and_volume_is_18_by_default(lua):
     c = lua.globals().vrPistol.getConfig()
     assert c.laser is False and c.shotVolume == 18
+
+
+# ------------------------------------------------------------ ammo and hooks ---
+
+def hooks(rt, name=None):
+    h = rt.globals().mock.hooks
+    out = [(h[i + 1].name, h[i + 1].args) for i in range(len(h))]
+    return [a for n, a in out if n == name] if name else [n for n, _ in out]
+
+
+def pull(rt, times=1):
+    for _ in range(times):
+        frame(rt, packet(right_aim=AIM, trigger=0.9))
+        frame(rt, packet(right_aim=AIM, trigger=0.0))
+        rt.globals().mock.time += 1
+
+
+def test_six_rounds_then_the_trigger_only_clicks(lua):
+    face_plus_x(lua)
+    add(lua, "car", (30, 20, 1), (2, 1, 1))
+    vp = lua.globals().vrPistol
+    assert vp.getAmmo() == (6, 6, None)
+    frame(lua, packet(right_aim=AIM, trigger=0.0))
+    pull(lua, 7)
+    assert commands(lua) == ["car"] * 6
+    assert vp.getAmmo()[0] == 0
+    assert hooks(lua, "onVrPistolDryFire") and hooks(lua, "onVrPistolDryFire")[0][1] == "empty"
+    # The empty pull still turns the cylinder but there is no flash or kick.
+    state = vp.getActionState(0.0)
+    assert state.shotsFired == 7 and state.recoil == 0 and not state.flash
+
+
+def test_putting_the_gun_away_reloads_from_spare_rounds(lua):
+    face_plus_x(lua)
+    g = lua.globals()
+    g.vrPistol.getConfig().equipOnGrip = True
+    add(lua, "car", (30, 20, 1), (2, 1, 1))
+    g.vrPistol.setAmmo(1, 4)
+    held = lambda trigger=0.0: frame(lua, packet(right_aim=AIM, trigger=trigger, squeeze=1.0))
+    held()
+    held(0.9)
+    assert g.vrPistol.getAmmo() == (0, 6, 4)
+
+    # Away for under reloadSeconds: still empty.
+    frame(lua, packet(right_aim=AIM, squeeze=0.0))
+    g.mock.time += 0.5
+    held()
+    assert g.vrPistol.getAmmo()[0] == 0
+
+    # Away long enough: loads the four spares, and says so.
+    frame(lua, packet(right_aim=AIM, squeeze=0.0))
+    g.mock.time += 2
+    held()
+    assert g.vrPistol.getAmmo() == (4, 6, 0)
+    reload = hooks(lua, "onVrPistolReload")[-1]
+    assert (reload[1], reload[2]) == (4, 0)
+
+
+def test_unlimited_spares_and_cylinder_size_zero(lua):
+    vp = lua.globals().vrPistol
+    vp.setAmmo(2)
+    assert vp.reload() == 4 and vp.getAmmo() == (6, 6, None)
+    face_plus_x(lua)
+    add(lua, "car", (30, 20, 1), (2, 1, 1))
+    vp.getConfig().cylinderSize = 0  # never runs out
+    frame(lua, packet(right_aim=AIM, trigger=0.0))
+    pull(lua, 8)
+    assert len(commands(lua)) == 8
+
+
+def test_shot_filter_can_refuse_a_shot(lua):
+    face_plus_x(lua)
+    add(lua, "car", (30, 20, 1), (2, 1, 1))
+    vp = lua.globals().vrPistol
+    vp.setShotFilter(lambda: False)
+    frame(lua, packet(right_aim=AIM, trigger=0.0))
+    pull(lua)
+    assert commands(lua) == [] and vp.getAmmo()[0] == 6
+    assert hooks(lua, "onVrPistolDryFire")[0][1] == "refused"
+    vp.setShotFilter(None)
+    pull(lua)
+    assert commands(lua) == ["car"]
+
+
+def test_shot_and_hit_hooks_tell_other_mods(lua):
+    face_plus_x(lua)
+    add(lua, "car", (30, 20, 1), (2, 1, 1))
+    frame(lua, packet(right_aim=AIM, trigger=0.0))
+    pull(lua)
+    shot = hooks(lua, "onVrPistolShot")
+    assert len(shot) == 1
+    origin, direction, left = shot[0][1], shot[0][2], shot[0][3]
+    assert (origin.x, origin.y, origin.z) == (10.5, 20, 1.5)
+    assert (direction.x, direction.y, direction.z) == (1, 0, 0) and left == 5
+
+    # The vehicle side reports the hit back; listeners get the car, where, and how hard.
+    lua.globals().vrPistol.onVehicleHit(42, 28.0, 20.0, 1.2, 9)
+    hit = hooks(lua, "onVrPistolHit")[0]
+    assert hit[1] == 42 and (hit[2].x, hit[2].y, hit[2].z) == (28.0, 20.0, 1.2) and hit[3] == 9
+
+
+def test_a_failing_listener_does_not_stop_the_gun(lua):
+    face_plus_x(lua)
+    add(lua, "car", (30, 20, 1), (2, 1, 1))
+    lua.execute("extensions.hook = function() error('listener broke') end")
+    frame(lua, packet(right_aim=AIM, trigger=0.0))
+    pull(lua)
+    assert commands(lua) == ["car"]
+    assert any("listener failed" in l for l in lua.globals().logs.values())

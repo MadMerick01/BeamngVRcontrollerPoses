@@ -100,6 +100,36 @@ along the bullet's path, plus a 1.3 m falloff blast that dents the panel around
 it. A hit near a wheel hub also deflates that tyre. Your own
 vehicle is never hit.
 
+The cylinder holds six rounds. When it is empty the trigger still turns the
+cylinder and drops the hammer, but nothing fires. To reload, put the gun away
+(let go of the grip) for 1.5 s and draw it again. Spare rounds are unlimited
+unless another mod sets them (`vrPistol.getConfig().cylinderSize = 0` turns
+ammo off, `reloadSeconds` sets the reload time).
+
+### For other mods
+
+The pistol works on its own. Another mod (such as a game built on it) can
+manage its ammo and listen to what it does, without changing its code:
+
+```lua
+vrPistol.getAmmo()                -- rounds in the cylinder, cylinder size, spare rounds (nil = unlimited)
+vrPistol.setAmmo(rounds, spare)   -- e.g. setAmmo(6, 18); leave spare out for unlimited
+vrPistol.reload()                 -- refill now from the spares, returns rounds loaded
+vrPistol.setShotFilter(fn)        -- fn() returning false refuses a shot (the gun just clicks)
+```
+
+It raises these hooks with `extensions.hook`, so any loaded extension that
+defines a function of the same name hears them:
+
+| Hook | When | Arguments |
+|---|---|---|
+| `onVrPistolShot` | a round is fired | origin, direction (`vec3`), rounds left |
+| `onVrPistolDryFire` | the trigger breaks but nothing fires | `'empty'` or `'refused'` |
+| `onVrPistolReload` | the cylinder is refilled | rounds, spare rounds |
+| `onVrPistolHit` | a shot hits a vehicle | vehicle id, hit position (`vec3`), nodes pushed |
+
+A listener that throws an error is logged and never stops the gun.
+
 Tuning (console):
 
 ```lua
