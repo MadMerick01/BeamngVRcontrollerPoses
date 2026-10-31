@@ -1,416 +1,194 @@
-# BeamNG VR Controller Poses — Stage 1 (OpenXR / VDXR)
+# BeamNG VR Controller Poses (v3, BeamNG.drive 0.40+)
 
-The primary architecture is now:
-
-```text
-BeamNG → the official OpenXR loader → this API layer → VDXR
-                                      ↓ lock-free handoff
-                                loopback UDP → BeamNG Lua
-```
-
-The layer observes the pose-action spaces which BeamNG already creates. It never
-creates an application, instance, session, or competing OpenXR connection, and it
-never changes a pose returned to BeamNG. SteamVR/OpenVR is **not required**. The
-old Python OpenVR publisher remains only as an unsupported fallback entry point,
-`beamng-vr-poses-openvr-fallback`, so the earlier work remains recoverable.
-
-## PR #34 native GE Lua camera quaternion boundary correction (opt in)
-
-BeamNG 0.39's installed `lua/ge/extensions/core/cameraModes/gameengine.lua`
-(approximately lines 42–70) positively identifies the previously missing call site.
-It passes the clean game-world camera anchor to the exact seven-scalar API
-`OpenXR.setGeluaCameraPosRot(positionX, positionY, positionZ, quaternionX,
-quaternionY, quaternionZ, quaternionW)`, obtains the seven predicted HMD scalars
-from `OpenXR.getCameraPosRotPredictedXYZXYZW()`, and then performs:
+World-space VR controller poses in BeamNG.drive, plus an animated revolver on the
+right controller that shoots traffic.
 
 ```text
-finalVrPosition = capturedAnchorPosition + capturedPredictedPosition
-rawNativeViewRotation = normalize(capturedPredictedRotation * capturedAnchorRotation)
-nativeCameraToWorldRotation = inverse(rawNativeViewRotation)
-controllerWorld = finalVrCameraWorld * controllerRelativeToHmd * calibrationOffset
+BeamNG ── OpenXR loader ── BeamNGVRPosesLayer.dll ── runtime (VDXR, SteamVR, Oculus…)
+                                 │  grip + aim pose of each controller, relative to the
+                                 │  headset, at BeamNG's own frame time; trigger/squeeze
+                                 ▼  loopback UDP 127.0.0.1:44441
+                       vrHands.lua  ×  getCameraPosition()/getCameraQuat()
+                                 ▼
+                        vrPistol.lua  →  vrPistolHit.lua (vehicle side)
 ```
 
-This direct source evidence supersedes the earlier reconstructed moving-anchor
-attempts. The new mode adds no delta, gain, accumulation, smoothing, residual, or
-yaw rebase. Explicit start installs transactional pass-through wrappers; static
-implementation supports assigning the table fields, while actual wrappability of
-BeamNG's bound functions still requires a live runtime test. Failed assignment
-restores any field this extension changed, malformed/stale/mismatched pairs are
-rejected, stop/unload restores only wrappers still owned by this extension, and
-selection falls back per-frame to PR #28 orange (`baselineRigidPositionBeamngRotationRebased`)
-or `beamngOnly`. The default remains `beamngOnly`.
+## Why v3 is simpler than v2
 
-First headset commands:
+A dump from BeamNG 0.40.4 (`tools/vrPoseDump`) shows two things:
+
+1. The `OpenXR` Lua table still has **no controller pose functions**. The
+   `getSourcePoseStates` helper in `render/openxr.lua` is commented out as a TODO,
+   so the API layer is still needed.
+2. `core/cameraModes/gameengine.lua` composes the final camera as
+   `anchor + OpenXR predicted head pose` and hands it to the engine. In 0.40.4,
+   `getCameraPosition()` and `getCameraQuat()` return that **exact rendered head pose**
+   (matched to 1e-13 over 1,847 frames of live capture).
+
+So `controllerWorld = headWorld × controllerRelativeToHead`. One catch: gameengine.lua
+adds the tracked head offset to the anchor without turning it by the anchor's yaw,
+so `getCameraPosition()` only follows your real head while the anchor faces north.
+`vrHands` records the anchor rotation and offset from those two OpenXR calls and
+uses `anchor + anchorRot × offset` instead (`vrHands.getConfig().fixHeadOffset`).
+BeamNG's camera quaternions also need conjugating before use (`cameraQuat = 'conjugate'`).
+Captures from Rowan's headset, on foot and in the car, confirm both: a controller
+resting on a desk stays within 1 cm while the head turns, tilts and leans
+(`tests/data`).
+
+Since the layer also sends each controller's pose in BeamNG's tracking space,
+`vrHands` now places it the way BeamNG places its own controller models:
+`anchor + anchorRot × pose`, with no head pose involved (`useTrackingSpace`). It
+runs after `core_camera` so the anchor is this frame's. A frame late, the gun
+trailed the car by one frame of travel and jittered at speed.
+`vrHands.getStatus().cameraLagMs` should read close to 0. No tracking-space
+baselines, recenter handling, stick-turn rebasing or camera-context tracking are
+needed. v2's ~1,450 lines of camera reconstruction are gone.
+
+The layer also fixes a v2 accuracy bug. BeamNG locates **both** the grip and aim
+spaces of each controller every frame, and v2 published whichever one it saw
+last. v3 tags every space by action name (`*_grip_pose` / `*_aim_pose`) and
+publishes both separately. It also ignores spaces from inactive interaction
+profiles, and supports the OpenXR 1.1 batch `xrLocateSpaces` call.
+
+## Install
+
+1. Download `BeamNGVRcontrollerPoses-windows-x64.zip` from the
+   [latest release](https://github.com/MadMerick01/BeamngVRcontrollerPoses/releases)
+   and extract it anywhere.
+2. Double-click **`Install.cmd`** and accept the admin prompt. It:
+   - copies the layer to `%ProgramData%\BeamNGVRControllerPoses` and registers it as
+     an implicit OpenXR layer, so it loads on its own. The layer only activates when
+     the app is BeamNG.drive and passes every other VR app straight through;
+   - puts `vrControllerPoses.zip` in `%LOCALAPPDATA%\BeamNG\BeamNG.drive\current\mods`.
+     The mod loads itself (`scripts/vrControllerPoses/modScript.lua`).
+3. Start BeamNG and turn on VR. Hold the right grip to draw the revolver and
+   pull the trigger to shoot; let go of the grip to put it away.
+
+`Uninstall.cmd` undoes both steps. To skip the layer for one launch, set the
+environment variable `BEAMNG_VR_POSES_DISABLE=1`.
+
+The revolver model ships inside the mod (`mod/art/shapes/vrrevolver`). The older
+`VRPistol_Visual_v0.2_controller_api_fix.zip` is no longer used.
+
+Releases are automatic. Every merge to `main` builds, tests and publishes
+`v3.0.<run>` with the zip attached. A manual run of the **Windows x64 layer**
+workflow (Actions tab, any branch) publishes a `-beta` pre-release. Pushing a
+`v*` tag releases that tag.
+
+## Use
+
+Everything loads automatically. For diagnostics, open the GE Lua console (`~`):
 
 ```lua
-extensions.load('beamngVRControllerPoses')
-
-extensions.beamngVRControllerPoses.startGeluaCameraAnchorCapture()
-
-extensions.beamngVRControllerPoses.setHmdTranslationMode(
-  'geluaNativeCameraComposition'
-)
-
-dump(extensions.beamngVRControllerPoses.getGeluaCameraAnchorCaptureState())
-
-dump(extensions.beamngVRControllerPoses.getState())
+vrHands.setDebug(true)             -- yellow grip spheres + RGB axes, aim rays
+dump(vrHands.getStatus())          -- packets, age, which poses are valid
+vrHands.startCapture(20)           -- record 20 s of camera + pose data to <user folder>/vrHandsCapture/
 ```
 
-PR #33's transparent capture, pairing, freshness, fallback, and direct position
-addition were proven in live VR and remain unchanged. PR #34 only corrects the
-quaternion convention: BeamNG's raw `predicted * anchor` result is retained as
-`geluaRawNativeViewQuaternion`, then inverted exactly once into
-`geluaNativeCameraToWorldQuaternion`. The compatibility field
-`geluaNativeFinalVrQuaternion` contains that corrected operational camera-to-world
-value. The vivid electric-violet sphere is the native-composition camera one
-metre forward, rotated by the corrected quaternion. Static tests do **not** claim
-complete success until the PR #34 artifact passes the live headset acceptance
-test in `docs/INSTALL_AND_TEST_GUIDE.md`.
+Hold the right grip to draw the gun. While it is drawn BeamNG's own controller
+pointer (the black line and orange ball) is switched off, and it comes back
+when you let go, so you can still open doors and use menus with the gun put
+away. Drawing it plays a holster sound. Pull the right trigger to shoot. The revolver is double action: as you squeeze,
+the hammer comes back and the cylinder turns, and at the break the hammer drops,
+the gun goes bang (the Bolides player gunshot), the muzzle flashes and it
+kicks up and back in your hand. An optional red laser from
+the muzzle (`vrPistol.setLaser(true)`) shows the aim ray. With
+`vrPistol.getConfig().hitMarkers = true`, orange spheres
+mark vehicle hits and grey spheres mark world hits. A hit uses the same
+impact model as Bolides' `BulletDamage.lua`: a mass-scaled push on the struck node
+along the bullet's path, plus a 1.3 m falloff blast that dents the panel around
+it. A hit near a wheel hub also deflates that tyre. Your own
+vehicle is never hit.
 
-## PR #26 stationary-world rigid-transform test
-
-`beamngOnly` remains the default. The explicitly selected
-`baselineRigidTracking` candidate captures complete BeamNG-camera-world and
-mapped native-HMD tracking-local poses, then evaluates:
-
-```text
-baselineWorldFromTracking = baselineBeamngCameraWorld * inverse(baselineTrackingHmdMapped)
-candidateHmdWorld = baselineWorldFromTracking * currentTrackingHmdMapped
-candidateControllerWorld = candidateHmdWorld * controllerRelativeToHmd * controllerCalibrationOffset
-```
-
-The native packet HMD is authoritative because it shares the controller base
-space and sample time. The predicted OpenXR getter remains diagnostic-only.
-This first test requires a stationary vehicle and stationary game camera; it
-does not attempt to solve camera-anchor motion and room-scale motion together.
+Tuning (console):
 
 ```lua
-extensions.beamngVRControllerPoses.setHmdTranslationMode('baselineRigidTracking')
--- Immediate PR #25 fallback:
-extensions.beamngVRControllerPoses.setHmdTranslationMode('beamngOnly')
+vrPistol.setModelOffset(0, -0.02, 0.05, 0)   -- gun origin (bore, rear of cylinder) in aim space: x right, y along barrel, z up (m), pitch (deg)
+vrPistol.getConfig().recoilPitchDeg = 22     -- also recoilBack, hammerCockDeg, triggerTravelDeg, flashTime
+vrPistol.getConfig().shotVolume = 18         -- shotSound = '' mutes it
+vrPistol.testSound()                         -- plays the gunshot once (check the console for "created SFX source")
+vrPistol.testSound('equip')                  -- plays the equip sound (equipSound, equipVolume)
+vrPistol.setLaser(true)                      -- aiming laser (off by default)
+vrPistol.getConfig().equipOnGrip = false     -- gun always drawn; hideGamePointer = false keeps BeamNG's pointer
+vrPistol.getConfig().impactForce = 9000      -- also blastRadius, blastForce, deflateTyres, range, cooldown
+vrPistol.fireFromCamera()                    -- desktop test along the camera view
+vrPistol.startModelTest()                     -- gun smoothness test, see below
 ```
 
-Selecting the candidate establishes a fresh baseline. Existing red, green,
-yellow, and white diagnostics remain; purple is the new complete-pose candidate
-one metre forward. Blue controller spheres follow the selected mode.
+By default the gun is a low-poly copy of the revolver (about 1,400 triangles,
+one colour per material) drawn with the debug drawer, painted fresh every frame
+like the laser, so it stays locked to your hand at any speed
+(`vrPistol.getConfig().modelStyle = 'simple'`). `tools/revolverModel/build_lowpoly.py`
+builds it into `mod/lua/ge/extensions/vrPistolMesh.lua` from the full model. Set
+`modelStyle = 'textured'` for the full textured revolver, which looks better but
+lags at speed: the laser is drawn straight to the screen each frame, but the
+textured revolver is a scene object. Lua moves the engine's server copy, and the copy that gets drawn follows
+over the engine's internal network, which can lag. `vrPistol.startModelTest()`
+spends 8 s on each of five ways of moving the model while you drive (A as now,
+B also moving the drawn copy, C/D leading the car by 1/2 frames, E both). It
+announces each letter and records every frame to
+`<user folder>/vrHandsCapture/model_*.jsonl`. The options are also in
+`getConfig()` as `placeMode` ('server'/'client') and `predictSeconds`.
 
-## PR #27 baseline-rigid position with live BeamNG rotation
+### Revolver model
 
-The additive `baselineRigidPositionBeamngRotation` mode deliberately combines
-two independently headset-verified sources: HMD world position comes unchanged
-from the PR #26 baseline-rigid tracking calculation, while HMD world orientation
-comes from the corrected live BeamNG camera-to-world orientation
-(`cameraAnchor.q`). The camera quaternion is normalized but is **not** inverted
-again. The mode neither adds nor rotates another translation delta.
+A 1960s-style large-frame .44 with a 6.5" barrel: blued steel, colour
+case-hardened hammer and trigger, checkered wood target grips, red ramp front
+sight, six rounds visible in the cylinder. It was modelled for this mod, so there
+are no third-party asset rights to worry about.
 
-This remains a stationary-vehicle, stationary-game-camera test and does not yet
-claim vehicle-motion support. Select it explicitly; selection clears the old
-rigid baseline so the next valid native HMD sample establishes a fresh one:
+`tools/revolverModel/build_revolver.py` builds it with Blender's Python module
+(`pip install bpy`, then run the script). It writes the shapes, textures and
+`main.materials.json` into `mod/art/shapes/vrrevolver`. The frame, cylinder,
+hammer, trigger and muzzle flash are separate shapes, each with its origin on its
+own pivot. `vrPistol.lua` places all five every frame.
+
+### Lua API
 
 ```lua
-extensions.load('beamngVRControllerPoses')
-extensions.beamngVRControllerPoses.setHmdTranslationMode(
-  'baselineRigidPositionBeamngRotation'
-)
+local aim = vrHands.getPose('right', 'aim')   -- or 'grip'; 'left' works too
+-- aim.valid, aim.pos, aim.dir (pointing), aim.up, aim.right  (world vec3)
+-- aim.rot  (quatFromDir(dir, up), for TSStatic:setPosRot), aim.ageMs
+vrHands.getTrigger('right')                    -- 0..1
+vrHands.getSqueeze('right')                    -- 0..1
+vrHands.pulse('right', 0.8, 0.05)              -- vibrate (amplitude 0..1, seconds)
 ```
 
-Remain still and face forward briefly, then translate on all three axes and
-physically turn through approximately 90 and 180 degrees. Repeat translation at
-each heading, return to the original pose, use BeamNG VR recenter, and repeat.
-The cyan sphere is the hybrid candidate one metre forward; the purple PR #26
-candidate remains available for comparison, and blue controller spheres follow
-the selected hybrid. If a valid rigid candidate is unavailable, selection falls
-back safely to `beamngOnly` for that frame rather than creating an origin pose.
+Read poses in `onPreRender`, after the camera update. A pose is invalid when
+tracking is lost or no packet has arrived for 150 ms.
 
-## Choose an installation route
+## Layer packet (protocol v3)
 
-Use a Windows x64 artifact from a successful post-documentation `Windows x64 layer` workflow run for
-the simplest installation. **Do not extract a new artifact over the previous PR #8
-test package**: deleted launcher and shortcut files could survive as stale local
-files and make the package look like it still supports the removed automatic
-launcher. Rename or delete `C:\BeamNGVRcontrollerPosesTest`, create a clean
-directory with that same name, download the new artifact, and extract it there.
-Verify that its root contains:
-
-```text
-BeamNGVRPosesLayer.dll
-XR_APILAYER_BEAMNG_controller_poses.json
-scripts\
-mod\
-docs\
-README.md
-SHA256SUMS.txt
+```json
+{"v":3,"seq":12,"t":<XrTime>,
+ "hands":{"right":{"grip":{"ok":true,"t":<XrTime>,"p":[x,y,z],"q":[x,y,z,w]},
+                   "aim":{...},"trigger":0.0,"squeeze":0.0},
+          "left":{...}}}
 ```
 
-Also verify that the clean package does **not** contain
-the removed root `.cmd` launcher. The removed PR #8 automatic launcher and
-shortcut scripts are not the current procedure and are not required.
+`p`/`q` are in OpenXR VIEW space (+X right, +Y up, -Z forward), so
+`inverse(head) × controller` is evaluated at the controller's own XrTime. Set
+`BEAMNG_VR_POSES_PORT` to change the port.
 
-The workflow verifies the x64 PE image, loader negotiation export, manifest/DLL
-pair, Python tests, and package hashes before uploading the archive. Those checks
-do **not** constitute an in-headset VDXR or Quest 3 validation. Do not install an
-artifact from a failed or incomplete workflow run.
+Haptics go the other way: `vrHands.pulse` sends `pulse <left|right> <amplitude> <seconds>`
+to the port + 1 (44442). BeamNG binds no vibration outputs, so the layer adds
+its own action set with one vibration action. It merges those bindings into
+BeamNG's suggested bindings, attaches the set, and keeps it active in
+`xrSyncActions`. Any call the runtime rejects falls back to BeamNG's original,
+so BeamNG's own input never depends on the haptics working. The pistol pulses
+the right controller on every shot (`vrPistol.getConfig().hapticAmplitude`,
+0 disables).
 
-Developers who prefer to build from source can use the following section instead.
+## Tests
 
-## Build the 64-bit Windows layer from source
+`python -m pytest` runs the Lua modules under LuaJIT (via `lupa`) with mocked
+BeamNG globals. It covers pose composition for both camera-quaternion
+conventions, staleness, trigger edges, target selection and vehicle-side damage.
+CI also builds the x64 layer DLL and checks its export and manifest.
 
-Install Visual Studio 2022 with the **Desktop development with C++** workload,
-CMake, Git, and Python 3.10 or newer. In an **x64 Native Tools** PowerShell, build
-and install the same official OpenXR SDK release used by CI:
+## Diagnostic dump
 
-```powershell
-git clone --depth 1 --branch release-1.1.41 https://github.com/KhronosGroup/OpenXR-SDK-Source.git C:\src\OpenXR-SDK-Source
-cmake -S C:\src\OpenXR-SDK-Source -B C:\src\openxr-build -G "Visual Studio 17 2022" -A x64 -DBUILD_TESTS=OFF -DBUILD_API_LAYERS=OFF -DBUILD_LOADER=ON -DCMAKE_INSTALL_PREFIX=C:\src\openxr-install
-cmake --build C:\src\openxr-build --config Release --target install
-```
-
-Then, from the repository root, build this layer:
-
-```powershell
-cd openxr-layer
-cmake --preset windows-x64 -DOpenXR_DIR=C:\src\openxr-install\cmake
-cmake --build --preset windows-x64
-cmake --install build\windows-x64 --config Release
-```
-
-`dist` must contain `BeamNGVRPosesLayer.dll` and
-`XR_APILAYER_BEAMNG_controller_poses.json`. BeamNG is 64-bit, so a Win32 DLL will
-not load. This Linux checkout has no Windows compiler; no untested binary is
-committed.
-
-## Install and temporarily activate the layer
-
-Do not replace `openxr_loader.dll`, rename VDXR, or register this as a runtime.
-Keep the DLL beside the manifest; activation is process-scoped and makes no
-registry changes.
-
-From the tested package directory, first confirm that VDXR is the selected OpenXR runtime:
-
-```powershell
-Set-Location 'C:\BeamNGVRcontrollerPosesTest'
-
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-
-.\scripts\Confirm-VDXRRuntime.ps1
-```
-
-The execution-policy bypass affects only the current PowerShell process,
-disappears when that window closes, and does not permanently change system
-policy. The tested runtime was
-`C:\Program Files\Virtual Desktop Streamer\OpenXR\virtualdesktop-openxr.json`.
-The script reports whether `ActiveRuntime` came from HKCU or HKLM; a missing HKCU
-OpenXR key is normal when the runtime is registered under HKLM.
-
-Launch the normal BeamNG launcher with the supplied script so the launcher and
-its Vulkan game process inherit the explicit API-layer environment:
-
-```powershell
-Set-Location 'C:\BeamNGVRcontrollerPosesTest'
-
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-
-.\scripts\Enable-BeamNGVRPoses.ps1 `
-  -PackageDirectory (Resolve-Path .) `
-  -BeamNGExecutable 'D:\SteamLibrary\steamapps\common\BeamNG.drive\BeamNG.drive.exe'
-```
-
-This launches the normal BeamNG launcher. Select Vulkan there, keep the
-PowerShell window open during the test, and let both the launcher and Vulkan game
-process inherit `XR_API_LAYER_PATH`, `XR_ENABLE_API_LAYERS`, and
-`XR_LOADER_DEBUG`. These environment variables are process-scoped. This procedure
-does not change the OpenXR `ActiveRuntime` registry value, does not replace
-`openxr_loader.dll`, and leaves VDXR as the active OpenXR runtime. For VR on the
-test PC, do not use `D:\SteamLibrary\steamapps\common\BeamNG.drive\Bin64\BeamNG.drive.x64.exe` because starting the Bin64 executable directly bypasses the launcher's Vulkan selection. From a source checkout built using the preceding section, point the same script at
-`openxr-layer\dist`:
-
-```powershell
-.\openxr-layer\scripts\Enable-BeamNGVRPoses.ps1 `
-  -PackageDirectory (Resolve-Path .\openxr-layer\dist) `
-  -BeamNGExecutable 'D:\SteamLibrary\steamapps\common\BeamNG.drive\BeamNG.drive.exe'
-```
-
-The script captures OpenXR loader diagnostics in
-`%TEMP%\BeamNG-OpenXR-loader.log`. Confirm that the log names
-`XR_APILAYER_BEAMNG_controller_poses` and that VR starts and continues rendering
-through the selected VDXR runtime. The layer's packet `source` is
-`openxr-api-layer`.
-
-For manual troubleshooting, the equivalent source-checkout launch is:
-
-```powershell
-$env:XR_API_LAYER_PATH=(Resolve-Path .\openxr-layer\dist)
-$env:XR_ENABLE_API_LAYERS='XR_APILAYER_BEAMNG_controller_poses'
-$env:XR_LOADER_DEBUG='all'
-Start-Process 'D:\SteamLibrary\steamapps\common\BeamNG.drive\BeamNG.drive.exe' -Wait -NoNewWindow
-```
-
-To disable the layer, close BeamNG and either close the launching PowerShell or run
-`.\scripts\Disable-BeamNGVRPoses.ps1` from an artifact. From a source checkout, use
-`.\openxr-layer\scripts\Disable-BeamNGVRPoses.ps1`. To remove an extracted artifact
-and the layer diagnostic log, first copy out any logs you need, leave the package
-directory, and run `Remove-BeamNGVRPoses.ps1 -PackageDirectory C:\path\to\package`.
-See `docs/INSTALL_AND_TEST_GUIDE.md` for the step-by-step install/setup guide and `docs/FIRST_WINDOWS_TEST.md` for the complete first-test and recovery checklist.
-
-The publisher thread sends UDP to `127.0.0.1:44441`; a missing receiver is harmless.
-High-frequency hooks do no file I/O and do not send network packets. Loader output
-is the initial discovery/chaining diagnostic source; capture it from the launching
-console. The background publisher writes its throttled five-second diagnostic to
-`%TEMP%\BeamNGVRPosesLayer.log`.
-
-## Capture rules
-
-The layer tracks action type/name/localised name/subaction paths, action-set and
-instance ownership, action spaces, session ownership, VIEW spaces, and destruction.
-Only pose actions explicitly associated with `/user/hand/left` or
-`/user/hand/right` qualify; creation order and a two-space assumption are never
-used. `xrLocateSpace` is passed through first. Both POSITION_VALID and
-ORIENTATION_VALID are required (TRACKED bits are preserved in `flags`); invalid
-tracking immediately publishes invalidity rather than recycling an old pose.
-
-For every qualifying locate, the layer calls the *downstream* `xrLocateSpace`
-directly for its session-owned VIEW space using the exact same `baseSpace` and `XrTime`, then
-computes `inverse(hmdInBase) * controllerInBase`. Samples are merged only when the
-session/base/time key is compatible. Protocol 2 now also carries an optional valid
-VIEW pose in that base space, its flags, sample time, and tracking-space identity;
-existing protocol-2 consumers can ignore this additive `hmd` member. The Lua
-bridge uses the reconstructed BeamNG world camera as the controller parent and
-computes `beamngWorld * controllerRelativeToHmd * controllerCalibrationOffset`.
-Live headset evidence confirmed that
-`OpenXR.getCameraPosRotPredictedXYZXYZW()` is available, but its values are a
-tracking-local pose close to the OpenXR origin (about `(-0.013, 0.009, 0.013)` in
-the observed run), not a complete BeamNG world camera pose. Directly treating it
-as world space moved the diagnostic and both blue controller spheres near the
-map origin. PR #33 now intercepts that exact getter result together with the preceding clean
-anchor; raw values remain separate, and only the paired native composition can
-select the new controller parent or vivid electric-violet diagnostic sphere.
-Tracking-space/session changes, time resets, pose discontinuities, extension
-reload, and the exposed `resetHmdBaseline()` hook safely establish a new baseline
-without adding standing height. Stale-packet rejection and the existing
-red/green/yellow/white diagnostics, controller tripods, and origin lines remain.
-This restoration does not claim to solve the original yaw-dependent translation
-problem; it restores the last visible BeamNG-camera behavior after the predicted
-pose experiment.
-
-## Install the BeamNG mod and test
-
-Create `BeamNGVRControllerPoses` beneath the active BeamNG user
-folder's `mods\unpacked` directory, then copy the **contents** of this repository's
-`mod` directory into it. The resulting layout must be:
-
-```text
-<BeamNG user folder>\mods\unpacked\BeamNGVRControllerPoses\
-  lua\ge\extensions\beamngVRControllerPoses.lua
-  settings\beamngVRControllerPoses.json
-```
-
-The tested BeamNG user folder was `C:\Users\fenci\AppData\Local\BeamNG\BeamNG.drive\current`, making the tested unpacked-mod folder `C:\Users\fenci\AppData\Local\BeamNG\BeamNG.drive\current\mods\unpacked\BeamNGVRControllerPoses`. The active, versioned BeamNG user folder is shown by the launcher. Do not add an
-extra nested `mod` directory. After BeamNG mounts the unpacked mod, load it in GE
-Lua:
-
-```lua
-extensions.load('beamngVRControllerPoses')
-```
-
-For the complete first test: connect the Quest 3 through Virtual Desktop, confirm
-VDXR, optionally confirm ordinary BeamNG Vulkan VR without the layer as a fresh
-baseline, install the unpacked mod, run the manual PowerShell launch command,
-select Vulkan in the normal BeamNG launcher, enter a map, start BeamNG VR, open
-the GE Lua console, load `extensions.load('beamngVRControllerPoses')`, then
-inspect `dump(extensions.beamngVRControllerPoses.getState())`. Confirm the red,
-green, yellow, and white camera diagnostics remain visible and both bright-blue
-spheres follow the physical controllers. The
-`predictedOpenXRTrackingLocalPosition` field may remain near the OpenXR origin;
-it is raw diagnostic evidence and is intentionally never drawn or used as a
-world transform. Translate and rotate through the existing test matrix to gather
-evidence, but do not interpret this corrective restoration as a fix for the
-original yaw-dependent translation issue. Disabling/occluding either controller
-hides its sphere, and stopping publication hides both within `staleAfterMs`.
-Inspect `extensions.beamngVRControllerPoses.getState()` for the world transforms.
-Calibration,
-sphere size/colour, port, stale threshold and log cadence remain in
-`mod/settings/beamngVRControllerPoses.json`.
-
-## Tests and preserved fallback
-
-Run `python -m pytest`. Tests cover transform composition, identity mapping,
-multiple candidate spaces, lifecycle, validity flags, coherent time/base relative
-math, protocol-2 encoding/decoding, stale counters, and UDP-without-a-receiver.
-The fallback requires `pip install .[steamvr]` and SteamVR, but is not part of the
-primary installation or test route.
-
-## External visual attachments
-
-The former `vrMockPistol` two-cube alignment prototype has been removed. This
-mod no longer creates a pistol, fallback mesh, or other controller attachment.
-Visual-only attachments supplied by another mod should consume
-`getControllerWorldPose(hand)` and remain solely responsible for creating,
-updating, hiding, and deleting their scene objects. See
-[`docs/VR_PISTOL_INTEGRATION.md`](docs/VR_PISTOL_INTEGRATION.md) for the exact API
-contract and the packaging checks required for an external pistol mod.
-
-
-## First Quest 3 + VDXR result
-
-The first real headset test used package `C:\BeamNGVRcontrollerPosesTest`, BeamNG `D:\SteamLibrary\steamapps\common\BeamNG.drive`, launcher `D:\SteamLibrary\steamapps\common\BeamNG.drive\BeamNG.drive.exe`, direct Bin64 executable that must not be used for this VR test `D:\SteamLibrary\steamapps\common\BeamNG.drive\Bin64\BeamNG.drive.x64.exe`, and user folder `C:\Users\fenci\AppData\Local\BeamNG\BeamNG.drive\current`. VDXR was active from `HKLM:\SOFTWARE\Khronos\OpenXR\1` with `ActiveRuntime=C:\Program Files\Virtual Desktop Streamer\OpenXR\virtualdesktop-openxr.json`.
-
-Confirmed working: Vulkan launch through the BeamNG launcher, VDXR chaining, explicit API-layer load, Quest controller pose capture, protocol-2 UDP to `127.0.0.1:44441`, GE Lua receipt, approximately 0.0--0.5 ms packet age, continuously increasing counters, and valid positions/orientations for both controllers. The remaining Stage 1 isolation point is rendering: if blue controller spheres and the red camera test sphere have world coordinates near `core_camera.getPosition()` but are still invisible in VR, treat that as evidence that `debugDrawer:drawSphere` is not submitted to BeamNG's stereoscopic VR pass. The smallest next BeamNG-native fallback should be a pair of transient scene objects or TSStatic/debug mesh objects updated from the same Lua world poses, not a protocol or API-layer redesign.
-
-## PR #28 artificial-camera-yaw tracking rebase
-
-The additive `baselineRigidPositionBeamngRotationRebased` mode retains the PR #26
-rigid position and PR #27 live BeamNG orientation, but detects a game-camera turn
-by comparing the stored tracking-to-world orientation with
-`cameraWorld.q * inverse(currentMappedTrackingHmd.q)`. Differences above the
-configurable `artificialYawRebaseThresholdDegrees` (default `0.75`) rotate the
-tracking axes around the current HMD position. The transform translation is
-recalculated so the HMD pivot is numerically unchanged; this is not a full
-baseline reset. Purple and cyan continue to show the unchanged PR #26 and #27
-candidates, while orange shows the rebased candidate.
-
-Use a stationary vehicle, remain still briefly after selection, and then test
-natural rotation/translation, snap and smooth stick turns, a complete artificial
-360-degree turn, and VR recenter:
-
-```lua
-extensions.load('beamngVRControllerPoses')
-extensions.beamngVRControllerPoses.setHmdTranslationMode(
-  'baselineRigidPositionBeamngRotationRebased'
-)
-```
-
-Blue controller spheres follow the selected mode. Diagnostics expose the target
-and stored alignments, angular delta, trigger/count/reason/time, positions before
-and after rebase, discontinuity, rebased transform, hybrid HMD/controllers, and
-orange-sphere position. Rebase event logs are throttled; ordinary render frames
-do not emit an event log.
-
-## Absolute moving camera anchor with corrected physical offset
-
-The `baselineRigidPositionBeamngRotationRebasedMovingAnchor` mode anchors the
-PR #28 orange reference's baseline-relative physical displacement to the
-current absolute BeamNG camera position. Every frame computes `camera position
-+ (current orange reference - baseline orange reference)` directly and uses
-the corrected BeamNG camera quaternion for orientation. Camera motion is not
-accumulated, and physical motion is neither subtracted nor reconstructed.
-Artificial-yaw rebasing remains pivot-preserving, so the existing offset stays
-continuous while later room-scale translation follows the new heading.
-
-The existing pink diagnostic sphere remains assigned to this corrected mode,
-while orange continues to show the unchanged PR #28 candidate. Enable it with
-the exact headset-test command:
-
-```lua
-extensions.load('beamngVRControllerPoses')
-extensions.beamngVRControllerPoses.setHmdTranslationMode(
-  'baselineRigidPositionBeamngRotationRebasedMovingAnchor'
-)
-```
-
-Remain still briefly to establish the baseline. Test physical translation,
-natural and artificial rotation, stick walking, and simultaneous physical plus
-stick movement. Diagnostics report the baseline/current orange reference,
-physical offset, current absolute anchor, final HMD/controller poses, reference
-transform, yaw rebase information, source labels, and reset/jump state. A large
-camera step is used only to detect a discontinuity and establish a fresh
-baseline. `beamngOnly` remains the configured default.
+`tools/vrPoseDump` is the mod that produced the 0.40.4 findings above. Load it,
+then run `extensions.vrPoseDump.start()` in VR. It writes the OpenXR API surface,
+the relevant game Lua sources and per-frame camera/OpenXR samples to
+`<user folder>/vrPoseDump/`.

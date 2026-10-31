@@ -1,323 +1,759 @@
+// BeamNG VR controller pose layer (protocol v3).
+//
+// An OpenXR API layer that sits between BeamNG and the runtime. It never changes
+// what BeamNG sees. Whenever BeamNG locates one of its own controller pose spaces,
+// the layer also locates the headset VIEW space at the same XrTime and publishes
+// the controller pose relative to the head, separately for grip and aim, plus the
+// trigger and squeeze values BeamNG reads. Lua multiplies that by the final
+// camera pose (getCameraPosition/getCameraQuat), which BeamNG 0.40 sets to the
+// exact rendered head pose every frame, so no tracking-space bookkeeping is needed.
+//
+// Packets are small JSON datagrams sent to 127.0.0.1:44441 (BEAMNG_VR_POSES_PORT
+// overrides the port).
+
 #define XR_USE_PLATFORM_WIN32
-#include <openxr/openxr.h>
-#include <openxr/openxr_loader_negotiation.h>
 #include <winsock2.h>
 #include <windows.h>
+#include <openxr/openxr.h>
+#include <openxr/openxr_loader_negotiation.h>
 
-#include <algorithm>
-#include <array>
-#include <atomic>
-#include <chrono>
-#include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
-#include <memory>
+#include <iterator>
 #include <mutex>
 #include <string>
-#include <thread>
 #include <unordered_map>
+#include <vector>
 
 namespace {
-constexpr XrSpaceLocationFlags kValid = XR_SPACE_LOCATION_POSITION_VALID_BIT |
-    XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
-enum class Hand : uint8_t { none, left, right };
 
-struct Action {
-  XrActionType type{};
-  std::string name, localized;
-  XrPath subaction[16]{};
-  uint32_t count{};
-  XrInstance instance{};
-};
+constexpr XrSpaceLocationFlags kPoseValid =
+    XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
+
+enum Hand { kLeft = 0, kRight = 1, kNoHand = 2 };
+enum PoseKind { kGrip = 0, kAim = 1, kNoKind = 2 };
+enum FloatKind { kTrigger = 0, kSqueeze = 1, kNoFloat = 2 };
+
 struct Dispatch {
   PFN_xrGetInstanceProcAddr gipa{};
   PFN_xrDestroyInstance destroyInstance{};
   PFN_xrCreateSession createSession{};
   PFN_xrDestroySession destroySession{};
   PFN_xrStringToPath stringToPath{};
-  PFN_xrCreateActionSet createActionSet{};
-  PFN_xrDestroyActionSet destroyActionSet{};
   PFN_xrCreateAction createAction{};
-  PFN_xrDestroyAction destroyAction{};
   PFN_xrCreateActionSpace createActionSpace{};
   PFN_xrCreateReferenceSpace createReferenceSpace{};
   PFN_xrDestroySpace destroySpace{};
-  PFN_xrSyncActions syncActions{};
-  PFN_xrGetActionStatePose getActionStatePose{};
   PFN_xrLocateSpace locateSpace{};
-  XrPath leftPath{}, rightPath{};
+  PFN_xrLocateSpaces locateSpaces{};
+  PFN_xrLocateSpacesKHR locateSpacesKHR{};
+  PFN_xrGetActionStateFloat getActionStateFloat{};
+  PFN_xrCreateActionSet createActionSet{};
+  PFN_xrSuggestInteractionProfileBindings suggestBindings{};
+  PFN_xrAttachSessionActionSets attachActionSets{};
+  PFN_xrSyncActions syncActions{};
+  PFN_xrApplyHapticFeedback applyHaptic{};
+  XrPath leftPath{XR_NULL_PATH}, rightPath{XR_NULL_PATH};
 };
 
-// A destroy first sets active=false and removes this session from the published
-// registry. It then waits for calls which already acquired an InFlight reference.
-// Thus snapshots never turn an OpenXR handle into an unsafe, unowned raw pointer.
-struct SessionLifetime {
-  std::atomic<bool> active{true};
-  std::atomic<uint32_t> inFlight{0};
-};
-struct Session {
+struct ActionInfo {
   XrInstance instance{};
-  XrSpace layerView{};  // Owned by the layer, never returned to the application.
-  Dispatch dispatch{};
-  std::shared_ptr<SessionLifetime> lifetime;
+  XrActionType type{};
+  PoseKind pose{kNoKind};
+  FloatKind value{kNoFloat};
+  Hand onlyHand{kNoHand};  // set when the action has exactly one hand subaction path
 };
-struct Space {
+
+struct SpaceInfo {
   XrSession session{};
-  XrAction action{};
-  XrPath subaction{};
-  Hand hand{};
-  std::shared_ptr<SessionLifetime> lifetime;
-};
-struct Registry {
-  std::unordered_map<XrInstance, Dispatch> dispatches;
-  std::unordered_map<XrSession, Session> sessions;
-  std::unordered_map<XrAction, Action> actions;
-  std::unordered_map<XrActionSet, XrInstance> actionSets;
-  std::unordered_map<XrSpace, Space> spaces;
+  Hand hand{kNoHand};
+  PoseKind kind{kNoKind};
 };
 
-std::mutex writerMutex;
-Registry registry;
-std::atomic<std::shared_ptr<const Registry>> publishedRegistry{
-    std::make_shared<const Registry>()};
-
-void publishRegistryLocked() {
-  // All allocation and container copying is confined to lifecycle hooks.
-  publishedRegistry.store(std::make_shared<const Registry>(registry),
-                          std::memory_order_release);
-}
-Dispatch *dispatchForLocked(XrInstance instance) {
-  auto it = registry.dispatches.find(instance);
-  return it == registry.dispatches.end() ? nullptr : &it->second;
-}
-Dispatch *dispatchForLocked(XrSession session) {
-  auto it = registry.sessions.find(session);
-  return it == registry.sessions.end() ? nullptr : &it->second.dispatch;
-}
-
-class InFlight {
- public:
-  explicit InFlight(std::shared_ptr<SessionLifetime> lifetime)
-      : lifetime_(std::move(lifetime)) {
-    if (!lifetime_ || !lifetime_->active.load(std::memory_order_acquire)) return;
-    lifetime_->inFlight.fetch_add(1, std::memory_order_acq_rel);
-    if (lifetime_->active.load(std::memory_order_acquire)) acquired_ = true;
-    else lifetime_->inFlight.fetch_sub(1, std::memory_order_release);
-  }
-  ~InFlight() {
-    if (acquired_) lifetime_->inFlight.fetch_sub(1, std::memory_order_release);
-  }
-  explicit operator bool() const { return acquired_; }
- private:
-  std::shared_ptr<SessionLifetime> lifetime_;
-  bool acquired_{};
+struct SessionInfo {
+  XrInstance instance{};
+  XrSpace view{XR_NULL_HANDLE};  // owned by the layer, never handed to BeamNG
 };
 
-struct Pose { XrPosef pose{{0,0,0,1},{0,0,0}}; XrSpaceLocationFlags flags{}; bool valid{}; };
-struct Sample { uint64_t sequence{}; XrSession session{}; XrSpace base{}; XrTime time{}; Hand hand{}; XrSpace candidate{}; bool destroySession{}; bool destroySpace{}; Pose hmd{}, left{}, right{}; };
+struct PoseState {
+  bool valid{};
+  XrPosef pose{{0, 0, 0, 1}, {0, 0, 0}};  // relative to the head
+  XrPosef raw{{0, 0, 0, 1}, {0, 0, 0}};   // in BeamNG's base space, for diagnostics
+  XrTime time{};
+};
 
-// A bounded MPSC sequence queue avoids the data race in an ordinary double
-// buffer when runtimes locate spaces concurrently. Producers never wait: a full
-// queue merely drops a diagnostic sample. No hot-path allocation is performed.
-constexpr size_t kQueueSize = 64;
-// A hand remains published for a short 125 ms grace window so BeamNG/VDXR
-// packets that alternate left/right locates combine into one stable snapshot
-// without latching stale ghost controllers indefinitely.
-constexpr auto kHandFreshness = std::chrono::milliseconds(125);
-struct SampleCell { std::atomic<uint64_t> sequence{}; Sample sample{}; };
-std::array<SampleCell, kQueueSize> sampleQueue{};
-std::atomic<uint64_t> enqueuePosition{0};
-uint64_t dequeuePosition = 0;
-std::atomic<uint64_t> sampleSequence{0};
-std::atomic<bool> running{false};
-std::thread publisher;
-std::mutex publisherMutex;
+struct HandState {
+  PoseState pose[2];
+  float value[2]{};
+};
 
-void initializeQueue() {
-  for (uint64_t i=0; i<kQueueSize; ++i) sampleQueue[i].sequence.store(i);
+std::mutex mutex;  // guards everything below; a handful of locks per frame
+std::unordered_map<XrInstance, Dispatch> instances;  // BeamNG instances we observe
+// Every instance's next GetInstanceProcAddr. Installed as an implicit layer the
+// DLL loads into every OpenXR app; anything that isn't BeamNG is passed straight
+// through.
+std::unordered_map<XrInstance, PFN_xrGetInstanceProcAddr> nextGipa;
+std::unordered_map<XrSession, SessionInfo> sessions;
+std::unordered_map<XrActionSet, XrInstance> actionSets;
+std::unordered_map<XrAction, ActionInfo> actions;
+std::unordered_map<XrSpace, SpaceInfo> spaces;
+HandState hands[2];
+XrPosef rawHead{{0, 0, 0, 1}, {0, 0, 0}};  // head in BeamNG's base space, for diagnostics
+unsigned long long sequence = 0;
+
+SOCKET sock = INVALID_SOCKET;
+sockaddr_in target{};
+
+// Haptics. BeamNG binds no vibration outputs, so the layer adds its own action
+// set with one vibration action, merges its bindings into BeamNG's suggested
+// bindings, attaches and syncs it alongside BeamNG's sets. Lua asks for a pulse
+// with a datagram "pulse <left|right> <amplitude 0-1> <seconds>" to port 44442.
+// Every step falls back to BeamNG's original call if the runtime refuses it.
+struct Haptics {
+  XrInstance instance{};
+  XrActionSet set{XR_NULL_HANDLE};
+  XrAction action{XR_NULL_HANDLE};
+  XrPath hand[2]{XR_NULL_PATH, XR_NULL_PATH};
+  bool attached{};
+  SOCKET rx{INVALID_SOCKET};
+} haptics;
+
+// ------------------------------------------------------------------ helpers --
+
+bool contains(const char* text, const char* part) { return std::strstr(text, part) != nullptr; }
+
+PoseKind poseKindFromName(const char* name) {
+  if (contains(name, "aim_pose") || contains(name, "aim")) return kAim;
+  if (contains(name, "grip_pose") || contains(name, "grip")) return kGrip;
+  return kNoKind;
 }
-void publish(const Sample& source) {
-  uint64_t position = enqueuePosition.load(std::memory_order_relaxed);
-  for (;;) {
-    auto& cell = sampleQueue[position % kQueueSize];
-    const uint64_t sequence = cell.sequence.load(std::memory_order_acquire);
-    const intptr_t difference = static_cast<intptr_t>(sequence - position);
-    if (difference == 0) {
-      if (enqueuePosition.compare_exchange_weak(position, position + 1,
-            std::memory_order_relaxed)) {
-        cell.sample = source;
-        cell.sample.sequence = sampleSequence.fetch_add(1, std::memory_order_relaxed) + 1;
-        cell.sequence.store(position + 1, std::memory_order_release);
-        return;
-      }
-    } else if (difference < 0) {
-      return;
-    } else {
-      position = enqueuePosition.load(std::memory_order_relaxed);
-    }
-  }
+
+FloatKind floatKindFromName(const char* name) {
+  if (contains(name, "trigger_value")) return kTrigger;
+  if (contains(name, "squeeze_value")) return kSqueeze;
+  return kNoFloat;
 }
-bool consume(Sample& sample) {
-  auto& cell = sampleQueue[dequeuePosition % kQueueSize];
-  if (cell.sequence.load(std::memory_order_acquire) != dequeuePosition + 1) return false;
-  sample = cell.sample;
-  cell.sequence.store(dequeuePosition + kQueueSize, std::memory_order_release);
-  ++dequeuePosition;
-  return true;
+
+Hand handFromPath(const Dispatch& d, XrPath path) {
+  if (path == XR_NULL_PATH) return kNoHand;
+  if (path == d.leftPath) return kLeft;
+  if (path == d.rightPath) return kRight;
+  return kNoHand;
 }
 
 XrQuaternionf multiply(const XrQuaternionf& a, const XrQuaternionf& b) {
-  // OpenXR stores quaternion components in x, y, z, w order.
-  return {a.w*b.x+a.x*b.w+a.y*b.z-a.z*b.y,
-          a.w*b.y-a.x*b.z+a.y*b.w+a.z*b.x,
-          a.w*b.z+a.x*b.y-a.y*b.x+a.z*b.w,
-          a.w*b.w-a.x*b.x-a.y*b.y-a.z*b.z};
-}
-XrPosef inverse(const XrPosef& p) {
-  auto q=p.orientation; XrQuaternionf qi{-q.x,-q.y,-q.z,q.w}; auto v=p.position;
-  XrQuaternionf t{-v.x,-v.y,-v.z,0.0f}, qc{-qi.x,-qi.y,-qi.z,qi.w};
-  auto r=multiply(multiply(qi,t),qc); return {qi,{r.x,r.y,r.z}};
-}
-XrPosef compose(const XrPosef& a,const XrPosef& b) {
-  auto q=multiply(a.orientation,b.orientation);
-  XrQuaternionf ac{-a.orientation.x,-a.orientation.y,-a.orientation.z,a.orientation.w};
-  XrQuaternionf translation{b.position.x,b.position.y,b.position.z,0.0f};
-  auto t=multiply(multiply(a.orientation,translation),ac);
-  return {q,{a.position.x+t.x,a.position.y+t.y,a.position.z+t.z}};
+  return {a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+          a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+          a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+          a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z};
 }
 
-struct CandidatePose { XrSpace candidate{}; Pose pose{}; XrTime xrTime{}; std::chrono::steady_clock::time_point received{}; uint64_t updates{}; bool everValid{}; };
-struct HandCache { std::array<CandidatePose,16> candidates{}; XrSpace selected{}; uint64_t updates{}; };
-struct CombinedCache { XrSession session{}; XrSpace base{}; Pose hmd{}; XrTime hmdTime{}; HandCache left{}, right{}; };
+XrVector3f rotate(const XrQuaternionf& q, const XrVector3f& v) {
+  const XrQuaternionf p{v.x, v.y, v.z, 0};
+  const XrQuaternionf c{-q.x, -q.y, -q.z, q.w};
+  const XrQuaternionf r = multiply(multiply(q, p), c);
+  return {r.x, r.y, r.z};
+}
 
-CandidatePose* candidateSlot(HandCache& hand, XrSpace candidate) {
-  CandidatePose* empty=nullptr; CandidatePose* oldest=&hand.candidates[0];
-  for(auto& slot:hand.candidates){
-    if(slot.candidate==candidate)return &slot;
-    if(slot.candidate==XR_NULL_HANDLE&&!empty)empty=&slot;
-    if(slot.received<oldest->received)oldest=&slot;
+// inverse(head) * controller: the controller pose expressed in head (VIEW) space.
+XrPosef relativeTo(const XrPosef& head, const XrPosef& controller) {
+  const XrQuaternionf inv{-head.orientation.x, -head.orientation.y, -head.orientation.z,
+                          head.orientation.w};
+  const XrVector3f d{controller.position.x - head.position.x,
+                     controller.position.y - head.position.y,
+                     controller.position.z - head.position.z};
+  return {multiply(inv, controller.orientation), rotate(inv, d)};
+}
+
+void openSocket() {
+  WSADATA data{};
+  if (WSAStartup(MAKEWORD(2, 2), &data) != 0) return;
+  sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+  if (sock == INVALID_SOCKET) return;
+  u_long nonBlocking = 1;
+  ioctlsocket(sock, FIONBIO, &nonBlocking);
+  int port = 44441;
+  if (const char* env = std::getenv("BEAMNG_VR_POSES_PORT")) {
+    const int p = std::atoi(env);
+    if (p > 0 && p < 65536) port = p;
   }
-  auto* slot=empty?empty:oldest; *slot={}; slot->candidate=candidate; return slot;
-}
-void clearCandidate(HandCache& hand, XrSpace candidate) {
-  for(auto& slot:hand.candidates)if(slot.candidate==candidate)slot={};
-  if(hand.selected==candidate)hand.selected=XR_NULL_HANDLE;
-}
-Pose currentPose(HandCache& hand, std::chrono::steady_clock::time_point now, uint64_t& ageMs, XrSpace& selected, uint64_t& updates) {
-  auto fresh=[&](const CandidatePose& c){return c.candidate!=XR_NULL_HANDLE&&c.everValid&&now-c.received<=kHandFreshness;};
-  CandidatePose* chosen=nullptr;
-  for(auto& slot:hand.candidates)if(slot.candidate==hand.selected&&fresh(slot)){chosen=&slot;break;}
-  if(!chosen)for(auto& slot:hand.candidates)if(fresh(slot)&&(!chosen||slot.received>chosen->received))chosen=&slot;
-  Pose out{}; ageMs=0; selected=XR_NULL_HANDLE; updates=hand.updates;
-  if(chosen){hand.selected=chosen->candidate; out=chosen->pose; out.valid=true; ageMs=(uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(now-chosen->received).count(); selected=chosen->candidate;}
-  else hand.selected=XR_NULL_HANDLE;
-  return out;
+  target.sin_family = AF_INET;
+  target.sin_port = htons(static_cast<u_short>(port));
+  target.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 }
 
-void publisherMain() {
-  WSADATA wd{}; if(WSAStartup(MAKEWORD(2,2),&wd)!=0) return;
-  SOCKET fd=socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP);
-  sockaddr_in to{}; to.sin_family=AF_INET; to.sin_port=htons(44441); to.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
-  uint64_t seen=0; auto lastLog=std::chrono::steady_clock::now(); Sample sample{}; CombinedCache cache{};
-  while(running.load(std::memory_order_acquire)) {
-    bool haveSample=consume(sample);
-    auto now=std::chrono::steady_clock::now();
-    if(haveSample) {
-      if(sample.destroySession){cache={}; continue;}
-      if(sample.destroySpace){clearCandidate(cache.left,sample.candidate);clearCandidate(cache.right,sample.candidate);continue;}
-      if(cache.session!=sample.session||cache.base!=sample.base){cache={};cache.session=sample.session;cache.base=sample.base;}
-      // The VIEW pose is sampled in exactly the same base space and at exactly
-      // the same XrTime as the controller-relative pose.  It is additional
-      // protocol-2 metadata; the established hand fields remain unchanged.
-      cache.hmd=sample.hmd;cache.hmdTime=sample.time;
-      auto& handCache=sample.hand==Hand::left?cache.left:cache.right;
-      Pose incoming=sample.hand==Hand::left?sample.left:sample.right;
-      if(incoming.valid){auto* slot=candidateSlot(handCache,sample.candidate);slot->pose=incoming;slot->xrTime=sample.time;slot->received=now;slot->updates++;slot->everValid=true;handCache.updates++;if(handCache.selected==XR_NULL_HANDLE)handCache.selected=sample.candidate;}
-      uint64_t leftAge=0,rightAge=0,leftUpdates=0,rightUpdates=0; XrSpace leftCandidate{},rightCandidate{};
-      Pose left=currentPose(cache.left,now,leftAge,leftCandidate,leftUpdates), right=currentPose(cache.right,now,rightAge,rightCandidate,rightUpdates);
-      char out[1600],h[420],l[420],r[420];
-      auto hand=[](const Pose&p,uint64_t age,XrSpace candidate,uint64_t updates,char*b,size_t z){return std::snprintf(b,z,"{\"valid\":%s,\"flags\":%llu,\"ageMs\":%llu,\"candidate\":%llu,\"updates\":%llu,\"p\":[%.9g,%.9g,%.9g],\"q\":[%.9g,%.9g,%.9g,%.9g]}",p.valid?"true":"false",(unsigned long long)p.flags,(unsigned long long)age,(unsigned long long)candidate,(unsigned long long)updates,p.pose.position.x,p.pose.position.y,p.pose.position.z,p.pose.orientation.x,p.pose.orientation.y,p.pose.orientation.z,p.pose.orientation.w);};
-      std::snprintf(h,sizeof h,"{\"valid\":%s,\"flags\":%llu,\"sampleTime\":%lld,\"session\":\"%llu\",\"base\":\"%llu\",\"p\":[%.9g,%.9g,%.9g],\"q\":[%.9g,%.9g,%.9g,%.9g]}",cache.hmd.valid?"true":"false",(unsigned long long)cache.hmd.flags,(long long)cache.hmdTime,(unsigned long long)cache.session,(unsigned long long)cache.base,cache.hmd.pose.position.x,cache.hmd.pose.position.y,cache.hmd.pose.position.z,cache.hmd.pose.orientation.x,cache.hmd.pose.orientation.y,cache.hmd.pose.orientation.z,cache.hmd.pose.orientation.w);
-      hand(left,leftAge,leftCandidate,leftUpdates,l,sizeof l); hand(right,rightAge,rightCandidate,rightUpdates,r,sizeof r);
-      int len=std::snprintf(out,sizeof out,"{\"v\":2,\"counter\":%llu,\"xrTime\":%lld,\"source\":\"openxr-api-layer\",\"hmd\":%s,\"left\":%s,\"right\":%s}",(unsigned long long)sample.sequence,(long long)sample.time,h,l,r);
-      if(fd!=INVALID_SOCKET && len>0) sendto(fd,out,len,0,(sockaddr*)&to,sizeof to); seen=sample.sequence;
-    }
-    if(now-lastLog>std::chrono::seconds(5)) {
-      uint64_t la=0,ra=0,lu=0,ru=0;XrSpace lc{},rc{};Pose lp=currentPose(cache.left,now,la,lc,lu),rp=currentPose(cache.right,now,ra,rc,ru);
-      char path[MAX_PATH]{}; DWORD count=GetTempPathA(MAX_PATH,path);
-      if(count&&count+28<MAX_PATH){std::strcat(path,"BeamNGVRPosesLayer.log");if(FILE*f=std::fopen(path,"a")){std::fprintf(f,"published=%llu left valid=%d left age=%llu left selected candidate=%llu left update counter=%llu right valid=%d right age=%llu right selected candidate=%llu right update counter=%llu\n",(unsigned long long)seen,lp.valid,(unsigned long long)la,(unsigned long long)lc,(unsigned long long)lu,rp.valid,(unsigned long long)ra,(unsigned long long)rc,(unsigned long long)ru);std::fclose(f);}}
-      lastLog=now;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+void openHapticSocket() {
+  haptics.rx = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+  if (haptics.rx == INVALID_SOCKET) return;
+  u_long nonBlocking = 1;
+  ioctlsocket(haptics.rx, FIONBIO, &nonBlocking);
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(static_cast<u_short>(ntohs(target.sin_port) + 1));
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  if (bind(haptics.rx, reinterpret_cast<const sockaddr*>(&addr), sizeof addr) != 0) {
+    closesocket(haptics.rx);
+    haptics.rx = INVALID_SOCKET;
   }
-  if(fd!=INVALID_SOCKET) closesocket(fd); WSACleanup();
 }
-void startPublisher(){std::lock_guard lock(publisherMutex);if(!running.exchange(true)){enqueuePosition.store(0);dequeuePosition=0;initializeQueue();publisher=std::thread(publisherMain);}}
-void stopPublisher(){std::lock_guard lock(publisherMutex);if(running.exchange(false)&&publisher.joinable())publisher.join();}
 
-XRAPI_ATTR XrResult XRAPI_CALL layerDestroyInstance(XrInstance i){
-  PFN_xrDestroyInstance fn{}; bool stop{};
-  {std::lock_guard lock(writerMutex);auto*d=dispatchForLocked(i);if(!d)return XR_ERROR_HANDLE_INVALID;fn=d->destroyInstance;
-   for(auto it=registry.actions.begin();it!=registry.actions.end();)it=it->second.instance==i?registry.actions.erase(it):++it;
-   registry.dispatches.erase(i);publishRegistryLocked();stop=registry.dispatches.empty();}
-  auto result=fn(i); if(stop)stopPublisher(); return result;
+int appendPose(char* out, size_t size, const PoseState& s) {
+  const XrPosef& p = s.pose;
+  const XrPosef& r = s.raw;
+  return std::snprintf(out, size,
+                       "{\"ok\":%s,\"t\":%lld,\"p\":[%.6f,%.6f,%.6f],\"q\":[%.6f,%.6f,%.6f,%.6f],"
+                       "\"rp\":[%.6f,%.6f,%.6f],\"rq\":[%.6f,%.6f,%.6f,%.6f]}",
+                       s.valid ? "true" : "false", static_cast<long long>(s.time), p.position.x,
+                       p.position.y, p.position.z, p.orientation.x, p.orientation.y,
+                       p.orientation.z, p.orientation.w, r.position.x, r.position.y, r.position.z,
+                       r.orientation.x, r.orientation.y, r.orientation.z, r.orientation.w);
 }
-XRAPI_ATTR XrResult XRAPI_CALL layerCreateSession(XrInstance i,const XrSessionCreateInfo*c,XrSession*s){
-  Dispatch d{};{std::lock_guard lock(writerMutex);auto*p=dispatchForLocked(i);if(!p)return XR_ERROR_HANDLE_INVALID;d=*p;}
-  auto result=d.createSession(i,c,s);if(XR_FAILED(result))return result;
-  XrSpace view=XR_NULL_HANDLE;XrReferenceSpaceCreateInfo info{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};info.referenceSpaceType=XR_REFERENCE_SPACE_TYPE_VIEW;info.poseInReferenceSpace.orientation.w=1.0f;
-  if(!d.createReferenceSpace||XR_FAILED(d.createReferenceSpace(*s,&info,&view)))view=XR_NULL_HANDLE;
-  {std::lock_guard lock(writerMutex);registry.sessions[*s]={i,view,d,std::make_shared<SessionLifetime>()};publishRegistryLocked();}
-  return result;
+
+// Caller holds the mutex.
+int buildPacketLocked(char* out, size_t size, XrTime time) {
+  const XrPosef& h = rawHead;
+  int n = std::snprintf(out, size,
+                        "{\"v\":3,\"seq\":%llu,\"t\":%lld,"
+                        "\"head\":{\"p\":[%.6f,%.6f,%.6f],\"q\":[%.6f,%.6f,%.6f,%.6f]},\"hands\":{",
+                        ++sequence, static_cast<long long>(time), h.position.x, h.position.y,
+                        h.position.z, h.orientation.x, h.orientation.y, h.orientation.z,
+                        h.orientation.w);
+  const char* names[2] = {"left", "right"};
+  for (int h = 0; h < 2 && n > 0 && static_cast<size_t>(n) < size; ++h) {
+    n += std::snprintf(out + n, size - n, "%s\"%s\":{\"grip\":", h ? "," : "", names[h]);
+    n += appendPose(out + n, size - n, hands[h].pose[kGrip]);
+    n += std::snprintf(out + n, size - n, ",\"aim\":");
+    n += appendPose(out + n, size - n, hands[h].pose[kAim]);
+    n += std::snprintf(out + n, size - n, ",\"trigger\":%.4f,\"squeeze\":%.4f}",
+                       hands[h].value[kTrigger], hands[h].value[kSqueeze]);
+  }
+  if (n > 0 && static_cast<size_t>(n) < size) n += std::snprintf(out + n, size - n, "}}");
+  return (n > 0 && static_cast<size_t>(n) < size) ? n : -1;
 }
-XRAPI_ATTR XrResult XRAPI_CALL layerDestroySession(XrSession s){
-  Session session{};
-  {std::lock_guard lock(writerMutex);auto it=registry.sessions.find(s);if(it==registry.sessions.end())return XR_ERROR_HANDLE_INVALID;session=it->second;session.lifetime->active.store(false,std::memory_order_release);
-   for(auto p=registry.spaces.begin();p!=registry.spaces.end();)p=p->second.session==s?registry.spaces.erase(p):++p;registry.sessions.erase(it);publishRegistryLocked();Sample sample{};sample.session=s;sample.destroySession=true;publish(sample);}
-  while(session.lifetime->inFlight.load(std::memory_order_acquire)!=0)std::this_thread::yield();
-  if(session.layerView!=XR_NULL_HANDLE)session.dispatch.destroySpace(session.layerView);
-  return session.dispatch.destroySession(s);
+
+void send(const char* data, int length) {
+  if (sock != INVALID_SOCKET && length > 0)
+    sendto(sock, data, length, 0, reinterpret_cast<const sockaddr*>(&target), sizeof target);
 }
-XRAPI_ATTR XrResult XRAPI_CALL layerStringToPath(XrInstance i,const char*str,XrPath*p){Dispatch d{};{std::lock_guard lock(writerMutex);auto*q=dispatchForLocked(i);if(!q)return XR_ERROR_HANDLE_INVALID;d=*q;}auto r=d.stringToPath(i,str,p);if(XR_SUCCEEDED(r)){std::lock_guard lock(writerMutex);auto*q=dispatchForLocked(i);if(q){if(!std::strcmp(str,"/user/hand/left"))q->leftPath=*p;if(!std::strcmp(str,"/user/hand/right"))q->rightPath=*p;for(auto& [_,session]:registry.sessions)if(session.instance==i)session.dispatch=*q;publishRegistryLocked();}}return r;}
-XRAPI_ATTR XrResult XRAPI_CALL layerCreateActionSet(XrInstance i,const XrActionSetCreateInfo*c,XrActionSet*out){Dispatch d{};{std::lock_guard lock(writerMutex);auto*p=dispatchForLocked(i);if(!p)return XR_ERROR_HANDLE_INVALID;d=*p;}auto r=d.createActionSet(i,c,out);if(XR_SUCCEEDED(r)){std::lock_guard lock(writerMutex);registry.actionSets[*out]=i;publishRegistryLocked();}return r;}
-XRAPI_ATTR XrResult XRAPI_CALL layerDestroyActionSet(XrActionSet set){PFN_xrDestroyActionSet fn{};{std::lock_guard lock(writerMutex);auto it=registry.actionSets.find(set);if(it==registry.actionSets.end())return XR_ERROR_HANDLE_INVALID;auto*d=dispatchForLocked(it->second);fn=d->destroyActionSet;registry.actionSets.erase(it);publishRegistryLocked();}return fn(set);}
-XRAPI_ATTR XrResult XRAPI_CALL layerCreateAction(XrActionSet set,const XrActionCreateInfo*c,XrAction*a){Dispatch d{};XrInstance owner{};{std::lock_guard lock(writerMutex);auto it=registry.actionSets.find(set);if(it==registry.actionSets.end())return XR_ERROR_HANDLE_INVALID;owner=it->second;d=*dispatchForLocked(owner);}auto r=d.createAction(set,c,a);if(XR_SUCCEEDED(r)){Action m{};m.type=c->actionType;m.name=c->actionName;m.localized=c->localizedActionName;m.count=(std::min)(c->countSubactionPaths,16u);std::copy_n(c->subactionPaths,m.count,m.subaction);m.instance=owner;std::lock_guard lock(writerMutex);registry.actions[*a]=std::move(m);publishRegistryLocked();}return r;}
-XRAPI_ATTR XrResult XRAPI_CALL layerDestroyAction(XrAction a){PFN_xrDestroyAction fn{};{std::lock_guard lock(writerMutex);auto it=registry.actions.find(a);if(it==registry.actions.end())return XR_ERROR_HANDLE_INVALID;fn=dispatchForLocked(it->second.instance)->destroyAction;registry.actions.erase(it);for(auto&[space,s]:registry.spaces)if(s.action==a){Sample sample{};sample.session=s.session;sample.hand=s.hand;sample.candidate=space;sample.destroySpace=true;publish(sample);s.hand=Hand::none;}publishRegistryLocked();}return fn(a);}
-XRAPI_ATTR XrResult XRAPI_CALL layerCreateActionSpace(XrSession s,const XrActionSpaceCreateInfo*c,XrSpace*out){Dispatch d{};{std::lock_guard lock(writerMutex);auto*p=dispatchForLocked(s);if(!p)return XR_ERROR_HANDLE_INVALID;d=*p;}auto r=d.createActionSpace(s,c,out);if(XR_SUCCEEDED(r)){std::lock_guard lock(writerMutex);Hand h=c->subactionPath==d.leftPath?Hand::left:c->subactionPath==d.rightPath?Hand::right:Hand::none;auto a=registry.actions.find(c->action);if(a==registry.actions.end()||a->second.type!=XR_ACTION_TYPE_POSE_INPUT)h=Hand::none;registry.spaces[*out]={s,c->action,c->subactionPath,h,std::make_shared<SessionLifetime>()};publishRegistryLocked();}return r;}
-XRAPI_ATTR XrResult XRAPI_CALL layerCreateReferenceSpace(XrSession s,const XrReferenceSpaceCreateInfo*c,XrSpace*out){Dispatch d{};{std::lock_guard lock(writerMutex);auto*p=dispatchForLocked(s);if(!p)return XR_ERROR_HANDLE_INVALID;d=*p;}auto r=d.createReferenceSpace(s,c,out);if(XR_SUCCEEDED(r)){std::lock_guard lock(writerMutex);registry.spaces[*out]={s,XR_NULL_HANDLE,XR_NULL_PATH,Hand::none,std::make_shared<SessionLifetime>()};publishRegistryLocked();}return r;}
-XRAPI_ATTR XrResult XRAPI_CALL layerDestroySpace(XrSpace s){PFN_xrDestroySpace fn{};std::shared_ptr<SessionLifetime> lifetime;{std::lock_guard lock(writerMutex);auto it=registry.spaces.find(s);if(it==registry.spaces.end())return XR_ERROR_HANDLE_INVALID;fn=dispatchForLocked(it->second.session)->destroySpace;lifetime=it->second.lifetime;lifetime->active.store(false,std::memory_order_release);XrSession session=it->second.session;Hand hand=it->second.hand;registry.spaces.erase(it);publishRegistryLocked();Sample sample{};sample.session=session;sample.hand=hand;sample.candidate=s;sample.destroySpace=true;publish(sample);}
-  while(lifetime->inFlight.load(std::memory_order_acquire)!=0)std::this_thread::yield();return fn(s);
+
+bool dispatchFor(XrInstance instance, Dispatch& out) {
+  std::lock_guard lock(mutex);
+  auto it = instances.find(instance);
+  if (it == instances.end()) return false;
+  out = it->second;
+  return true;
 }
-XRAPI_ATTR XrResult XRAPI_CALL layerSyncActions(XrSession s,const XrActionsSyncInfo*c){Dispatch d{};{std::lock_guard lock(writerMutex);auto*p=dispatchForLocked(s);if(!p)return XR_ERROR_HANDLE_INVALID;d=*p;}return d.syncActions(s,c);}
-XRAPI_ATTR XrResult XRAPI_CALL layerGetActionStatePose(XrSession s,const XrActionStateGetInfo*c,XrActionStatePose*state){
-  Dispatch d{};{std::lock_guard lock(writerMutex);auto*p=dispatchForLocked(s);if(!p)return XR_ERROR_HANDLE_INVALID;d=*p;}
-  auto r=d.getActionStatePose(s,c,state);
-  if(XR_SUCCEEDED(r)&&c&&state&&!state->isActive){std::lock_guard lock(writerMutex);for(auto&[space,meta]:registry.spaces)if(meta.session==s&&meta.action==c->action&&(c->subactionPath==XR_NULL_PATH||meta.subaction==c->subactionPath)){Sample sample{};sample.session=s;sample.hand=meta.hand;sample.candidate=space;sample.destroySpace=true;publish(sample);}}
+
+bool dispatchFor(XrSession session, Dispatch& out, SessionInfo* info = nullptr) {
+  std::lock_guard lock(mutex);
+  auto s = sessions.find(session);
+  if (s == sessions.end()) return false;
+  auto it = instances.find(s->second.instance);
+  if (it == instances.end()) return false;
+  out = it->second;
+  if (info) *info = s->second;
+  return true;
+}
+
+// ------------------------------------------------------------------- hooks --
+
+XRAPI_ATTR XrResult XRAPI_CALL hookDestroyInstance(XrInstance instance) {
+  Dispatch d;
+  if (!dispatchFor(instance, d)) return XR_ERROR_HANDLE_INVALID;
+  {
+    std::lock_guard lock(mutex);
+    instances.erase(instance);
+    nextGipa.erase(instance);
+    for (auto it = actions.begin(); it != actions.end();)
+      it = it->second.instance == instance ? actions.erase(it) : std::next(it);
+    for (auto it = actionSets.begin(); it != actionSets.end();)
+      it = it->second == instance ? actionSets.erase(it) : std::next(it);
+  }
+  return d.destroyInstance(instance);
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL hookStringToPath(XrInstance instance, const char* text,
+                                                XrPath* path) {
+  Dispatch d;
+  if (!dispatchFor(instance, d)) return XR_ERROR_HANDLE_INVALID;
+  const XrResult r = d.stringToPath(instance, text, path);
+  if (XR_SUCCEEDED(r) && text) {
+    std::lock_guard lock(mutex);
+    auto it = instances.find(instance);
+    if (it != instances.end()) {
+      if (!std::strcmp(text, "/user/hand/left")) it->second.leftPath = *path;
+      if (!std::strcmp(text, "/user/hand/right")) it->second.rightPath = *path;
+    }
+  }
   return r;
 }
 
-XRAPI_ATTR XrResult XRAPI_CALL layerLocateSpace(XrSpace space,XrSpace base,XrTime time,XrSpaceLocation*loc){
-  // Exact steady-state operations: one atomic shared_ptr load/refcount, immutable
-  // hash lookups, atomic in-flight bookkeeping, downstream locate(s), pose math,
-  // and a bounded non-waiting queue publication. No mutex, allocation or I/O.
-  auto snapshot=publishedRegistry.load(std::memory_order_acquire);
-  auto si=snapshot->spaces.find(space);if(si==snapshot->spaces.end())return XR_ERROR_HANDLE_INVALID;
-  auto session=snapshot->sessions.find(si->second.session);if(session==snapshot->sessions.end())return XR_ERROR_HANDLE_INVALID;
-  InFlight sessionInFlight(session->second.lifetime);if(!sessionInFlight)return XR_ERROR_HANDLE_INVALID;
-  InFlight spaceInFlight(si->second.lifetime);if(!spaceInFlight)return XR_ERROR_HANDLE_INVALID;
-  const Dispatch d=session->second.dispatch;auto result=d.locateSpace(space,base,time,loc);
-  if(XR_FAILED(result)||si->second.hand==Hand::none)return result;
-  Sample sample{};sample.session=si->second.session;sample.base=base;sample.time=time;
-  XrSpaceLocation head{XR_TYPE_SPACE_LOCATION};XrResult headResult=XR_ERROR_HANDLE_INVALID;
-  if(session->second.layerView!=XR_NULL_HANDLE)headResult=d.locateSpace(session->second.layerView,base,time,&head);
-  sample.hmd.flags=head.locationFlags;sample.hmd.valid=XR_SUCCEEDED(headResult)&&((head.locationFlags&kValid)==kValid);if(sample.hmd.valid)sample.hmd.pose=head.pose;
-  Pose pose{};pose.flags=loc->locationFlags;pose.valid=sample.hmd.valid&&((loc->locationFlags&kValid)==kValid);if(pose.valid)pose.pose=compose(inverse(head.pose),loc->pose);
-  sample.hand=si->second.hand;sample.candidate=space;if(si->second.hand==Hand::left)sample.left=pose;else sample.right=pose;publish(sample);return result;
+XRAPI_ATTR XrResult XRAPI_CALL hookCreateSession(XrInstance instance,
+                                                 const XrSessionCreateInfo* info,
+                                                 XrSession* session) {
+  Dispatch d;
+  if (!dispatchFor(instance, d)) return XR_ERROR_HANDLE_INVALID;
+  const XrResult r = d.createSession(instance, info, session);
+  if (XR_FAILED(r)) return r;
+  XrReferenceSpaceCreateInfo viewInfo{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
+  viewInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
+  viewInfo.poseInReferenceSpace.orientation.w = 1.0f;
+  XrSpace view = XR_NULL_HANDLE;
+  if (XR_FAILED(d.createReferenceSpace(*session, &viewInfo, &view))) view = XR_NULL_HANDLE;
+  std::lock_guard lock(mutex);
+  sessions[*session] = {instance, view};
+  return r;
 }
 
-XRAPI_ATTR XrResult XRAPI_CALL layerGipa(XrInstance i,const char*n,PFN_xrVoidFunction*f){
-  if(!std::strcmp(n,"xrDestroyInstance"))*f=(PFN_xrVoidFunction)layerDestroyInstance;else if(!std::strcmp(n,"xrCreateActionSet"))*f=(PFN_xrVoidFunction)layerCreateActionSet;else if(!std::strcmp(n,"xrDestroyActionSet"))*f=(PFN_xrVoidFunction)layerDestroyActionSet;else if(!std::strcmp(n,"xrCreateSession"))*f=(PFN_xrVoidFunction)layerCreateSession;else if(!std::strcmp(n,"xrDestroySession"))*f=(PFN_xrVoidFunction)layerDestroySession;else if(!std::strcmp(n,"xrStringToPath"))*f=(PFN_xrVoidFunction)layerStringToPath;else if(!std::strcmp(n,"xrCreateAction"))*f=(PFN_xrVoidFunction)layerCreateAction;else if(!std::strcmp(n,"xrDestroyAction"))*f=(PFN_xrVoidFunction)layerDestroyAction;else if(!std::strcmp(n,"xrCreateActionSpace"))*f=(PFN_xrVoidFunction)layerCreateActionSpace;else if(!std::strcmp(n,"xrCreateReferenceSpace"))*f=(PFN_xrVoidFunction)layerCreateReferenceSpace;else if(!std::strcmp(n,"xrDestroySpace"))*f=(PFN_xrVoidFunction)layerDestroySpace;else if(!std::strcmp(n,"xrSyncActions"))*f=(PFN_xrVoidFunction)layerSyncActions;else if(!std::strcmp(n,"xrGetActionStatePose"))*f=(PFN_xrVoidFunction)layerGetActionStatePose;else if(!std::strcmp(n,"xrLocateSpace"))*f=(PFN_xrVoidFunction)layerLocateSpace;else{auto snapshot=publishedRegistry.load(std::memory_order_acquire);auto d=snapshot->dispatches.find(i);return d==snapshot->dispatches.end()?XR_ERROR_HANDLE_INVALID:d->second.gipa(i,n,f);}return XR_SUCCESS;
+XRAPI_ATTR XrResult XRAPI_CALL hookDestroySession(XrSession session) {
+  Dispatch d;
+  SessionInfo info;
+  if (!dispatchFor(session, d, &info)) return XR_ERROR_HANDLE_INVALID;
+  {
+    std::lock_guard lock(mutex);
+    sessions.erase(session);
+    for (auto it = spaces.begin(); it != spaces.end();)
+      it = it->second.session == session ? spaces.erase(it) : std::next(it);
+    for (auto& h : hands) h = {};
+  }
+  if (info.view != XR_NULL_HANDLE) d.destroySpace(info.view);
+  return d.destroySession(session);
 }
-XRAPI_ATTR XrResult XRAPI_CALL layerCreateInstance(const XrInstanceCreateInfo*c,const XrApiLayerCreateInfo*li,XrInstance*i){auto next=*li;next.nextInfo=li->nextInfo->next;auto r=li->nextInfo->nextCreateApiLayerInstance(c,&next,i);if(XR_FAILED(r))return r;Dispatch d{};d.gipa=li->nextInfo->nextGetInstanceProcAddr;auto gp=[&](const char*n,auto&p){d.gipa(*i,n,reinterpret_cast<PFN_xrVoidFunction*>(&p));};gp("xrDestroyInstance",d.destroyInstance);gp("xrCreateActionSet",d.createActionSet);gp("xrDestroyActionSet",d.destroyActionSet);gp("xrCreateSession",d.createSession);gp("xrDestroySession",d.destroySession);gp("xrStringToPath",d.stringToPath);gp("xrCreateAction",d.createAction);gp("xrDestroyAction",d.destroyAction);gp("xrCreateActionSpace",d.createActionSpace);gp("xrCreateReferenceSpace",d.createReferenceSpace);gp("xrDestroySpace",d.destroySpace);gp("xrSyncActions",d.syncActions);gp("xrGetActionStatePose",d.getActionStatePose);gp("xrLocateSpace",d.locateSpace);{std::lock_guard lock(writerMutex);registry.dispatches[*i]=d;publishRegistryLocked();}startPublisher();return r;}
+
+XRAPI_ATTR XrResult XRAPI_CALL hookCreateActionSet(XrInstance instance,
+                                                   const XrActionSetCreateInfo* info,
+                                                   XrActionSet* set);
+
+XRAPI_ATTR XrResult XRAPI_CALL hookCreateAction(XrActionSet set, const XrActionCreateInfo* info,
+                                                XrAction* action) {
+  Dispatch d;
+  XrInstance instance{};
+  {
+    std::lock_guard lock(mutex);
+    auto it = actionSets.find(set);
+    if (it == actionSets.end()) return XR_ERROR_HANDLE_INVALID;
+    instance = it->second;
+    d = instances[instance];
+  }
+  const XrResult r = d.createAction(set, info, action);
+  if (XR_SUCCEEDED(r) && info) {
+    ActionInfo a;
+    a.instance = instance;
+    a.type = info->actionType;
+    if (info->actionType == XR_ACTION_TYPE_POSE_INPUT) a.pose = poseKindFromName(info->actionName);
+    if (info->actionType == XR_ACTION_TYPE_FLOAT_INPUT) a.value = floatKindFromName(info->actionName);
+    if (info->countSubactionPaths == 1) a.onlyHand = handFromPath(d, info->subactionPaths[0]);
+    std::lock_guard lock(mutex);
+    actions[*action] = a;
+  }
+  return r;
 }
-extern "C" __declspec(dllexport) XRAPI_ATTR XrResult XRAPI_CALL xrNegotiateLoaderApiLayerInterface(const XrNegotiateLoaderInfo*loader,const char*,XrNegotiateApiLayerRequest*request){if(!loader||!request||loader->structType!=XR_LOADER_INTERFACE_STRUCT_LOADER_INFO||request->structType!=XR_LOADER_INTERFACE_STRUCT_API_LAYER_REQUEST||loader->maxInterfaceVersion<XR_CURRENT_LOADER_API_LAYER_VERSION)return XR_ERROR_INITIALIZATION_FAILED;request->layerInterfaceVersion=XR_CURRENT_LOADER_API_LAYER_VERSION;request->layerApiVersion=XR_CURRENT_API_VERSION;request->getInstanceProcAddr=layerGipa;request->createApiLayerInstance=layerCreateInstance;return XR_SUCCESS;}
+
+XRAPI_ATTR XrResult XRAPI_CALL hookCreateActionSpace(XrSession session,
+                                                     const XrActionSpaceCreateInfo* info,
+                                                     XrSpace* space) {
+  Dispatch d;
+  if (!dispatchFor(session, d)) return XR_ERROR_HANDLE_INVALID;
+  const XrResult r = d.createActionSpace(session, info, space);
+  if (XR_SUCCEEDED(r) && info) {
+    std::lock_guard lock(mutex);
+    auto a = actions.find(info->action);
+    if (a != actions.end() && a->second.pose != kNoKind) {
+      Hand hand = handFromPath(d, info->subactionPath);
+      if (hand == kNoHand) hand = a->second.onlyHand;
+      if (hand != kNoHand) spaces[*space] = {session, hand, a->second.pose};
+    }
+  }
+  return r;
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL hookDestroySpace(XrSpace space) {
+  PFN_xrDestroySpace destroy{};
+  {
+    std::lock_guard lock(mutex);
+    spaces.erase(space);
+    // Any live instance's dispatch works; spaces are session children.
+    for (auto& [_, d] : instances) { destroy = d.destroySpace; break; }
+  }
+  return destroy ? destroy(space) : XR_ERROR_HANDLE_INVALID;
+}
+
+// Looks up whether a space is one of BeamNG's controller pose spaces.
+bool lookupTagged(XrSpace space, SpaceInfo& tagged, XrSpace& view) {
+  auto s = spaces.find(space);
+  if (s == spaces.end()) return false;
+  auto session = sessions.find(s->second.session);
+  if (session == sessions.end() || session->second.view == XR_NULL_HANDLE) return false;
+  tagged = s->second;
+  view = session->second.view;
+  return true;
+}
+
+// Locates the head at the same time and base, stores the head-relative pose
+// and publishes a packet.
+void record(const Dispatch& d, const SpaceInfo& tagged, XrSpace view, XrSpace base, XrTime time,
+            XrSpaceLocationFlags flags, const XrPosef& pose) {
+  XrSpaceLocation head{XR_TYPE_SPACE_LOCATION};
+  const bool headOk = XR_SUCCEEDED(d.locateSpace(view, base, time, &head)) &&
+                      (head.locationFlags & kPoseValid) == kPoseValid;
+  const bool controllerOk = (flags & kPoseValid) == kPoseValid;
+
+  char packet[2048];
+  int length = -1;
+  {
+    std::lock_guard lock(mutex);
+    PoseState& state = hands[tagged.hand].pose[tagged.kind];
+    // An inactive interaction profile reports invalid; don't let it overwrite
+    // a valid pose another profile's space produced for this same frame.
+    if (headOk && controllerOk) {
+      state.valid = true;
+      state.pose = relativeTo(head.pose, pose);
+      state.raw = pose;
+      rawHead = head.pose;
+      state.time = time;
+    } else if (state.time != time) {
+      state.valid = false;
+      state.time = time;
+    }
+    length = buildPacketLocked(packet, sizeof packet, time);
+  }
+  send(packet, length);
+}
+
+Dispatch anyDispatchLocked() { return instances.empty() ? Dispatch{} : instances.begin()->second; }
+
+XRAPI_ATTR XrResult XRAPI_CALL hookLocateSpace(XrSpace space, XrSpace base, XrTime time,
+                                               XrSpaceLocation* location) {
+  SpaceInfo tagged;
+  XrSpace view = XR_NULL_HANDLE;
+  Dispatch d;
+  bool isTagged;
+  {
+    std::lock_guard lock(mutex);
+    d = anyDispatchLocked();
+    isTagged = lookupTagged(space, tagged, view);
+  }
+  if (!d.locateSpace) return XR_ERROR_HANDLE_INVALID;
+  const XrResult r = d.locateSpace(space, base, time, location);
+  if (isTagged && XR_SUCCEEDED(r))
+    record(d, tagged, view, base, time, location->locationFlags, location->pose);
+  return r;
+}
+
+// OpenXR 1.1 batch locate (and its KHR twin); BeamNG may switch to it.
+XrResult locateSpacesCommon(PFN_xrLocateSpaces next, XrSession session,
+                            const XrSpacesLocateInfo* info, XrSpaceLocations* out) {
+  if (!next) return XR_ERROR_FUNCTION_UNSUPPORTED;
+  const XrResult r = next(session, info, out);
+  if (XR_FAILED(r) || !info || !out || !out->locations) return r;
+  Dispatch d;
+  {
+    std::lock_guard lock(mutex);
+    d = anyDispatchLocked();
+  }
+  const uint32_t count = info->spaceCount < out->locationCount ? info->spaceCount : out->locationCount;
+  for (uint32_t i = 0; i < count; ++i) {
+    SpaceInfo tagged;
+    XrSpace view = XR_NULL_HANDLE;
+    bool isTagged;
+    {
+      std::lock_guard lock(mutex);
+      isTagged = lookupTagged(info->spaces[i], tagged, view);
+    }
+    if (isTagged)
+      record(d, tagged, view, info->baseSpace, info->time, out->locations[i].locationFlags,
+             out->locations[i].pose);
+  }
+  return r;
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL hookLocateSpaces(XrSession session, const XrSpacesLocateInfo* info,
+                                                XrSpaceLocations* out) {
+  Dispatch d;
+  {
+    std::lock_guard lock(mutex);
+    d = anyDispatchLocked();
+  }
+  return locateSpacesCommon(d.locateSpaces, session, info, out);
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL hookLocateSpacesKHR(XrSession session, const XrSpacesLocateInfo* info,
+                                                   XrSpaceLocations* out) {
+  Dispatch d;
+  {
+    std::lock_guard lock(mutex);
+    d = anyDispatchLocked();
+  }
+  return locateSpacesCommon(d.locateSpacesKHR, session, info, out);
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL hookGetActionStateFloat(XrSession session,
+                                                       const XrActionStateGetInfo* info,
+                                                       XrActionStateFloat* state) {
+  Dispatch d;
+  if (!dispatchFor(session, d)) return XR_ERROR_HANDLE_INVALID;
+  const XrResult r = d.getActionStateFloat(session, info, state);
+  if (XR_SUCCEEDED(r) && info && state) {
+    std::lock_guard lock(mutex);
+    auto a = actions.find(info->action);
+    if (a != actions.end() && a->second.value != kNoFloat) {
+      Hand hand = handFromPath(d, info->subactionPath);
+      if (hand == kNoHand) hand = a->second.onlyHand;
+      // Several profiles share a hand; only the active binding reports isActive.
+      if (hand != kNoHand && state->isActive) hands[hand].value[a->second.value] = state->currentState;
+    }
+  }
+  return r;
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL hookCreateActionSet(XrInstance instance,
+                                                   const XrActionSetCreateInfo* info,
+                                                   XrActionSet* set) {
+  Dispatch d;
+  if (!dispatchFor(instance, d)) return XR_ERROR_HANDLE_INVALID;
+  PFN_xrCreateActionSet next{};
+  d.gipa(instance, "xrCreateActionSet", reinterpret_cast<PFN_xrVoidFunction*>(&next));
+  if (!next) return XR_ERROR_FUNCTION_UNSUPPORTED;
+  const XrResult r = next(instance, info, set);
+  if (XR_SUCCEEDED(r)) {
+    std::lock_guard lock(mutex);
+    actionSets[*set] = instance;
+  }
+  return r;
+}
+
+// Creates the haptic action set once BeamNG has started defining its actions.
+// Caller holds no lock.
+void ensureHapticActions(const Dispatch& d, XrInstance instance) {
+  {
+    std::lock_guard lock(mutex);
+    if (haptics.set != XR_NULL_HANDLE) return;
+  }
+  if (!d.createActionSet || !d.createAction || !d.stringToPath) return;
+  XrPath hand[2];
+  if (XR_FAILED(d.stringToPath(instance, "/user/hand/left", &hand[0])) ||
+      XR_FAILED(d.stringToPath(instance, "/user/hand/right", &hand[1])))
+    return;
+  XrActionSetCreateInfo setInfo{XR_TYPE_ACTION_SET_CREATE_INFO};
+  std::strcpy(setInfo.actionSetName, "beamng_vr_poses_haptics");
+  std::strcpy(setInfo.localizedActionSetName, "BeamNG VR poses haptics");
+  XrActionSet set = XR_NULL_HANDLE;
+  if (XR_FAILED(d.createActionSet(instance, &setInfo, &set))) return;
+  XrActionCreateInfo actionInfo{XR_TYPE_ACTION_CREATE_INFO};
+  std::strcpy(actionInfo.actionName, "vibrate");
+  std::strcpy(actionInfo.localizedActionName, "Vibrate");
+  actionInfo.actionType = XR_ACTION_TYPE_VIBRATION_OUTPUT;
+  actionInfo.countSubactionPaths = 2;
+  actionInfo.subactionPaths = hand;
+  XrAction action = XR_NULL_HANDLE;
+  if (XR_FAILED(d.createAction(set, &actionInfo, &action))) return;
+  std::lock_guard lock(mutex);
+  haptics.instance = instance;
+  haptics.set = set;
+  haptics.action = action;
+  haptics.hand[0] = hand[0];
+  haptics.hand[1] = hand[1];
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL hookSuggestBindings(
+    XrInstance instance, const XrInteractionProfileSuggestedBinding* suggested) {
+  Dispatch d;
+  if (!dispatchFor(instance, d)) return XR_ERROR_HANDLE_INVALID;
+  ensureHapticActions(d, instance);
+  XrAction action;
+  {
+    std::lock_guard lock(mutex);
+    action = haptics.action;
+  }
+  if (!suggested || action == XR_NULL_HANDLE) return d.suggestBindings(instance, suggested);
+
+  XrPath outputs[2];
+  if (XR_FAILED(d.stringToPath(instance, "/user/hand/left/output/haptic", &outputs[0])) ||
+      XR_FAILED(d.stringToPath(instance, "/user/hand/right/output/haptic", &outputs[1])))
+    return d.suggestBindings(instance, suggested);
+  std::vector<XrActionSuggestedBinding> merged(
+      suggested->suggestedBindings, suggested->suggestedBindings + suggested->countSuggestedBindings);
+  merged.push_back({action, outputs[0]});
+  merged.push_back({action, outputs[1]});
+  XrInteractionProfileSuggestedBinding withHaptics = *suggested;
+  withHaptics.countSuggestedBindings = static_cast<uint32_t>(merged.size());
+  withHaptics.suggestedBindings = merged.data();
+  const XrResult r = d.suggestBindings(instance, &withHaptics);
+  // Profiles without haptic outputs reject the whole call: fall back to BeamNG's own.
+  return XR_SUCCEEDED(r) ? r : d.suggestBindings(instance, suggested);
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL hookAttachActionSets(XrSession session,
+                                                    const XrSessionActionSetsAttachInfo* info) {
+  Dispatch d;
+  if (!dispatchFor(session, d)) return XR_ERROR_HANDLE_INVALID;
+  XrActionSet set;
+  {
+    std::lock_guard lock(mutex);
+    set = haptics.set;
+  }
+  if (!info || set == XR_NULL_HANDLE) return d.attachActionSets(session, info);
+  std::vector<XrActionSet> sets(info->actionSets, info->actionSets + info->countActionSets);
+  sets.push_back(set);
+  XrSessionActionSetsAttachInfo withHaptics = *info;
+  withHaptics.countActionSets = static_cast<uint32_t>(sets.size());
+  withHaptics.actionSets = sets.data();
+  XrResult r = d.attachActionSets(session, &withHaptics);
+  const bool attached = XR_SUCCEEDED(r);
+  if (!attached) r = d.attachActionSets(session, info);
+  std::lock_guard lock(mutex);
+  haptics.attached = attached;
+  return r;
+}
+
+// Applies pulses Lua asked for since the last frame. Called on BeamNG's input thread.
+void applyPendingPulses(const Dispatch& d, XrSession session) {
+  if (haptics.rx == INVALID_SOCKET || !d.applyHaptic) return;
+  char buf[128];
+  int n;
+  while ((n = recv(haptics.rx, buf, sizeof buf - 1, 0)) > 0) {
+    buf[n] = 0;
+    char hand[16]{};
+    float amplitude = 0, seconds = 0;
+    if (std::sscanf(buf, "pulse %15s %f %f", hand, &amplitude, &seconds) != 3) continue;
+    XrHapticActionInfo info{XR_TYPE_HAPTIC_ACTION_INFO};
+    XrHapticVibration vibration{XR_TYPE_HAPTIC_VIBRATION};
+    {
+      std::lock_guard lock(mutex);
+      info.action = haptics.action;
+      info.subactionPath = haptics.hand[std::strcmp(hand, "left") ? 1 : 0];
+    }
+    vibration.amplitude = amplitude < 0 ? 0 : amplitude > 1 ? 1 : amplitude;
+    vibration.duration = static_cast<XrDuration>((seconds > 0 ? seconds : 0.01f) * 1e9f);
+    vibration.frequency = XR_FREQUENCY_UNSPECIFIED;
+    d.applyHaptic(session, &info, reinterpret_cast<const XrHapticBaseHeader*>(&vibration));
+  }
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL hookSyncActions(XrSession session, const XrActionsSyncInfo* info) {
+  Dispatch d;
+  if (!dispatchFor(session, d)) return XR_ERROR_HANDLE_INVALID;
+  XrActionSet set;
+  bool attached;
+  {
+    std::lock_guard lock(mutex);
+    set = haptics.set;
+    attached = haptics.attached;
+  }
+  if (!info || !attached) return d.syncActions(session, info);
+  std::vector<XrActiveActionSet> active(info->activeActionSets,
+                                        info->activeActionSets + info->countActiveActionSets);
+  active.push_back({set, XR_NULL_PATH});
+  XrActionsSyncInfo withHaptics = *info;
+  withHaptics.countActiveActionSets = static_cast<uint32_t>(active.size());
+  withHaptics.activeActionSets = active.data();
+  XrResult r = d.syncActions(session, &withHaptics);
+  if (XR_FAILED(r)) return d.syncActions(session, info);
+  applyPendingPulses(d, session);
+  return r;
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL hookGetInstanceProcAddr(XrInstance instance, const char* name,
+                                                       PFN_xrVoidFunction* function) {
+  struct Entry { const char* name; PFN_xrVoidFunction fn; };
+  static const Entry hooks[] = {
+      {"xrDestroyInstance", reinterpret_cast<PFN_xrVoidFunction>(hookDestroyInstance)},
+      {"xrStringToPath", reinterpret_cast<PFN_xrVoidFunction>(hookStringToPath)},
+      {"xrCreateSession", reinterpret_cast<PFN_xrVoidFunction>(hookCreateSession)},
+      {"xrDestroySession", reinterpret_cast<PFN_xrVoidFunction>(hookDestroySession)},
+      {"xrCreateActionSet", reinterpret_cast<PFN_xrVoidFunction>(hookCreateActionSet)},
+      {"xrCreateAction", reinterpret_cast<PFN_xrVoidFunction>(hookCreateAction)},
+      {"xrCreateActionSpace", reinterpret_cast<PFN_xrVoidFunction>(hookCreateActionSpace)},
+      {"xrDestroySpace", reinterpret_cast<PFN_xrVoidFunction>(hookDestroySpace)},
+      {"xrLocateSpace", reinterpret_cast<PFN_xrVoidFunction>(hookLocateSpace)},
+      {"xrLocateSpaces", reinterpret_cast<PFN_xrVoidFunction>(hookLocateSpaces)},
+      {"xrLocateSpacesKHR", reinterpret_cast<PFN_xrVoidFunction>(hookLocateSpacesKHR)},
+      {"xrGetActionStateFloat", reinterpret_cast<PFN_xrVoidFunction>(hookGetActionStateFloat)},
+      {"xrSuggestInteractionProfileBindings", reinterpret_cast<PFN_xrVoidFunction>(hookSuggestBindings)},
+      {"xrAttachSessionActionSets", reinterpret_cast<PFN_xrVoidFunction>(hookAttachActionSets)},
+      {"xrSyncActions", reinterpret_cast<PFN_xrVoidFunction>(hookSyncActions)},
+  };
+  bool observed;
+  PFN_xrGetInstanceProcAddr next{};
+  {
+    std::lock_guard lock(mutex);
+    observed = instances.count(instance) != 0;
+    auto it = nextGipa.find(instance);
+    if (it != nextGipa.end()) next = it->second;
+    else if (!nextGipa.empty()) next = nextGipa.begin()->second;
+  }
+  if (observed && name) {
+    for (const Entry& e : hooks) {
+      if (!std::strcmp(name, e.name)) {
+        *function = e.fn;
+        return XR_SUCCESS;
+      }
+    }
+  }
+  return next ? next(instance, name, function) : XR_ERROR_HANDLE_INVALID;
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL hookCreateApiLayerInstance(const XrInstanceCreateInfo* info,
+                                                          const XrApiLayerCreateInfo* layerInfo,
+                                                          XrInstance* instance) {
+  XrApiLayerCreateInfo next = *layerInfo;
+  next.nextInfo = layerInfo->nextInfo->next;
+  const XrResult r =
+      layerInfo->nextInfo->nextCreateApiLayerInstance(info, &next, instance);
+  if (XR_FAILED(r)) return r;
+
+  const bool isBeamNG = info && std::strstr(info->applicationInfo.applicationName, "BeamNG");
+  {
+    std::lock_guard lock(mutex);
+    nextGipa[*instance] = layerInfo->nextInfo->nextGetInstanceProcAddr;
+  }
+  if (!isBeamNG && !std::getenv("BEAMNG_VR_POSES_ANY_APP")) return r;
+
+  Dispatch d;
+  d.gipa = layerInfo->nextInfo->nextGetInstanceProcAddr;
+  auto get = [&](const char* fn, auto& out) {
+    d.gipa(*instance, fn, reinterpret_cast<PFN_xrVoidFunction*>(&out));
+  };
+  get("xrDestroyInstance", d.destroyInstance);
+  get("xrCreateSession", d.createSession);
+  get("xrDestroySession", d.destroySession);
+  get("xrStringToPath", d.stringToPath);
+  get("xrCreateAction", d.createAction);
+  get("xrCreateActionSpace", d.createActionSpace);
+  get("xrCreateReferenceSpace", d.createReferenceSpace);
+  get("xrDestroySpace", d.destroySpace);
+  get("xrLocateSpace", d.locateSpace);
+  get("xrLocateSpaces", d.locateSpaces);
+  get("xrLocateSpacesKHR", d.locateSpacesKHR);
+  get("xrGetActionStateFloat", d.getActionStateFloat);
+  get("xrCreateActionSet", d.createActionSet);
+  get("xrSuggestInteractionProfileBindings", d.suggestBindings);
+  get("xrAttachSessionActionSets", d.attachActionSets);
+  get("xrSyncActions", d.syncActions);
+  get("xrApplyHapticFeedback", d.applyHaptic);
+
+  std::lock_guard lock(mutex);
+  instances[*instance] = d;
+  if (sock == INVALID_SOCKET) {
+    openSocket();
+    openHapticSocket();
+  }
+  return r;
+}
+
+}  // namespace
+
+extern "C" __declspec(dllexport) XRAPI_ATTR XrResult XRAPI_CALL
+xrNegotiateLoaderApiLayerInterface(const XrNegotiateLoaderInfo* loader, const char*,
+                                   XrNegotiateApiLayerRequest* request) {
+  if (!loader || !request || loader->structType != XR_LOADER_INTERFACE_STRUCT_LOADER_INFO ||
+      request->structType != XR_LOADER_INTERFACE_STRUCT_API_LAYER_REQUEST ||
+      loader->maxInterfaceVersion < XR_CURRENT_LOADER_API_LAYER_VERSION)
+    return XR_ERROR_INITIALIZATION_FAILED;
+  request->layerInterfaceVersion = XR_CURRENT_LOADER_API_LAYER_VERSION;
+  request->layerApiVersion = XR_CURRENT_API_VERSION;
+  request->getInstanceProcAddr = hookGetInstanceProcAddr;
+  request->createApiLayerInstance = hookCreateApiLayerInstance;
+  return XR_SUCCESS;
+}
