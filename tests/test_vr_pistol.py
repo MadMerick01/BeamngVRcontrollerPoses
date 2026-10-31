@@ -96,6 +96,7 @@ def part(rt, name):
 
 def test_model_parts_follow_the_aim_pose(model):
     frame(model, packet(right_aim=AIM, trigger=0.0))
+    assert list(model.globals().mock.materialFiles.values()) == ["/art/shapes/vrrevolver/main.materials.json"]
     names = sorted(model.globals().mock.objects.keys())
     assert names == ["vrPistolModel_" + n for n in ("cylinder", "flash", "frame", "hammer", "trigger")]
     f = part(model, "frame")
@@ -163,12 +164,18 @@ def test_each_shot_plays_the_gunshot_on_the_player_vehicle(lua):
     face_plus_x(lua)
     lua.globals().mock.player = add(lua, "player", (0, -50, 0), (2, 1, 1))  # off the line of fire
     frame(lua, packet(right_aim=AIM, trigger=0.0))
-    frame(lua, packet(right_aim=AIM, trigger=0.9))
-    sounds = [c for c in all_commands(lua) if "playSFX" in c.cmd]
-    assert [c.name for c in sounds] == ["player"]
-    assert "/art/sound/vrpistol/revolver_shot.wav" in sounds[0].cmd
-    # The command must be valid Lua for the vehicle VM.
-    lua.eval("function(s) return assert(loadstring(s)) end")(sounds[0].cmd)
+    for _ in range(2):
+        frame(lua, packet(right_aim=AIM, trigger=0.9))
+        frame(lua, packet(right_aim=AIM, trigger=0.0))
+        lua.globals().mock.time += 1
+    to_player = [c.cmd for c in all_commands(lua) if c.name == "player"]
+    # Sources are created once, in their own command, then each shot plays one.
+    assert len(to_player) == 3
+    assert "createSFXSource" in to_player[0] and "playSFX(" not in to_player[0]
+    assert all("playSFX(id)" in c for c in to_player[1:])
+    assert "/art/sound/vrpistol/revolver_shot.wav" in to_player[0]
+    for c in to_player:  # valid Lua for the vehicle VM
+        lua.eval("function(s) return assert(loadstring(s)) end")(c)
 
 
 def test_gunshot_without_player_vehicle_does_not_break_shooting(lua):
