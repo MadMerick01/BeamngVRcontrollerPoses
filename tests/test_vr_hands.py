@@ -145,3 +145,25 @@ def test_head_offset_turns_with_the_anchor(lua, conjugate):
 
     g.hands.getConfig().fixHeadOffset = False
     assert close(vec(g.hands.getPose("right", "aim").pos), (0.6, 0.2, 1))
+
+
+def test_hooks_openxr_once_vr_starts(lua):
+    # OpenXR only exists once VR is on, which can be after the mod loads.
+    g = lua.globals()
+    lua.execute("OpenXR = nil")
+    send(lua, packet())
+    assert not g.hands.getStatus().openxrHooked
+    lua.execute("OpenXR = mock.makeOpenXR()")
+    send(lua, packet())
+    assert g.hands.getStatus().openxrHooked
+    lua.execute("mock.xrHead = {0.1, 0.2, 0, 0, 0, 0, 1}")
+    g.OpenXR.setGeluaCameraPosRot(0, 0, 1, 0, 0, 1, 0)
+    assert tuple(lua.eval("{OpenXR.getCameraPosRotPredictedXYZXYZW()}").values()) == (0.1, 0.2, 0, 0, 0, 0, 1)
+    assert g.hands.getStatus().headOffsetFix
+
+    # Reloading the extension wraps the originals again, not its own wrappers.
+    again = lua.execute((ROOT / "mod/lua/ge/extensions/vrHands.lua").read_text())
+    again.onExtensionLoaded()
+    again.onPreRender()
+    assert again.getStatus().openxrHooked
+    assert lua.eval("vrHandsOpenXROriginals.set") is not None

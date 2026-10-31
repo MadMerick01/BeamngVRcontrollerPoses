@@ -97,28 +97,49 @@ local function headTransform()
 end
 
 -- Records the camera anchor rotation and the headset offset that gameengine.lua
--- exchanges with OpenXR each frame. The originals are kept on the OpenXR table so
--- reloading this extension never wraps twice.
+-- exchanges with OpenXR each frame. The OpenXR table may not exist until VR
+-- starts, so onPreRender keeps retrying. The originals live in a Lua global
+-- (the OpenXR binding may refuse new keys) so a reload never wraps twice.
+local hooks = {set = nil, get = nil}
+
 local function wrapOpenXR()
   if type(OpenXR) ~= 'table' then return end
-  local okS, origSet = pcall(function() return OpenXR._vrHandsSet or OpenXR.setGeluaCameraPosRot end)
-  local okG, origGet = pcall(function() return OpenXR._vrHandsGet or OpenXR.getCameraPosRotPredictedXYZXYZW end)
-  if not (okS and okG and type(origSet) == 'function' and type(origGet) == 'function') then return end
+  local okS, curSet = pcall(function() return OpenXR.setGeluaCameraPosRot end)
+  local okG, curGet = pcall(function() return OpenXR.getCameraPosRotPredictedXYZXYZW end)
+  if not (okS and okG) or (curSet == hooks.set and curGet == hooks.get) then return end
+  if type(curSet) ~= 'function' or type(curGet) ~= 'function' then return end
+
+  local saved = rawget(_G, 'vrHandsOpenXROriginals')
+  if not saved or saved.xr ~= OpenXR then
+    saved = {xr = OpenXR, set = curSet, get = curGet}
+    rawset(_G, 'vrHandsOpenXROriginals', saved)
+  end
+  local origSet, origGet = saved.set, saved.get
+
+  hooks.set = function(px, py, pz, rx, ry, rz, rw, ...)
+    xrFrame.anchorRot = {rx, ry, rz, rw}
+    return origSet(px, py, pz, rx, ry, rz, rw, ...)
+  end
+  hooks.get = function(...)
+    local px, py, pz, rx, ry, rz, rw = origGet(...)
+    if px and socketlib then
+      xrFrame.headOffset, xrFrame.time = {px, py, pz}, socketlib.gettime()
+    end
+    return px, py, pz, rx, ry, rz, rw
+  end
   local ok, err = pcall(function()
-    OpenXR._vrHandsSet, OpenXR._vrHandsGet = origSet, origGet
-    OpenXR.setGeluaCameraPosRot = function(px, py, pz, rx, ry, rz, rw, ...)
-      xrFrame.anchorRot = {rx, ry, rz, rw}
-      return origSet(px, py, pz, rx, ry, rz, rw, ...)
-    end
-    OpenXR.getCameraPosRotPredictedXYZXYZW = function(...)
-      local px, py, pz, rx, ry, rz, rw = origGet(...)
-      if px and socketlib then
-        xrFrame.headOffset, xrFrame.time = {px, py, pz}, socketlib.gettime()
-      end
-      return px, py, pz, rx, ry, rz, rw
-    end
+    OpenXR.setGeluaCameraPosRot = hooks.set
+    OpenXR.getCameraPosRotPredictedXYZXYZW = hooks.get
   end)
-  if not ok then log('W', 'vrHands', 'cannot hook OpenXR camera calls: ' .. tostring(err)) end
+  if ok and OpenXR.setGeluaCameraPosRot == hooks.set and OpenXR.getCameraPosRotPredictedXYZXYZW == hooks.get then
+    log('I', 'vrHands', 'hooked OpenXR camera calls')
+  else
+    pcall(function()
+      OpenXR.setGeluaCameraPosRot, OpenXR.getCameraPosRotPredictedXYZXYZW = origSet, origGet
+    end)
+    log('W', 'vrHands', 'cannot hook OpenXR camera calls: ' .. tostring(err))
+    hooks.set, hooks.get = curSet, curGet  -- don't retry every frame
+  end
 end
 
 -- ------------------------------------------------------------ network ---
@@ -205,7 +226,8 @@ function M.getStatus()
     packetAgeMs = packetAgeMs(),
     lastError = lastError,
     headConvention = headConvention,
-    headOffsetFix = cfg.fixHeadOffset and xrFrame.headOffset ~= nil,
+    openxrHooked = hooks.set ~= nil and type(OpenXR) == 'table' and OpenXR.setGeluaCameraPosRot == hooks.set,
+    headOffsetFix = cfg.fixHeadOffset and xrFrame.time ~= nil and socketlib ~= nil and socketlib.gettime() - xrFrame.time < 0.25,
     left = {grip = M.getPose('left', 'grip').valid, aim = M.getPose('left', 'aim').valid, trigger = M.getTrigger('left')},
     right = {grip = M.getPose('right', 'grip').valid, aim = M.getPose('right', 'aim').valid, trigger = M.getTrigger('right')},
   }
@@ -271,6 +293,7 @@ end
 -- frame's final head pose. Consumers should read poses from their own
 -- onPreRender (or later), not onUpdate.
 function M.onPreRender()
+  wrapOpenXR()
   receive()
   if cfg.debug then drawDebug() end
 end

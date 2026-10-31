@@ -28,10 +28,21 @@ function getCameraPosition() return mock.camPos end
 function getCameraQuat() return mock.camQuat end
 -- OpenXR camera calls as gameengine.lua makes them; mock.xrHead is the tracked offset.
 mock.xrHead = {0, 0, 0, 0, 0, 0, 1}
-OpenXR = {
-  setGeluaCameraPosRot = function() end,
-  getCameraPosRotPredictedXYZXYZW = function() return unpack(mock.xrHead) end,
-}
+-- Like the engine binding, it accepts writes to its own functions but no new keys.
+function mock.makeOpenXR()
+  local fns = {
+    setGeluaCameraPosRot = function() end,
+    getCameraPosRotPredictedXYZXYZW = function() return unpack(mock.xrHead) end,
+  }
+  return setmetatable({}, {
+    __index = fns,
+    __newindex = function(_, k, v)
+      if fns[k] == nil then error('cannot add ' .. tostring(k) .. ' to OpenXR') end
+      fns[k] = v
+    end,
+  })
+end
+OpenXR = mock.makeOpenXR()
 core_camera = {getForward = function() return mock.camForward end}
 function jsonDecode(s) return mock.decode(s) end
 
