@@ -13,7 +13,7 @@ from tests.test_vr_hands import ROOT, lua_impl, packet, face_plus_x  # noqa: E40
 def lua():
     rt = lua_impl.LuaRuntime(unpack_returned_tuples=True)
     rt.execute((ROOT / "tests" / "beamng_mock.lua").read_text())
-    rt.execute(f"package.path = '{ROOT}/mod/lua/ge/extensions/?.lua;' .. package.path")
+    rt.execute(f"package.path = '{ROOT.as_posix()}/mod/lua/ge/extensions/?.lua;' .. package.path")
     rt.globals().mock.decode = lambda s: rt.table_from(json.loads(s), recursive=True)
     hands = rt.execute((ROOT / "mod/lua/ge/extensions/vrHands.lua").read_text())
     hands.onExtensionLoaded()
