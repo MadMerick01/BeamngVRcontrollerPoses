@@ -88,7 +88,7 @@ vrHands.startCapture(20)           -- record 20 s of camera + pose data to <user
 Hold the right grip to draw the gun. While it is drawn BeamNG's own controller
 pointer (the black line and orange ball) is switched off, and it comes back
 when you let go, so you can still open doors and use menus with the gun put
-away. Pull the right trigger to shoot. The revolver is double action: as you squeeze,
+away. Drawing it plays a holster sound. Pull the right trigger to shoot. The revolver is double action: as you squeeze,
 the hammer comes back and the cylinder turns, and at the break the hammer drops,
 the gun goes bang (the Bolides player gunshot), the muzzle flashes and it
 kicks up and back in your hand. An optional red laser from
@@ -106,6 +106,7 @@ vrPistol.setModelOffset(0, -0.02, 0.05, 0)   -- gun origin (bore, rear of cylind
 vrPistol.getConfig().recoilPitchDeg = 22     -- also recoilBack, hammerCockDeg, triggerTravelDeg, flashTime
 vrPistol.getConfig().shotVolume = 18         -- shotSound = '' mutes it
 vrPistol.testSound()                         -- plays the gunshot once (check the console for "created SFX source")
+vrPistol.testSound('equip')                  -- plays the equip sound (equipSound, equipVolume)
 vrPistol.setLaser(true)                      -- aiming laser (off by default)
 vrPistol.getConfig().equipOnGrip = false     -- gun always drawn; hideGamePointer = false keeps BeamNG's pointer
 vrPistol.getConfig().impactForce = 9000      -- also blastRadius, blastForce, deflateTyres, range, cooldown

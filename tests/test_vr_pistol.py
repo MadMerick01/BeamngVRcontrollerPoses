@@ -306,8 +306,11 @@ def test_gun_is_drawn_only_while_the_grip_is_held(lua):
     assert pointer() is True
 
     # Grip held: gun drawn, pointer hidden, it shoots.
+    lua.globals().mock.player = add(lua, "player", (0, -50, 0), (2, 1, 1))
     frame(lua, packet(right_aim=AIM, trigger=0.0, squeeze=1.0))
     assert lua.globals().vrPistol.isEquipped() and pointer() is False
+    to_player = [c.cmd for c in all_commands(lua) if c.name == "player"]
+    assert len(to_player) == 2 and "pistol_equip.wav" in to_player[0]  # equip sound
     before = tris()
     frame(lua, packet(right_aim=AIM, trigger=0.0, squeeze=0.5))  # inside the hysteresis: still drawn
     assert tris() > before

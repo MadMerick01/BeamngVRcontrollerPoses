@@ -38,6 +38,8 @@ local cfg = {
   shotSound = '/art/sound/vrpistol/revolver_shot.wav',
   shotVolume = 18,
   shotPitch = 1.0,
+  equipSound = '/art/sound/vrpistol/pistol_equip.wav',  -- played when the gun is drawn ('' mutes it)
+  equipVolume = 12,
   laser = false,
   -- Hold the grip to draw the gun; let go to put it away (no gun, no shots).
   -- While it is drawn BeamNG's own controller pointer (black line and orange
@@ -366,16 +368,13 @@ local function muzzlePos(aim)
   return toWorld(origin, aim.right, f, u, MUZZLE)
 end
 
--- Gunshot, played step for step the way Bolides' FirstPersonShoot plays its
+-- Gunshot and equip sound, played step for step the way Bolides' FirstPersonShoot plays its
 -- player shot: every shot first makes sure a pool of 2D SFX sources exists in
 -- the player vehicle's Lua (so it survives a vehicle reload or switch), then a
 -- second queued command plays the next source in the pool, trying each playSFX
 -- signature BeamNG has used, with playSFXOnce as the last resort. With no
 -- player vehicle it falls back to the GUI channel.
-local SOUND_POOL = 6
-local SOUND_NAME = 'vrPistolShot'
-
-local function ensureShotSources(veh)
+local function ensureSources(veh, name, file, count)
   veh:queueLuaCommand(string.format([[
     _G.__vrPistolShotAudio = _G.__vrPistolShotAudio or { ids = {}, pools = {} }
     local A = _G.__vrPistolShotAudio.ids
@@ -399,19 +398,18 @@ local function ensureShotSources(veh)
     if (pool.index or 1) < 1 or (pool.index or 1) > count then
       pool.index = 1
     end
-  ]], SOUND_NAME, cfg.shotSound, SOUND_POOL))
+  ]], name, file, count))
 end
 
-local function playShotSound()
-  if not cfg.shotSound or cfg.shotSound == '' then return end
+local function playSound(name, file, vol, pitch, count)
+  if not file or file == '' then return end
   local veh = be:getPlayerVehicle(0)
   if not veh or not veh.queueLuaCommand then
-    local ok, err = pcall(function() Engine.Audio.playOnce('AudioGui', cfg.shotSound) end)
+    local ok, err = pcall(function() Engine.Audio.playOnce('AudioGui', file) end)
     if not ok then log('W', 'vrPistol', 'no player vehicle and Engine.Audio.playOnce failed: ' .. tostring(err)) end
     return
   end
-  ensureShotSources(veh)
-  local vol, pitch, file = cfg.shotVolume, cfg.shotPitch or 1.0, cfg.shotSound
+  ensureSources(veh, name, file, count)
   veh:queueLuaCommand(string.format([[
     if not (_G.__vrPistolShotAudio and _G.__vrPistolShotAudio.ids) then return end
     local A = _G.__vrPistolShotAudio.ids
@@ -450,11 +448,14 @@ local function playShotSound()
 
     if obj.setSFXSourceVolume then pcall(function() obj:setSFXSourceVolume(id, %0.3f) end) end
     if obj.setSFXSourcePitch  then pcall(function() obj:setSFXSourcePitch(id, %0.3f) end) end
-  ]], SOUND_NAME, vol, pitch, vol, pitch, vol, pitch, file, file, vol, pitch, vol, pitch))
+  ]], name, vol, pitch, vol, pitch, vol, pitch, file, file, vol, pitch, vol, pitch))
 end
 
+local function playShotSound() playSound('vrPistolShot', cfg.shotSound, cfg.shotVolume, cfg.shotPitch or 1.0, 6) end
+local function playEquipSound() playSound('vrPistolEquip', cfg.equipSound, cfg.equipVolume, 1.0, 2) end
+
 -- Console check for the gunshot without shooting anything.
-function M.testSound() playShotSound() end
+function M.testSound(which) if which == 'equip' then playEquipSound() else playShotSound() end end
 
 -- Advances the cylinder, starts the recoil and muzzle flash, and fires the sound.
 local function cycleAction(t)
@@ -668,6 +669,7 @@ local function updateEquipped(aim)
     equipped = want
     triggerHeld = false
     if cfg.hideGamePointer or not want then setGamePointerHidden(want) end
+    if want and cfg.equipOnGrip then playEquipSound() end
   end
   return equipped
 end
