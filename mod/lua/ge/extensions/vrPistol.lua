@@ -5,6 +5,21 @@
 --   vrPistol.setModelOffset(x, y, z, pitchDeg)  -- fit the model to your hand
 --   vrPistol.fireFromCamera()         -- desktop test: shoot along the camera view
 --
+-- Ammo: the cylinder holds six rounds. Put the gun away for reloadSeconds and
+-- draw it again to reload; with an empty cylinder the trigger just clicks.
+-- Spare rounds are unlimited unless another mod sets them:
+--
+--   vrPistol.getAmmo()                -- rounds, cylinderSize, spareRounds (nil = unlimited)
+--   vrPistol.setAmmo(rounds, spare)   -- spare: a number, or nil for unlimited
+--   vrPistol.reload()                 -- refill now from the spare rounds
+--   vrPistol.setShotFilter(fn)        -- fn() returning false refuses a shot (dry click)
+--
+-- Hooks for other mods (extensions.hook, so any loaded extension can listen):
+--   onVrPistolShot(origin, dir, roundsLeft)   -- a round was fired
+--   onVrPistolDryFire(reason)                 -- 'empty' or 'refused'
+--   onVrPistolReload(rounds, spareRounds)     -- the cylinder was refilled
+--   onVrPistolHit(vehId, pos, nodesPushed)    -- a shot hit a vehicle
+--
 -- The shot always travels along the controller's aim ray (OpenXR aim pose), so
 -- the model offset only changes how the gun looks, never where it hits.
 --
@@ -53,6 +68,8 @@ local cfg = {
   triggerPress = 0.7,
   triggerRelease = 0.3,
   cooldown = 0.12,
+  cylinderSize = 6,      -- rounds per load (0 = never runs out)
+  reloadSeconds = 1.5,   -- how long the gun must be put away to reload when drawn again
   hitRadius = 0.3,       -- how far from the ray a vehicle node still counts as hit
   -- Impact physics, same model and defaults as Bolides' BulletDamage.lua:
   impactForce = 6000,    -- push on the hit node along the bullet, scaled by node mass
@@ -77,6 +94,8 @@ local triggerHeld, lastShot = false, -math.huge
 local equipped, savedPointerSetting = false, nil
 local shotsFired, flashRoll = 0, 0
 local markers = {}  -- {pos, untilTime, colour}
+local rounds, spareRounds = cfg.cylinderSize, nil  -- spareRounds nil: unlimited
+local shotFilter, holsteredAt = nil, nil
 
 local laserColour = ColorF(1, 0.1, 0.1, 0.8)
 local hitColour = ColorF(1, 0.6, 0, 1)
@@ -87,6 +106,14 @@ pcall(function()
   local socket = require('socket')
   now = socket.gettime
 end)
+
+-- Tells every loaded extension (extensions.hook), if the game has it.
+local function hook(name, ...)
+  if extensions and extensions.hook then
+    local ok, err = pcall(extensions.hook, name, ...)
+    if not ok then log('E', 'vrPistol', name .. ' listener failed: ' .. tostring(err)) end
+  end
+end
 
 -- --------------------------------------------------------------- model ---
 
@@ -467,6 +494,38 @@ local function cycleAction(t)
   if cfg.hapticAmplitude > 0 then vrHands.pulse(cfg.hand, cfg.hapticAmplitude, cfg.hapticSeconds) end
 end
 
+-- -------------------------------------------------------------- ammo ---
+
+function M.getAmmo() return rounds, cfg.cylinderSize, spareRounds end
+
+function M.setAmmo(n, spare)
+  rounds = math.max(0, math.min(cfg.cylinderSize, math.floor(tonumber(n) or 0)))
+  spareRounds = spare and math.max(0, math.floor(spare)) or nil
+end
+
+-- Fills the cylinder from the spare rounds. Returns how many were loaded.
+function M.reload()
+  local want = math.max(0, cfg.cylinderSize - rounds)
+  local loaded = spareRounds and math.min(want, spareRounds) or want
+  if loaded <= 0 then return 0 end
+  rounds = rounds + loaded
+  if spareRounds then spareRounds = spareRounds - loaded end
+  hook('onVrPistolReload', rounds, spareRounds)
+  return loaded
+end
+
+-- fn() is asked before every shot; returning false refuses it (the gun clicks).
+function M.setShotFilter(fn) shotFilter = fn end
+
+-- Why the next pull cannot fire, or nil when it can.
+local function dryReason()
+  if cfg.cylinderSize > 0 and rounds <= 0 then return 'empty' end
+  if shotFilter then
+    local ok, allowed = pcall(shotFilter)
+    if ok and allowed == false then return 'refused' end
+  end
+end
+
 -- -------------------------------------------------------------- hits ---
 
 -- Ray against an oriented box; returns entry distance or nil.
@@ -547,13 +606,30 @@ end
 
 -- Called from vehicle Lua when a shot connects.
 function M.onVehicleHit(vehId, x, y, z, nodesPushed)
-  addMarker(vec3(x, y, z), hitColour)
+  local pos = vec3(x, y, z)
+  addMarker(pos, hitColour)
   log('D', 'vrPistol', string.format('hit vehicle %d, pushed %d nodes', vehId, nodesPushed))
+  hook('onVrPistolHit', vehId, pos, nodesPushed)
+end
+
+-- A trigger break: fires a round, or clicks when empty or refused. The
+-- cylinder turns either way. Returns true if a round was fired.
+local function pullTrigger(t, origin, dir)
+  local reason = dryReason()
+  if reason then
+    shotsFired = shotsFired + 1
+    hook('onVrPistolDryFire', reason)
+    return false
+  end
+  if cfg.cylinderSize > 0 then rounds = rounds - 1 end
+  cycleAction(t)
+  M.shoot(origin, dir)
+  hook('onVrPistolShot', origin, dir:normalized(), rounds)
+  return true
 end
 
 function M.fireFromCamera()
-  cycleAction(now())
-  M.shoot(getCameraPosition(), core_camera.getForward())
+  return pullTrigger(now(), getCameraPosition(), core_camera.getForward())
 end
 
 function M.setLaser(enabled) cfg.laser = enabled and true or false end
@@ -639,6 +715,7 @@ function M.getActionState(trigger)
   local t = now()
   local a = actionAngles(trigger or 0, t)
   a.shotsFired = shotsFired
+  a.rounds = rounds
   a.recoil = recoilKick(t - lastShot)
   return a
 end
@@ -672,6 +749,10 @@ local function updateEquipped(aim)
     triggerHeld = false
     if cfg.hideGamePointer or not want then setGamePointerHidden(want) end
     if want and cfg.equipOnGrip then playEquipSound() end
+    -- Reloading: put away long enough, the gun comes out full.
+    local t = now()
+    if not want then holsteredAt = t
+    elseif holsteredAt and t - holsteredAt >= cfg.reloadSeconds then M.reload() end
   end
   return equipped
 end
@@ -701,8 +782,7 @@ function M.onPreRender(dtReal)
     if not triggerHeld and trigger >= cfg.triggerPress then
       triggerHeld = true
       if t - lastShot >= cfg.cooldown then
-        cycleAction(t)
-        M.shoot(aim.pos, aim.dir)
+        pullTrigger(t, aim.pos, aim.dir)
       else
         shotsFired = shotsFired + 1  -- too soon: the action still cycles, no shot
       end

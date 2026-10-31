@@ -126,3 +126,9 @@ settings = {
   getValue = function(k) return mock.settings[k] end,
   setValue = function(k, v) mock.settings[k] = v end,
 }
+
+-- extensions.hook: records each call so tests can see what other mods would hear.
+mock.hooks = {}
+extensions = {hook = function(name, ...)
+  mock.hooks[#mock.hooks + 1] = {name = name, args = {...}}
+end}
