@@ -23,7 +23,7 @@ local cfg = {
   port = 44441,
   staleMs = 150,
   debug = false,
-  fixHeadOffset = true,
+  fixHeadOffset = false,  -- experimental, see README
 }
 
 local socketlib, udp
@@ -31,7 +31,9 @@ local packet, packetTime, packetCount, lastError = nil, nil, 0, nil
 local headConvention = 'unknown'
 
 -- What gameengine.lua passed to and got from OpenXR this frame (see wrapOpenXR).
-local xrFrame = {anchorRot = nil, headOffset = nil, time = nil}
+local xrFrame = {anchorPos = nil, anchorRot = nil, headOffset = nil, headRot = nil, time = nil}
+local lastRaw  -- last packet text, for captures
+local capture  -- {untilTime, path, lines}
 
 local emptyPose = {valid = false}
 
@@ -117,13 +119,13 @@ local function wrapOpenXR()
   local origSet, origGet = saved.set, saved.get
 
   hooks.set = function(px, py, pz, rx, ry, rz, rw, ...)
-    xrFrame.anchorRot = {rx, ry, rz, rw}
+    xrFrame.anchorPos, xrFrame.anchorRot = {px, py, pz}, {rx, ry, rz, rw}
     return origSet(px, py, pz, rx, ry, rz, rw, ...)
   end
   hooks.get = function(...)
     local px, py, pz, rx, ry, rz, rw = origGet(...)
     if px and socketlib then
-      xrFrame.headOffset, xrFrame.time = {px, py, pz}, socketlib.gettime()
+      xrFrame.headOffset, xrFrame.headRot, xrFrame.time = {px, py, pz}, {rx, ry, rz, rw}, socketlib.gettime()
     end
     return px, py, pz, rx, ry, rz, rw
   end
@@ -154,7 +156,7 @@ local function receive()
     end
     local ok, p = pcall(jsonDecode, data)
     if ok and type(p) == 'table' and p.v == 3 and type(p.hands) == 'table' then
-      packet, packetTime, packetCount = p, socketlib.gettime(), packetCount + 1
+      packet, packetTime, packetCount, lastRaw = p, socketlib.gettime(), packetCount + 1, data
     end
   end
 end
@@ -216,6 +218,51 @@ function M.pulse(hand, amplitude, seconds)
 end
 
 function M.setDebug(enabled) cfg.debug = enabled and true or false end
+
+local function say(msg)
+  log('I', 'vrHands', msg)
+  if ui_message then pcall(ui_message, msg, 10, 'vrHands') end
+end
+
+-- Records what vrHands sees each frame for a few seconds, for diagnosing
+-- alignment: anchor and head offset from OpenXR, the final camera, the layer
+-- packet and the computed gun pose. Writes <user folder>/vrHandsCapture/*.jsonl.
+function M.startCapture(seconds)
+  if not socketlib then return end
+  local dir = '/vrHandsCapture/'
+  pcall(function() FS:directoryCreate(dir, true) end)
+  capture = {untilTime = socketlib.gettime() + (seconds or 20), lines = {},
+    path = dir .. os.date('%Y%m%d_%H%M%S') .. '.jsonl'}
+  say('vrHands capture started: hold the right controller still, turn and tilt your head')
+end
+
+local function vec3List(v) return v and {v.x, v.y, v.z} or nil end
+
+local function recordCapture()
+  if not capture then return end
+  local now = socketlib.gettime()
+  if now > capture.untilTime then
+    local ok = pcall(writeFile, capture.path, table.concat(capture.lines, '\n') .. '\n')
+    local where = capture.path
+    pcall(function() where = FS:getUserPath() .. capture.path:sub(2) end)
+    say(ok and ('vrHands capture saved: ' .. where) or 'vrHands capture could not be written')
+    capture = nil
+    return
+  end
+  local okP, p = pcall(getCameraPosition)
+  local okQ, q = pcall(getCameraQuat)
+  local okN, name = pcall(function() return core_camera.getActiveCamName() end)
+  local gun = M.getPose('right', 'aim')
+  local frame = {
+    t = now, cam = okN and name or nil, conv = headConvention, fix = cfg.fixHeadOffset,
+    anchorPos = xrFrame.anchorPos, anchorRot = xrFrame.anchorRot,
+    headOffset = xrFrame.headOffset, headRot = xrFrame.headRot, xrAge = xrFrame.time and now - xrFrame.time,
+    camPos = okP and vec3List(p) or nil, camQuat = okQ and q and {q.x, q.y, q.z, q.w} or nil,
+    gunPos = gun.valid and vec3List(gun.pos) or nil, gunDir = gun.valid and vec3List(gun.dir) or nil,
+  }
+  local ok, text = pcall(jsonEncode, frame)
+  if ok then capture.lines[#capture.lines + 1] = text:sub(1, -2) .. ',"packet":' .. (lastRaw or 'null') .. '}' end
+end
 function M.getConfig() return cfg end
 
 function M.getStatus()
@@ -295,6 +342,7 @@ end
 function M.onPreRender()
   wrapOpenXR()
   receive()
+  recordCapture()
   if cfg.debug then drawDebug() end
 end
 

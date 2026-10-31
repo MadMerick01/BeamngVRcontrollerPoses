@@ -78,7 +78,8 @@ struct SessionInfo {
 
 struct PoseState {
   bool valid{};
-  XrPosef pose{{0, 0, 0, 1}, {0, 0, 0}};
+  XrPosef pose{{0, 0, 0, 1}, {0, 0, 0}};  // relative to the head
+  XrPosef raw{{0, 0, 0, 1}, {0, 0, 0}};   // in BeamNG's base space, for diagnostics
   XrTime time{};
 };
 
@@ -98,6 +99,7 @@ std::unordered_map<XrActionSet, XrInstance> actionSets;
 std::unordered_map<XrAction, ActionInfo> actions;
 std::unordered_map<XrSpace, SpaceInfo> spaces;
 HandState hands[2];
+XrPosef rawHead{{0, 0, 0, 1}, {0, 0, 0}};  // head in BeamNG's base space, for diagnostics
 unsigned long long sequence = 0;
 
 SOCKET sock = INVALID_SOCKET;
@@ -198,17 +200,25 @@ void openHapticSocket() {
 
 int appendPose(char* out, size_t size, const PoseState& s) {
   const XrPosef& p = s.pose;
+  const XrPosef& r = s.raw;
   return std::snprintf(out, size,
-                       "{\"ok\":%s,\"t\":%lld,\"p\":[%.6f,%.6f,%.6f],\"q\":[%.6f,%.6f,%.6f,%.6f]}",
+                       "{\"ok\":%s,\"t\":%lld,\"p\":[%.6f,%.6f,%.6f],\"q\":[%.6f,%.6f,%.6f,%.6f],"
+                       "\"rp\":[%.6f,%.6f,%.6f],\"rq\":[%.6f,%.6f,%.6f,%.6f]}",
                        s.valid ? "true" : "false", static_cast<long long>(s.time), p.position.x,
                        p.position.y, p.position.z, p.orientation.x, p.orientation.y,
-                       p.orientation.z, p.orientation.w);
+                       p.orientation.z, p.orientation.w, r.position.x, r.position.y, r.position.z,
+                       r.orientation.x, r.orientation.y, r.orientation.z, r.orientation.w);
 }
 
 // Caller holds the mutex.
 int buildPacketLocked(char* out, size_t size, XrTime time) {
-  int n = std::snprintf(out, size, "{\"v\":3,\"seq\":%llu,\"t\":%lld,\"hands\":{", ++sequence,
-                        static_cast<long long>(time));
+  const XrPosef& h = rawHead;
+  int n = std::snprintf(out, size,
+                        "{\"v\":3,\"seq\":%llu,\"t\":%lld,"
+                        "\"head\":{\"p\":[%.6f,%.6f,%.6f],\"q\":[%.6f,%.6f,%.6f,%.6f]},\"hands\":{",
+                        ++sequence, static_cast<long long>(time), h.position.x, h.position.y,
+                        h.position.z, h.orientation.x, h.orientation.y, h.orientation.z,
+                        h.orientation.w);
   const char* names[2] = {"left", "right"};
   for (int h = 0; h < 2 && n > 0 && static_cast<size_t>(n) < size; ++h) {
     n += std::snprintf(out + n, size - n, "%s\"%s\":{\"grip\":", h ? "," : "", names[h]);
@@ -389,7 +399,7 @@ void record(const Dispatch& d, const SpaceInfo& tagged, XrSpace view, XrSpace ba
                       (head.locationFlags & kPoseValid) == kPoseValid;
   const bool controllerOk = (flags & kPoseValid) == kPoseValid;
 
-  char packet[1024];
+  char packet[2048];
   int length = -1;
   {
     std::lock_guard lock(mutex);
@@ -399,6 +409,8 @@ void record(const Dispatch& d, const SpaceInfo& tagged, XrSpace view, XrSpace ba
     if (headOk && controllerOk) {
       state.valid = true;
       state.pose = relativeTo(head.pose, pose);
+      state.raw = pose;
+      rawHead = head.pose;
       state.time = time;
     } else if (state.time != time) {
       state.valid = false;

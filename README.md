@@ -29,7 +29,8 @@ So `controllerWorld = headWorld × controllerRelativeToHead`. One catch: gameeng
 adds the tracked head offset to the anchor without turning it by the anchor's yaw,
 so `getCameraPosition()` only follows your real head while the anchor faces north.
 `vrHands` records the anchor rotation and offset from those two OpenXR calls and
-uses `anchor + anchorRot × offset` instead (`vrHands.getConfig().fixHeadOffset`). No tracking-space
+can use `anchor + anchorRot × offset` instead (`vrHands.getConfig().fixHeadOffset = true`).
+That correction is still experimental and off by default. No tracking-space
 baselines, recenter handling, stick-turn rebasing or camera-context tracking are
 needed. v2's ~1,450 lines of camera reconstruction are gone.
 
@@ -71,6 +72,7 @@ Everything loads automatically. For diagnostics, open the GE Lua console (`~`):
 ```lua
 vrHands.setDebug(true)             -- yellow grip spheres + RGB axes, aim rays
 dump(vrHands.getStatus())          -- packets, age, which poses are valid
+vrHands.startCapture(20)           -- record 20 s of camera + pose data to <user folder>/vrHandsCapture/
 ```
 
 Pull the right trigger to shoot. The revolver is double action: as you squeeze,

@@ -126,6 +126,7 @@ def test_newest_packet_wins(lua):
 
 @pytest.mark.parametrize("conjugate", [False, True])
 def test_head_offset_turns_with_the_anchor(lua, conjugate):
+    lua.globals().hands.getConfig().fixHeadOffset = True
     # BeamNG adds the tracked head offset to the anchor without turning it by the
     # anchor's yaw. With the anchor facing +X (yaw -90), a head 0.1 m right and
     # 0.2 m forward of the tracking origin really sits at anchor + (0.2, -0.1, 0).
@@ -156,6 +157,7 @@ def test_hooks_openxr_once_vr_starts(lua):
     lua.execute("OpenXR = mock.makeOpenXR()")
     send(lua, packet())
     assert g.hands.getStatus().openxrHooked
+    g.hands.getConfig().fixHeadOffset = True
     lua.execute("mock.xrHead = {0.1, 0.2, 0, 0, 0, 0, 1}")
     g.OpenXR.setGeluaCameraPosRot(0, 0, 1, 0, 0, 1, 0)
     assert tuple(lua.eval("{OpenXR.getCameraPosRotPredictedXYZXYZW()}").values()) == (0.1, 0.2, 0, 0, 0, 0, 1)
@@ -167,3 +169,32 @@ def test_hooks_openxr_once_vr_starts(lua):
     again.onPreRender()
     assert again.getStatus().openxrHooked
     assert lua.eval("vrHandsOpenXROriginals.set") is not None
+
+
+def test_capture_writes_frames(lua):
+    lua.execute("""
+      written = nil
+      function writeFile(path, text) written = {path = path, text = text} return true end
+      FS = {directoryCreate = function() end, getUserPath = function() return 'C:/user/' end}
+      local function enc(v)
+        if type(v) == 'table' then
+          local parts, isList = {}, #v > 0
+          for k, x in pairs(v) do parts[#parts + 1] = isList and enc(x) or ('"' .. k .. '":' .. enc(x)) end
+          return isList and ('[' .. table.concat(parts, ',') .. ']') or ('{' .. table.concat(parts, ',') .. '}')
+        elseif type(v) == 'string' then return '"' .. v .. '"' end
+        return tostring(v)
+      end
+      jsonEncode = enc
+    """)
+    g = lua.globals()
+    g.hands.startCapture(1)
+    send(lua, packet(right_aim=([0, 0, -0.5], [0, 0, 0, 1])))
+    send(lua, packet(right_aim=([0, 0, -0.5], [0, 0, 0, 1])))
+    g.mock.time = 102
+    send(lua, packet())
+    assert g.written.path.startswith("/vrHandsCapture/")
+    lines = g.written.text.strip().split("\n")
+    assert len(lines) == 2
+    frame = json.loads(lines[0])
+    assert frame["packet"]["v"] == 3
+    assert frame["gunPos"] == [0, 0.5, 0]
