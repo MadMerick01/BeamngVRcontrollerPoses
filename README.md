@@ -105,7 +105,17 @@ vrPistol.getConfig().shotVolume = 12         -- shotSound = '' mutes it
 vrPistol.setLaser(false)
 vrPistol.getConfig().impactForce = 9000      -- also blastRadius, blastForce, deflateTyres, range, cooldown
 vrPistol.fireFromCamera()                    -- desktop test along the camera view
+vrPistol.startModelTest()                     -- gun smoothness test, see below
 ```
+
+The laser is drawn straight to the screen each frame, but the revolver is a scene
+object. Lua moves the engine's server copy, and the copy that gets drawn follows
+over the engine's internal network, which can lag. `vrPistol.startModelTest()`
+spends 8 s on each of five ways of moving the model while you drive (A as now,
+B also moving the drawn copy, C/D leading the car by 1/2 frames, E both). It
+announces each letter and records every frame to
+`<user folder>/vrHandsCapture/model_*.jsonl`. The options are also in
+`getConfig()` as `placeMode` ('server'/'client') and `predictSeconds`.
 
 ### Revolver model
 

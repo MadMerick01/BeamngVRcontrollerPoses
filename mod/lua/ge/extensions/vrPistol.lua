@@ -47,6 +47,10 @@ local cfg = {
   blastInversion = 0.3,  -- chance a node is pulled instead of pushed
   deflateTyres = true,   -- a hit near a wheel hub also flattens that tyre
   allowSelfHit = false,
+  -- How the model follows the hand (see startModelTest):
+  -- 'server' moves the scene object, 'client' also moves its rendered copy directly.
+  placeMode = 'server',
+  predictSeconds = 0,    -- shift the model along the camera's motion by this much time
 }
 
 local parts, modelMissingLogged
@@ -179,14 +183,40 @@ local function actionAngles(trigger, t)
   }
 end
 
+-- Scene objects made from Lua are server objects; the copy that gets drawn is
+-- updated over the (local) network, which can lag a frame or more behind.
+-- 'client' mode moves the drawn copy too, when the engine lets us reach it.
+local clientObjects = setmetatable({}, {__mode = 'k'})
+local function clientOf(o)
+  local c = clientObjects[o]
+  if c == nil then
+    local ok, co = pcall(function() return o:getClientObject() end)
+    c = ok and co or false
+    clientObjects[o] = c
+  end
+  return c or nil
+end
+
+local predictShift = vec3(0, 0, 0)
+
 local function placePart(o, pos, f, u)
   local rot = quatFromDir(f, u)
+  pos = pos + predictShift
+  if o == parts.frame then M._lastFramePos = pos end
   o:setHidden(false)
   o:setPosRot(pos.x, pos.y, pos.z, rot.x, rot.y, rot.z, rot.w)
+  if cfg.placeMode == 'client' then
+    local c = clientOf(o)
+    if c then pcall(function() c:setPosRot(pos.x, pos.y, pos.z, rot.x, rot.y, rot.z, rot.w) end) end
+  end
 end
 
 local function placeModel(aim, trigger, t)
   if not ensureModel() then return end
+  predictShift = vec3(0, 0, 0)
+  if cfg.predictSeconds ~= 0 and vrHands.getAnchorMotion then
+    predictShift = vrHands.getAnchorMotion().vel * cfg.predictSeconds
+  end
   if not aim.valid then
     for _, o in pairs(parts) do o:setHidden(true) end
     return
@@ -351,6 +381,75 @@ end
 
 function M.getConfig() return cfg end
 
+-- Model smoothness test: drive steadily at speed and watch the gun. It cycles
+-- through ways of moving the model, announcing each phase, and records what
+-- happened every frame to <user folder>/vrHandsCapture/model_*.jsonl.
+local modelTest
+local TEST_PHASES = {
+  {name = 'A', placeMode = 'server', predictFrames = 0, msg = 'A: as now'},
+  {name = 'B', placeMode = 'client', predictFrames = 0, msg = 'B: move the drawn copy directly'},
+  {name = 'C', placeMode = 'server', predictFrames = 1, msg = 'C: lead the car by 1 frame'},
+  {name = 'D', placeMode = 'server', predictFrames = 2, msg = 'D: lead the car by 2 frames'},
+  {name = 'E', placeMode = 'client', predictFrames = 1, msg = 'E: drawn copy + lead by 1 frame'},
+}
+
+local function say(msg)
+  log('I', 'vrPistol', msg)
+  if ui_message then pcall(ui_message, msg, 8, 'vrPistolTest') end
+end
+
+function M.startModelTest(phaseSeconds)
+  if modelTest then return end
+  local dir = '/vrHandsCapture/'
+  pcall(function() FS:directoryCreate(dir, true) end)
+  modelTest = {phaseSeconds = phaseSeconds or 8, elapsed = 0, phase = 0, lines = {},
+    saved = {placeMode = cfg.placeMode, predictSeconds = cfg.predictSeconds},
+    path = dir .. 'model_' .. os.date('%Y%m%d_%H%M%S') .. '.jsonl'}
+  say('Gun smoothness test: drive steadily at speed and watch the gun. Note which letter looks best.')
+end
+
+local function v3(v) return v and {v.x, v.y, v.z} or nil end
+
+local function modelTestFrame(aim, dtReal)
+  local T = modelTest
+  if not T then return end
+  T.elapsed = T.elapsed + (dtReal or 1 / 90)
+  local i = math.floor(T.elapsed / T.phaseSeconds) + 1
+  if i > #TEST_PHASES then
+    cfg.placeMode, cfg.predictSeconds = T.saved.placeMode, T.saved.predictSeconds
+    local ok = pcall(writeFile, T.path, table.concat(T.lines, '\n') .. '\n')
+    local where = T.path
+    pcall(function() where = FS:getUserPath() .. T.path:sub(2) end)
+    say(ok and ('Gun test done. Which letter looked best? Saved: ' .. where) or 'Gun test could not be saved')
+    modelTest = nil
+    return
+  end
+  local ph = TEST_PHASES[i]
+  local motion = vrHands.getAnchorMotion and vrHands.getAnchorMotion() or {}
+  if i ~= T.phase then
+    T.phase = i
+    say('Phase ' .. ph.msg)
+  end
+  cfg.placeMode = ph.placeMode
+  cfg.predictSeconds = ph.predictFrames * (motion.frameDt or 0.011)
+
+  local frame = parts and parts.frame
+  local server, client
+  if frame then
+    pcall(function() server = v3(frame:getPosition()) end)
+    local c = clientOf(frame)
+    if c then pcall(function() client = v3(c:getPosition()) end) end
+  end
+  local okP, cam = pcall(getCameraPosition)
+  local entry = {
+    t = T.elapsed, phase = ph.name, frameDt = motion.frameDt, anchorPos = v3(motion.pos), anchorVel = v3(motion.vel),
+    camPos = okP and v3(cam) or nil, aimPos = aim.valid and v3(aim.pos) or nil,
+    target = v3(M._lastFramePos), server = server, client = client, hasClient = frame and clientOf(frame) ~= nil,
+  }
+  local ok, text = pcall(jsonEncode, entry)
+  if ok then T.lines[#T.lines + 1] = text end
+end
+
 -- For tests and tuning: the action state the model is drawn with.
 function M.getActionState(trigger)
   local t = now()
@@ -367,7 +466,7 @@ function M.onInit()
   if setExtensionUnloadMode then setExtensionUnloadMode(M, 'manual') end
 end
 
-function M.onPreRender()
+function M.onPreRender(dtReal)
   local aim = vrHands.getPose(cfg.hand, 'aim')
   local trigger = aim.valid and vrHands.getTrigger(cfg.hand) or 0
   local t = now()
@@ -395,6 +494,7 @@ function M.onPreRender()
   end
 
   placeModel(aim, trigger, t)
+  modelTestFrame(aim, dtReal)
 
   for i = #markers, 1, -1 do
     local m = markers[i]

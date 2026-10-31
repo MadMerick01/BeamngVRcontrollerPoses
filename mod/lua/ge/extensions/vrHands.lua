@@ -129,8 +129,14 @@ local function wrapOpenXR()
   local origSet, origGet = saved.set, saved.get
 
   hooks.set = function(px, py, pz, rx, ry, rz, rw, ...)
-    xrFrame.anchorPos, xrFrame.anchorRot = {px, py, pz}, {rx, ry, rz, rw}
-    if socketlib then xrFrame.anchorTime = socketlib.gettime() end
+    local t = socketlib and socketlib.gettime()
+    local prev, prevT = xrFrame.anchorPos, xrFrame.anchorTime
+    if t and prev and prevT and t - prevT > 1e-4 and t - prevT < 0.1 then
+      local dt = t - prevT
+      xrFrame.anchorVel = {(px - prev[1]) / dt, (py - prev[2]) / dt, (pz - prev[3]) / dt}
+      xrFrame.frameDt = dt
+    end
+    xrFrame.anchorPos, xrFrame.anchorRot, xrFrame.anchorTime = {px, py, pz}, {rx, ry, rz, rw}, t
     return origSet(px, py, pz, rx, ry, rz, rw, ...)
   end
   hooks.get = function(...)
@@ -283,6 +289,13 @@ local function recordCapture()
   if ok then capture.lines[#capture.lines + 1] = text:sub(1, -2) .. ',"packet":' .. (lastRaw or 'null') .. '}' end
 end
 function M.getConfig() return cfg end
+
+-- Camera anchor this frame: world position, velocity (m/s) and the last frame time (s).
+function M.getAnchorMotion()
+  local p, v = xrFrame.anchorPos, xrFrame.anchorVel
+  return {pos = p and vec3(p[1], p[2], p[3]), vel = v and vec3(v[1], v[2], v[3]) or vec3(0, 0, 0),
+    frameDt = xrFrame.frameDt}
+end
 
 function M.getStatus()
   return {

@@ -185,3 +185,38 @@ def test_each_shot_vibrates_the_controller(lua):
     assert sent is not None and len(sent) == 1
     assert sent[1].data == "pulse right 1.000 0.060"
     assert (sent[1].ip, sent[1].port) == ("127.0.0.1", 44442)
+
+
+def test_model_follows_camera_motion_when_predicting(model):
+    g = model.globals()
+    frame(model, packet(right_aim=AIM))
+    rest = part(model, "frame").pos
+    # Camera anchor moving at 30 m/s along +X, one 11 ms frame apart.
+    g.OpenXR.setGeluaCameraPosRot(0, 0, 0, 0, 0, 0, 1)
+    g.mock.time = g.mock.time + 0.011
+    g.OpenXR.setGeluaCameraPosRot(0.33, 0, 0, 0, 0, 0, 1)
+    g.vrPistol.getConfig().predictSeconds = 0.011
+    frame(model, packet(right_aim=AIM))
+    led = part(model, "frame").pos
+    assert abs((led.x - rest.x) - 0.33) < 1e-6 and abs(led.y - rest.y) < 1e-9
+
+
+def test_model_test_cycles_phases_and_saves(model):
+    model.execute("""
+      written = nil
+      function writeFile(path, text) written = {path = path, text = text} return true end
+      FS.directoryCreate = function() end
+      FS.getUserPath = function() return 'C:/user/' end
+      function jsonEncode(t) return '{"phase":"' .. t.phase .. '","mode":"' .. tostring(vrPistol.getConfig().placeMode) .. '"}' end
+    """)
+    g = model.globals()
+    g.vrPistol.startModelTest(0.05)  # 5 phases of ~4-5 frames at 90 fps
+    for _ in range(40):
+        if g.written is not None:
+            break
+        frame(model, packet(right_aim=AIM))
+    assert g.written is not None and g.written.path.startswith("/vrHandsCapture/model_")
+    phases = [json.loads(line)["phase"] for line in g.written.text.strip().split("\n")]
+    assert phases[0] == "A" and phases[-1] == "E" and set(phases) == set("ABCDE")
+    assert g.vrPistol.getConfig().placeMode == "server"  # restored afterwards
+    assert g.vrPistol.getConfig().predictSeconds == 0
