@@ -99,12 +99,12 @@ def test_model_parts_follow_the_aim_pose(model):
     frame(model, packet(right_aim=AIM, trigger=0.0))
     assert list(model.globals().mock.materialFiles.values()) == ["/art/shapes/vrrevolver/main.materials.json"]
     names = sorted(model.globals().mock.objects.keys())
-    assert names == ["vrPistolModel_" + n for n in ("cylinder", "flash", "frame", "hammer", "trigger")]
+    assert names == ["vrPistolModel_" + n for n in ("cylinder", "frame", "hammer", "trigger")]
     f = part(model, "frame")
     assert not f.hidden
     # Aim at (10.5, 20, 1.5) facing +X; the gun origin sits 2 cm back and 5 cm up.
     assert (round(f.pos.x, 4), round(f.pos.y, 4), round(f.pos.z, 4)) == (10.48, 20.0, 1.55)
-    assert part(model, "flash").hidden
+    assert "vrPistolModel_flash" not in model.globals().mock.objects.keys()
 
     frame(model, packet(right_aim=None, trigger=0.0))
     assert all(part(model, n).hidden for n in ("frame", "cylinder", "hammer", "trigger"))
@@ -128,15 +128,14 @@ def test_double_action_cocks_then_drops_hammer_and_indexes_cylinder(model):
     assert fired.shotsFired == 1
     assert fired.hammer == 0                           # hammer has fallen
     assert fired.cylinder == pytest.approx(math.radians(60))
-    assert fired.flash and fired.recoil > 0
-    assert not part(model, "flash").hidden
+    assert fired.recoil > 0
+    assert fired.flash is None  # no muzzle flash
 
     model.globals().mock.time += 1
     frame(model, packet(right_aim=AIM, trigger=0.0))
     settled = vp.getActionState(0.0)
-    assert settled.recoil == 0 and not settled.flash
+    assert settled.recoil == 0
     assert settled.cylinder == pytest.approx(math.radians(60))
-    assert part(model, "flash").hidden
 
 
 def test_recoil_moves_the_model_but_not_the_shot(model):
@@ -259,7 +258,7 @@ def simple_tris(rt):
 
 def mesh_counts(rt):
     mesh = rt.eval("require('vrPistolMesh')")
-    return {name: len(mesh[name].tris) // 9 for name in ("frame", "cylinder", "hammer", "trigger", "flash")}
+    return {name: len(mesh[name].tris) // 9 for name in ("frame", "cylinder", "hammer", "trigger")}
 
 
 def test_simple_gun_is_drawn_every_frame_at_the_hand(lua):
@@ -267,7 +266,7 @@ def test_simple_gun_is_drawn_every_frame_at_the_hand(lua):
     counts = mesh_counts(lua)
     frame(lua, packet(right_aim=AIM))
     tris = simple_tris(lua)
-    assert len(tris) == sum(counts.values()) - counts["flash"]
+    assert len(tris) == sum(counts.values())
     assert not any(k.startswith("vrPistolModel_") for k in lua.globals().mock.objects.keys())
     xs = [v[0] for t in tris for v in t]
     ys = [v[1] for t in tris for v in t]
@@ -281,14 +280,17 @@ def test_simple_gun_is_drawn_every_frame_at_the_hand(lua):
     assert len(simple_tris(lua)) == len(tris)
 
 
-def test_simple_gun_flashes_and_kicks_on_a_shot(lua):
+def test_simple_gun_kicks_without_a_flash_on_a_shot(lua):
     face_plus_x(lua)
     counts = mesh_counts(lua)
     frame(lua, packet(right_aim=AIM, trigger=0.0))
     rest = simple_tris(lua)
     frame(lua, packet(right_aim=AIM, trigger=1.0))
+    simple_tris(lua)
+    lua.globals().mock.time += 0.02  # near the peak of the kick
+    frame(lua, packet(right_aim=AIM, trigger=1.0))
     shot = simple_tris(lua)
-    assert len(shot) == len(rest) + counts["flash"]
+    assert len(shot) == len(rest)  # no muzzle flash
     assert max(v[2] for t in shot for v in t) > max(v[2] for t in rest for v in t) + 0.01
 
 
@@ -356,9 +358,9 @@ def test_six_rounds_then_the_trigger_only_clicks(lua):
     assert commands(lua) == ["car"] * 6
     assert vp.getAmmo()[0] == 0
     assert hooks(lua, "onVrPistolDryFire") and hooks(lua, "onVrPistolDryFire")[0][1] == "empty"
-    # The empty pull still turns the cylinder but there is no flash or kick.
+    # The empty pull still turns the cylinder but there is no kick.
     state = vp.getActionState(0.0)
-    assert state.shotsFired == 7 and state.recoil == 0 and not state.flash
+    assert state.shotsFired == 7 and state.recoil == 0
 
 
 def test_putting_the_gun_away_reloads_from_spare_rounds(lua):

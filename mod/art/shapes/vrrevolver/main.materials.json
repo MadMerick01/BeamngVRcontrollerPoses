@@ -143,33 +143,5 @@
       {}
     ],
     "activeLayers": 1
-  },
-  "vrrevolver_flash": {
-    "name": "vrrevolver_flash",
-    "mapTo": "vrrevolver_flash",
-    "class": "Material",
-    "version": 1.5,
-    "Stages": [
-      {
-        "baseColorMap": "/art/shapes/vrrevolver/revolver_flash.png",
-        "emissiveMap": "/art/shapes/vrrevolver/revolver_flash.png",
-        "emissiveFactor": [
-          6,
-          4,
-          1.6
-        ],
-        "metallicFactor": 0.0,
-        "roughnessFactor": 1.0
-      },
-      {},
-      {},
-      {}
-    ],
-    "activeLayers": 1,
-    "translucent": true,
-    "translucentBlendOp": "AddAlpha",
-    "translucentZWrite": false,
-    "doubleSided": true,
-    "castShadows": false
   }
 }

@@ -24,7 +24,7 @@ OUT = ROOT / "mod/lua/ge/extensions/vrPistolMesh.lua"
 NS = {"c": "http://www.collada.org/2005/11/COLLADASchema"}
 
 # Triangle budget per part; about 1,500 in all keeps drawing well under 1 ms.
-BUDGET = {"frame": 900, "cylinder": 420, "hammer": 110, "trigger": 70, "flash": 20}
+BUDGET = {"frame": 900, "cylinder": 420, "hammer": 110, "trigger": 70}
 
 
 def material_colours():
