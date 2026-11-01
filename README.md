@@ -93,7 +93,7 @@ gun is drawn, so you can open doors and use menus with it put away.
 
 Hold the right grip to draw the gun. Drawing it plays a holster sound. Pull the right trigger to shoot. The revolver is double action: as you squeeze,
 the hammer comes back and the cylinder turns, and at the break the hammer drops,
-the gun goes bang (the Bolides player gunshot), the muzzle flashes and it
+the gun goes bang (the Bolides player gunshot) and it
 kicks up and back in your hand. An optional red laser from
 the muzzle (`vrPistol.setLaser(true)`) shows the aim ray. With
 `vrPistol.getConfig().hitMarkers = true`, orange spheres
@@ -151,7 +151,7 @@ Tuning (console):
 
 ```lua
 vrPistol.setModelOffset(0, -0.02, 0.05, 0)   -- gun origin (bore, rear of cylinder) in aim space: x right, y along barrel, z up (m), pitch (deg)
-vrPistol.getConfig().recoilPitchDeg = 22     -- also recoilBack, hammerCockDeg, triggerTravelDeg, flashTime
+vrPistol.getConfig().recoilPitchDeg = 22     -- also recoilBack, hammerCockDeg, triggerTravelDeg
 vrPistol.getConfig().shotVolume = 18         -- shotSound = '' mutes it
 vrPistol.testSound()                         -- plays the gunshot once (check the console for "created SFX source")
 vrPistol.testSound('equip')                  -- plays the equip sound (equipSound, equipVolume)
@@ -187,8 +187,8 @@ are no third-party asset rights to worry about.
 `tools/revolverModel/build_revolver.py` builds it with Blender's Python module
 (`pip install bpy`, then run the script). It writes the shapes, textures and
 `main.materials.json` into `mod/art/shapes/vrrevolver`. The frame, cylinder,
-hammer, trigger and muzzle flash are separate shapes, each with its origin on its
-own pivot. `vrPistol.lua` places all five every frame.
+hammer and trigger are separate shapes, each with its origin on its
+own pivot. `vrPistol.lua` places all four every frame.
 
 ### Lua API
 

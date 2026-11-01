@@ -32,7 +32,7 @@
 -- The model is a double-action revolver (mod/art/shapes/vrrevolver, built by
 -- tools/revolverModel/build_revolver.py). Squeezing the trigger cocks the
 -- hammer and turns the cylinder; at the break point the hammer drops, the gun
--- kicks and the muzzle flashes. By default a low-poly copy (vrPistolMesh.lua) is
+-- kicks. By default a low-poly copy (vrPistolMesh.lua) is
 -- drawn with the debug drawer every frame instead, so it never lags at speed;
 -- set getConfig().modelStyle = 'textured' for the full model.
 
@@ -53,7 +53,6 @@ local cfg = {
   recoilPitchDeg = 22,   -- muzzle flip
   hapticAmplitude = 1.0, -- controller vibration per shot (0 disables)
   hapticSeconds = 0.06,
-  flashTime = 0.045,
   -- Gunshot from Bolides (PlayerGunShot.wav), same playback and volume as its FirstPersonShoot.
   -- vrPistol.testSound() plays it from the console.
   shotSound = '/art/sound/vrpistol/revolver_shot.wav',
@@ -103,7 +102,7 @@ local cfg = {
 local parts, modelMissingLogged, materialsLoaded
 local triggerHeld, lastShot = false, -math.huge
 local equipped, savedPointerSetting = false, nil
-local shotsFired, flashRoll = 0, 0
+local shotsFired = 0
 local markers = {}  -- {pos, untilTime, colour}
 local rounds, spareRounds = cfg.cylinderSize, nil  -- spareRounds nil: unlimited
 local shotFilter, holsteredAt = nil, nil
@@ -139,7 +138,6 @@ local PARTS = {
   {name = 'cylinder', pivot = vec3(0, 0, -0.0155)},
   {name = 'hammer', pivot = vec3(0, -0.0175, -0.006)},
   {name = 'trigger', pivot = vec3(0, 0.012, -0.040)},
-  {name = 'flash', pivot = vec3(0, 0.218, 0)},
 }
 local MUZZLE = vec3(0, 0.218, 0)
 local RECOIL_PIVOT = vec3(0, -0.045, -0.08)  -- in the hand: the gun flips about the grip
@@ -177,7 +175,7 @@ local function ensureModel()
       o.shapeName = cfg.modelDir .. p.name .. '.dae'
       o:setField('collisionType', 0, 'None')
       o:setField('decalType', 0, 'None')
-      o:setField('castShadows', 0, p.name == 'flash' and '0' or '1')
+      o:setField('castShadows', 0, '1')
       o:setField('canSave', 0, '0')
       o:registerObject(name)
       parts[p.name] = o
@@ -249,7 +247,6 @@ local function actionAngles(trigger, t)
     hammer = hammer,
     trigger = -math.rad(cfg.triggerTravelDeg) * pull,
     cylinder = math.rad(60) * (shotsFired + cylinderTurn),
-    flash = t - lastShot < cfg.flashTime,
   }
 end
 
@@ -393,11 +390,6 @@ local function placeModel(aim, trigger, t)
   put('cylinder', at('cylinder'), f, rotate(u, f, -ang.cylinder))
   put('hammer', at('hammer'), rotate(f, r, ang.hammer), rotate(u, r, ang.hammer))
   put('trigger', at('trigger'), rotate(f, r, ang.trigger), rotate(u, r, ang.trigger))
-  if ang.flash then
-    put('flash', at('flash'), f, rotate(u, f, flashRoll))
-  elseif not simple then
-    parts.flash:setHidden(true)
-  end
 end
 
 -- Muzzle in world space at rest (no recoil), for the laser.
@@ -500,11 +492,10 @@ local function playEquipSound() playSound('vrPistolEquip', cfg.equipSound, cfg.e
 -- Console check for the gunshot without shooting anything.
 function M.testSound(which) if which == 'equip' then playEquipSound() else playShotSound() end end
 
--- Advances the cylinder, starts the recoil and muzzle flash, and fires the sound.
+-- Advances the cylinder, starts the recoil, and fires the sound.
 local function cycleAction(t)
   shotsFired = shotsFired + 1
   lastShot = t
-  flashRoll = math.random() * math.pi * 2
   playShotSound()
   if cfg.hapticAmplitude > 0 then vrHands.pulse(cfg.hand, cfg.hapticAmplitude, cfg.hapticSeconds) end
 end

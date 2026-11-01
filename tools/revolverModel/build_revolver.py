@@ -9,7 +9,6 @@ them:
   cylinder.dae  origin on the cylinder axis at its rear face, spins about +Y
   hammer.dae    origin on the hammer pivot, cocks about +X
   trigger.dae   origin on the trigger pivot, pulls about +X
-  flash.dae     muzzle flash, origin at the muzzle
 
 Gun space matches the aim pose: +X right, +Y along the barrel, +Z up, metres.
 The bore axis is the Y axis; PIVOTS below gives each part's origin in gun space.
@@ -45,7 +44,6 @@ PIVOTS = {
     'cylinder': (0.0, 0.0, CZ),
     'hammer': (0.0, -0.0175, -0.006),
     'trigger': (0.0, 0.012, -0.040),
-    'flash': (0.0, MUZZLE, 0.0),
 }
 
 # ----------------------------------------------------------------- scene ---
@@ -438,35 +436,6 @@ def build_trigger():
     return [ob]
 
 
-def build_flash():
-    # Three crossed cards plus a front-facing disc, textured with a soft burst.
-    _, my, _ = PIVOTS['flash']
-    length, width = 0.13, 0.075
-    obs = []
-    for k in range(3):
-        bm = bmesh.new()
-        a = math.radians(60 * k)
-        ax = Vector((math.cos(a), 0, math.sin(a))) * (width / 2)
-        quad = [Vector((0, my, 0)) - ax, Vector((0, my, 0)) + ax,
-                Vector((0, my + length, 0)) + ax, Vector((0, my + length, 0)) - ax]
-        verts = [bm.verts.new(v) for v in quad]
-        bm.faces.new(verts)
-        ob = mesh_object('card', bm)
-        uv = ob.data.uv_layers.new(name='UVMap')
-        for li, (u, v) in enumerate([(0, 0), (0.5, 0), (0.5, 1), (0, 1)]):
-            uv.data[li].uv = (u, v)
-        obs.append(ob)
-    bm = bmesh.new()
-    bmesh.ops.create_circle(bm, cap_ends=True, segments=16, radius=0.035)
-    disc = mesh_object('disc', bm)
-    disc.matrix_world = Matrix.Translation((0, my + 0.004, 0)) @ Matrix.Rotation(math.pi / 2, 4, 'X')
-    bake(disc)
-    project_uv(disc, (1, 0, 0), (0, 0, 1), 0.07, offset=(0.75, 0.5))
-    obs.append(disc)
-    ob = join(obs, 'flash')
-    set_material(ob, 'vrrevolver_flash')
-    return [ob]
-
 # -------------------------------------------------------------- textures ---
 
 def noise2d(shape, scale, seed, octaves=4):
@@ -560,25 +529,6 @@ def make_textures():
     ch = pal[i0] * (1 - f) + pal[np.minimum(i0 + 1, len(pal) - 1)] * f
     save_png(OUT / 'revolver_casehardened_baseColor.png', ch)
 
-    # Muzzle flash: left half is a side-on burst for the cards, right half a star for the disc.
-    k = 256
-    fy, fx = np.mgrid[0:k, 0:k] / k
-    side = np.zeros((k, k, 4))
-    across = np.abs(fx * 2 - 1)                       # 0 on the axis
-    along = 1 - fy                                    # 0 at the muzzle (v = 0 is the bottom row)
-    flame = np.clip(1 - across / np.maximum(0.15, 0.9 * np.sin(np.clip(along, 0, 1) * math.pi) ** 0.7 + 0.05), 0, 1)
-    flame *= np.clip(1.1 - along, 0, 1) ** 1.5
-    flame *= 0.75 + 0.25 * noise2d((k, k), 8, 11)
-    side[..., 0], side[..., 1], side[..., 2] = 1.0, 0.55 + 0.4 * flame, 0.15 + 0.5 * flame ** 3
-    side[..., 3] = flame
-    cy, cx = fy * 2 - 1, fx * 2 - 1
-    r = np.sqrt(cx ** 2 + cy ** 2)
-    ang = np.arctan2(cy, cx)
-    star = np.clip(1 - r / (0.45 + 0.4 * np.abs(np.cos(ang * 3)) ** 4), 0, 1) ** 1.5
-    front = np.zeros((k, k, 4))
-    front[..., 0], front[..., 1], front[..., 2] = 1.0, 0.6 + 0.4 * star, 0.2 + 0.6 * star ** 2
-    front[..., 3] = star
-    save_png(OUT / 'revolver_flash.png', np.concatenate([side, front], 1))
 
 
 MATERIALS = {
@@ -591,11 +541,7 @@ MATERIALS = {
                                 'metallicFactor': 1.0, 'roughnessFactor': 0.28},
     'vrrevolver_brass': {'baseColorFactor': [0.78, 0.58, 0.27, 1], 'metallicFactor': 1.0, 'roughnessFactor': 0.3},
     'vrrevolver_lead': {'baseColorFactor': [0.42, 0.42, 0.44, 1], 'metallicFactor': 0.8, 'roughnessFactor': 0.55},
-    'vrrevolver_flash': {'baseColorMap': ART + 'revolver_flash.png', 'emissiveMap': ART + 'revolver_flash.png',
-                         'emissiveFactor': [6, 4, 1.6], 'metallicFactor': 0.0, 'roughnessFactor': 1.0},
 }
-FLASH_FLAGS = {'translucent': True, 'translucentBlendOp': 'AddAlpha', 'translucentZWrite': False,
-               'doubleSided': True, 'castShadows': False}
 
 
 def write_materials():
@@ -604,8 +550,6 @@ def write_materials():
     for name, stage in MATERIALS.items():
         m = {'name': name, 'mapTo': name, 'class': 'Material', 'version': 1.5,
              'Stages': [stage, {}, {}, {}], 'activeLayers': 1}
-        if name == 'vrrevolver_flash':
-            m.update(FLASH_FLAGS)
         out[name] = m
     (OUT / 'main.materials.json').write_text(json.dumps(out, indent=2) + '\n')
 
@@ -692,7 +636,6 @@ def build():
         'cylinder': build_cylinder(),
         'hammer': build_hammer(),
         'trigger': build_trigger(),
-        'flash': build_flash(),
     }
 
 
