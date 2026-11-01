@@ -78,10 +78,13 @@ local cfg = {
   equipOnGrip = true,
   gripPress = 0.6,
   gripRelease = 0.4,
-  -- BeamNG's own controller pointers (black line and orange ball, both hands):
-  -- true hides them the whole time the pistol is loaded, 'drawn' only while
-  -- the gun is drawn, false leaves them alone. Unloading puts them back.
-  hideGamePointer = true,
+  -- BeamNG's own controller pointers (black line and orange ball, both hands).
+  -- The only way to hide them is BeamNG's 'openXRuseControllers' setting, and
+  -- that also turns off the controllers' sticks and buttons in the game (no
+  -- walking or driving with the sticks). So by default they are left alone.
+  -- true hides them (and the stick input) the whole time the pistol is loaded,
+  -- 'drawn' only while the gun is drawn. Unloading puts the setting back.
+  hideGamePointer = false,
   range = 300,
   triggerPress = 0.7,
   triggerRelease = 0.3,
@@ -950,7 +953,8 @@ end
 
 -- ---------------------------------------------------------- equipping ---
 
--- BeamNG's pointers (both hands) are the one 'openXRuseControllers' setting.
+-- BeamNG's pointers (both hands) are the one 'openXRuseControllers' setting,
+-- which also switches off the controllers' stick and button input in the game.
 -- Its value is saved when they are hidden and put back when they are shown.
 -- While hidden, it is switched off again if anything turns it back on.
 local function setGamePointerHidden(hidden)
