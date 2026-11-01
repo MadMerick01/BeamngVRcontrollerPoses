@@ -1,6 +1,7 @@
--- vrPistol: a revolver on the right VR controller that shoots traffic.
+-- vrPistol: a handgun on the right VR controller that shoots traffic.
 --
 --   extensions.load('vrPistol')       -- also loads vrHands
+--   vrPistol.setGun('revolver'|'magnum')  -- pick the gun (remembered between sessions)
 --   vrPistol.setLaser(true|false)     -- aiming laser (off by default)
 --   vrPistol.setModelOffset(x, y, z, pitchDeg)  -- fit the model to your hand
 --   vrPistol.fireFromCamera()         -- desktop test: shoot along the camera view
@@ -29,26 +30,37 @@
 -- The shot always travels along the controller's aim ray (OpenXR aim pose), so
 -- the model offset only changes how the gun looks, never where it hits.
 --
--- The model is a double-action revolver (mod/art/shapes/vrrevolver, built by
--- tools/revolverModel/build_revolver.py). Squeezing the trigger cocks the
--- hammer and turns the cylinder; at the break point the hammer drops, the gun
--- kicks. By default a low-poly copy (vrPistolMesh.lua) is
--- drawn with the debug drawer every frame instead, so it never lags at speed;
--- set getConfig().modelStyle = 'textured' for the full model.
+-- Two guns, picked with setGun:
+--   'revolver'  double-action .44 revolver (mod/art/shapes/vrrevolver, built by
+--               tools/revolverModel/build_revolver.py). Squeezing the trigger
+--               cocks the hammer and turns the cylinder; at the break point the
+--               hammer drops and the gun kicks. Six rounds.
+--   'magnum'    big .50 semi-automatic (mod/art/shapes/vrmagnum, built by
+--               tools/magnumModel/build_magnum.py). Single action: the hammer
+--               rests cocked, the trigger breaks, the hammer falls and the slide
+--               blows back, re-cocks the hammer and returns. Seven rounds; after
+--               the last one the slide locks open until the gun is reloaded.
+-- By default a low-poly copy (vrPistolMesh*.lua) is drawn with the debug drawer
+-- every frame instead, so it never lags at speed; set
+-- getConfig().modelStyle = 'textured' for the full model.
 
 local M = {}
 M.dependencies = {'vrHands'}
 
 local cfg = {
   hand = 'right',
-  modelDir = '/art/shapes/vrrevolver/',
-  -- Where the gun's origin (bore axis, rear face of the cylinder) sits in
-  -- aim-pose space, metres: x right, y along the aim ray, z up.
+  gun = 'revolver',      -- 'revolver' or 'magnum'; change it with vrPistol.setGun
+  -- Where the gun's origin (bore axis, rear face of the revolver's cylinder;
+  -- both guns put the grip in the same place) sits in aim-pose space,
+  -- metres: x right, y along the aim ray, z up.
   modelOffset = {x = 0, y = -0.02, z = 0.05},
   modelPitchDeg = 0,
-  -- Action and recoil.
+  -- Action and recoil. The hammer and trigger angles are the revolver's; the
+  -- magnum's are in its GUNS entry.
   hammerCockDeg = 48,
   triggerTravelDeg = 20,
+  slideTravel = 0.034,   -- magnum: metres the slide blows back
+  slideCycle = 0.075,    -- magnum: seconds for the slide to go back and return
   recoilBack = 0.035,    -- metres the gun kicks back
   recoilPitchDeg = 22,   -- muzzle flip
   hapticAmplitude = 1.0, -- controller vibration per shot (0 disables)
@@ -74,7 +86,7 @@ local cfg = {
   triggerPress = 0.7,
   triggerRelease = 0.3,
   cooldown = 0.12,
-  cylinderSize = 6,      -- rounds per load (0 = never runs out)
+  cylinderSize = 6,      -- rounds per load (0 = never runs out); setGun sets it to the gun's capacity
   reloadSeconds = 1.5,   -- how long the gun must be put away to reload when drawn again
   hitRadius = 0.3,       -- how far from the ray a vehicle node still counts as hit
   -- Impact physics, same model and defaults as Bolides' BulletDamage.lua:
@@ -132,16 +144,51 @@ end
 
 -- --------------------------------------------------------------- model ---
 
--- Each part's shape has its origin on its pivot; PARTS gives that pivot in gun
--- space (x right, y along the barrel, z up), matching build_revolver.py.
-local PARTS = {
-  {name = 'frame', pivot = vec3(0, 0, 0)},
-  {name = 'cylinder', pivot = vec3(0, 0, -0.0155)},
-  {name = 'hammer', pivot = vec3(0, -0.0175, -0.006)},
-  {name = 'trigger', pivot = vec3(0, 0.012, -0.040)},
+-- Each part's shape has its origin on its pivot; `parts` gives that pivot in
+-- gun space (x right, y along the barrel, z up), matching the build scripts,
+-- and how the part moves:
+--   spin   turns about +Y by the named action angle (the cylinder)
+--   rot    turns about +X by the named action angle (hammer, trigger)
+--   slide  moves back along -Y by the named action distance (the slide)
+local GUNS = {
+  revolver = {
+    label = 'revolver',
+    action = 'revolver',
+    modelDir = '/art/shapes/vrrevolver/',
+    mesh = 'vrPistolMesh',
+    capacity = 6,
+    parts = {
+      {name = 'frame', pivot = vec3(0, 0, 0)},
+      {name = 'cylinder', pivot = vec3(0, 0, -0.0155), spin = 'cylinder'},
+      {name = 'hammer', pivot = vec3(0, -0.0175, -0.006), rot = 'hammer'},
+      {name = 'trigger', pivot = vec3(0, 0.012, -0.040), rot = 'trigger'},
+    },
+    muzzle = vec3(0, 0.218, 0),
+    recoilPivot = vec3(0, -0.045, -0.08),  -- in the hand: the gun flips about the grip
+    recoilScale = 1,
+  },
+  magnum = {
+    label = 'magnum pistol',
+    action = 'semi',
+    modelDir = '/art/shapes/vrmagnum/',
+    mesh = 'vrPistolMeshMagnum',
+    capacity = 7,
+    hammerCockDeg = 42,
+    triggerTravelDeg = 11,
+    parts = {
+      {name = 'frame', pivot = vec3(0, 0, 0)},
+      {name = 'slide', pivot = vec3(0, 0.012, 0), slide = 'slide'},
+      {name = 'hammer', pivot = vec3(0, -0.067, -0.020), rot = 'hammer'},
+      {name = 'trigger', pivot = vec3(0, 0.0405, -0.030), rot = 'trigger'},
+    },
+    muzzle = vec3(0, 0.204, 0),
+    recoilPivot = vec3(0, -0.045, -0.08),
+    recoilScale = 1.2,  -- a .50 kicks harder than the .44
+  },
 }
-local MUZZLE = vec3(0, 0.218, 0)
-local RECOIL_PIVOT = vec3(0, -0.045, -0.08)  -- in the hand: the gun flips about the grip
+GUNS.deagle = GUNS.magnum  -- what everyone will call it
+
+local function gunDef() return GUNS[cfg.gun] or GUNS.revolver end
 
 local function deleteParts()
   for _, p in pairs(parts or {}) do pcall(function() p:delete() end) end
@@ -151,29 +198,31 @@ end
 local function ensureModel()
   if parts then return true end
   if modelMissingLogged then return false end
-  for _, p in ipairs(PARTS) do
-    if not FS:fileExists(cfg.modelDir .. p.name .. '.dae') then
+  local gun = gunDef()
+  for _, p in ipairs(gun.parts) do
+    if not FS:fileExists(gun.modelDir .. p.name .. '.dae') then
       modelMissingLogged = true
-      log('W', 'vrPistol', 'revolver model not found (' .. cfg.modelDir .. p.name .. '.dae), shooting works without it')
+      log('W', 'vrPistol', gun.label .. ' model not found (' .. gun.modelDir .. p.name .. '.dae), shooting works without it')
       return false
     end
   end
   -- Shape materials in /art/shapes are not loaded automatically outside a
   -- level's own folders, so the revolver came out orange (no material).
-  if not materialsLoaded then
-    materialsLoaded = true
-    local file = cfg.modelDir .. 'main.materials.json'
+  materialsLoaded = materialsLoaded or {}
+  if not materialsLoaded[gun.modelDir] then
+    materialsLoaded[gun.modelDir] = true
+    local file = gun.modelDir .. 'main.materials.json'
     local okM, errM = pcall(function() loadJsonMaterialsFile(file) end)
     if not okM then log('W', 'vrPistol', 'could not load ' .. file .. ': ' .. tostring(errM)) end
   end
   local ok, err = pcall(function()
     parts = {}
-    for _, p in ipairs(PARTS) do
+    for _, p in ipairs(gun.parts) do
       local name = 'vrPistolModel_' .. p.name
       local old = scenetree.findObject(name)
       if old then old:delete() end
       local o = createObject('TSStatic')
-      o.shapeName = cfg.modelDir .. p.name .. '.dae'
+      o.shapeName = gun.modelDir .. p.name .. '.dae'
       o:setField('collisionType', 0, 'None')
       o:setField('decalType', 0, 'None')
       o:setField('castShadows', 0, '1')
@@ -183,7 +232,7 @@ local function ensureModel()
     end
   end)
   if not ok then
-    log('E', 'vrPistol', 'could not create revolver model: ' .. tostring(err))
+    log('E', 'vrPistol', 'could not create ' .. gun.label .. ' model: ' .. tostring(err))
     deleteParts()
     modelMissingLogged = true
   end
@@ -207,6 +256,29 @@ local function recoilKick(t)
   return 1.25 * (1 - math.exp(-t / 0.006)) * math.exp(-t / 0.075)
 end
 
+-- Magnum slide: 0 in battery, 1 fully back. A shot drives it back in the
+-- first quarter of the cycle and the spring returns it over the rest; with
+-- the slide locked open it stays back until a reload releases it.
+local slideLocked, slideReleasedAt, hammerDown = false, nil, false
+
+local function slideBack(t)
+  local dt = t - lastShot
+  local rise = cfg.slideCycle * 0.25
+  local back = 0
+  if dt >= 0 and dt < rise then
+    back = smoothstep(dt / rise)
+  elseif slideLocked and dt >= 0 then
+    back = 1
+  elseif dt >= rise and dt < cfg.slideCycle then
+    back = 1 - smoothstep((dt - rise) / (cfg.slideCycle - rise))
+  end
+  if slideReleasedAt then
+    local dr = t - slideReleasedAt
+    if dr >= 0 and dr < 0.05 then back = math.max(back, 1 - smoothstep(dr / 0.05)) end
+  end
+  return back
+end
+
 -- Gun-space frame for this frame: origin and right/forward/up in world space.
 local function gunFrame(aim, t)
   local o = cfg.modelOffset
@@ -216,11 +288,13 @@ local function gunFrame(aim, t)
   local u = aim.up * math.cos(a) - aim.dir * math.sin(a)
   local origin = aim.pos + aim.right * o.x + aim.dir * o.y + aim.up * o.z
 
-  local kick = recoilKick(t - lastShot)
+  local gun = gunDef()
+  local kick = recoilKick(t - lastShot) * gun.recoilScale
   if kick > 0 then
     -- Flip the muzzle up about the grip, then push the whole gun back.
     local p = math.rad(cfg.recoilPitchDeg) * kick
-    local pivot = origin + r * RECOIL_PIVOT.x + f * RECOIL_PIVOT.y + u * RECOIL_PIVOT.z
+    local rp = gun.recoilPivot
+    local pivot = origin + r * rp.x + f * rp.y + u * rp.z
     origin = pivot + rotate(origin - pivot, r, p) - f * (cfg.recoilBack * kick)
     f, u = rotate(f, r, p), rotate(u, r, p)
   end
@@ -231,12 +305,33 @@ local function toWorld(origin, r, f, u, v)
   return origin + r * v.x + f * v.y + u * v.z
 end
 
--- Pose of each moving part in its own frame: angles in radians.
+-- Pose of each moving part in its own frame: angles in radians, slide in metres.
 --   hammer:   about +X, positive tips the spur back (cocking)
 --   trigger:  about +X, negative swings the blade back (pulling)
 --   cylinder: about +Y, positive turns the top chamber to the left
+--   slide:    metres back along -Y
 local function actionAngles(trigger, t)
   local pull = math.max(0, math.min(1, trigger / cfg.triggerPress))
+  local gun = gunDef()
+  if gun.action == 'semi' then
+    -- Single action: the hammer rests cocked and only falls at the break; the
+    -- slide drives it back to full cock as it recoils, and holds it there.
+    local back = slideBack(t)
+    local cocked = math.rad(gun.hammerCockDeg)
+    local hammer = cocked
+    local dt = t - lastShot
+    if hammerDown then
+      hammer = 0
+    elseif dt >= 0 and dt < cfg.slideCycle * 0.25 and not slideReleasedAt then
+      hammer = cocked * math.min(1, back * 1.6)
+    end
+    return {
+      hammer = hammer,
+      trigger = -math.rad(gun.triggerTravelDeg) * pull,
+      slide = cfg.slideTravel * back,
+      slideLocked = slideLocked,
+    }
+  end
   local hammer, cylinderTurn = 0, 0
   if not triggerHeld then
     -- Double action: the cylinder indexes in the first part of the pull, the
@@ -281,7 +376,8 @@ end
 
 -- Low-poly gun drawn with the debug drawer (mod/lua/ge/extensions/vrPistolMesh.lua,
 -- built by tools/revolverModel/build_lowpoly.py).
-local simpleMesh, simpleMissing
+local simpleMesh, simpleMissing  -- the current gun's mesh; per-gun caches below
+local simpleMeshes, simpleMissingFor = {}, {}
 local LIGHT = {0.3, -0.4, 0.85}
 do local l = math.sqrt(LIGHT[1] ^ 2 + LIGHT[2] ^ 2 + LIGHT[3] ^ 2) LIGHT = {LIGHT[1] / l, LIGHT[2] / l, LIGHT[3] / l} end
 local SHADES = 12
@@ -289,11 +385,14 @@ local colourCache = {}
 local va, vb, vc
 
 local function loadSimpleMesh()
+  local name = gunDef().mesh
+  simpleMesh, simpleMissing = simpleMeshes[name], simpleMissingFor[name]
   if simpleMesh or simpleMissing then return simpleMesh end
   -- lua/ge/extensions is on the require path (core/cameraUpdate requires 'core/cameraInput').
-  local ok, mesh = pcall(require, 'vrPistolMesh')
+  local ok, mesh = pcall(require, name)
   if not ok or type(mesh) ~= 'table' then
     simpleMissing = true
+    simpleMissingFor[name] = true
     log('W', 'vrPistol', 'simple gun mesh missing: ' .. tostring(mesh))
     return nil
   end
@@ -312,6 +411,7 @@ local function loadSimpleMesh()
   end
   va, vb, vc = vec3(0, 0, 0), vec3(0, 0, 0), vec3(0, 0, 0)
   simpleMesh = mesh
+  simpleMeshes[name] = mesh
   return mesh
 end
 
@@ -373,7 +473,6 @@ local function placeModel(aim, trigger, t)
   end
   local origin, r, f, u = gunFrame(aim, t)
   local ang = actionAngles(trigger, t)
-  local function at(name) for _, p in ipairs(PARTS) do if p.name == name then return toWorld(origin, r, f, u, p.pivot) end end end
 
   local function put(name, pos, pf, pu)
     if simple then
@@ -387,10 +486,19 @@ local function placeModel(aim, trigger, t)
       placePart(parts[name], pos, pf, pu)
     end
   end
-  put('frame', at('frame'), f, u)
-  put('cylinder', at('cylinder'), f, rotate(u, f, -ang.cylinder))
-  put('hammer', at('hammer'), rotate(f, r, ang.hammer), rotate(u, r, ang.hammer))
-  put('trigger', at('trigger'), rotate(f, r, ang.trigger), rotate(u, r, ang.trigger))
+  for _, p in ipairs(gunDef().parts) do
+    local pos = toWorld(origin, r, f, u, p.pivot)
+    if p.spin then
+      put(p.name, pos, f, rotate(u, f, -ang[p.spin]))
+    elseif p.rot then
+      local a = ang[p.rot]
+      put(p.name, pos, rotate(f, r, a), rotate(u, r, a))
+    elseif p.slide then
+      put(p.name, pos - f * ang[p.slide], f, u)
+    else
+      put(p.name, pos, f, u)
+    end
+  end
 end
 
 -- Muzzle in world space at rest (no recoil), for the laser.
@@ -401,7 +509,7 @@ local function muzzlePos(aim)
   local f = aim.dir * math.cos(a) + aim.up * math.sin(a)
   local u = aim.up * math.cos(a) - aim.dir * math.sin(a)
   local origin = aim.pos + aim.right * o.x + aim.dir * o.y + aim.up * o.z
-  return toWorld(origin, aim.right, f, u, MUZZLE)
+  return toWorld(origin, aim.right, f, u, gunDef().muzzle)
 end
 
 -- Gunshot and equip sound, played step for step the way Bolides' FirstPersonShoot plays its
@@ -508,6 +616,7 @@ function M.getAmmo() return rounds, cfg.cylinderSize, spareRounds end
 function M.setAmmo(n, spare)
   rounds = math.max(0, math.min(cfg.cylinderSize, math.floor(tonumber(n) or 0)))
   spareRounds = spare and math.max(0, math.floor(spare)) or nil
+  if rounds > 0 and slideLocked then slideLocked, slideReleasedAt = false, now() end
 end
 
 -- Fills the cylinder from the spare rounds. Returns how many were loaded.
@@ -517,6 +626,10 @@ function M.reload()
   if loaded <= 0 then return 0 end
   rounds = rounds + loaded
   if spareRounds then spareRounds = spareRounds - loaded end
+  if slideLocked then
+    -- Magnum: the slide closes on the new magazine.
+    slideLocked, slideReleasedAt = false, now()
+  end
   hook('onVrPistolReload', rounds, spareRounds)
   return loaded
 end
@@ -685,10 +798,15 @@ local function pullTrigger(t, origin, dir)
   local reason = dryReason()
   if reason then
     shotsFired = shotsFired + 1
+    -- Magnum: the hammer falls on nothing (unless the slide is locked open).
+    if gunDef().action == 'semi' and not slideLocked then hammerDown = true end
     hook('onVrPistolDryFire', reason)
     return false
   end
   if cfg.cylinderSize > 0 then rounds = rounds - 1 end
+  slideReleasedAt = nil
+  -- Magnum: the slide locks open on the last round.
+  slideLocked = gunDef().action == 'semi' and cfg.cylinderSize > 0 and rounds == 0
   cycleAction(t)
   M.shoot(origin, dir)
   hook('onVrPistolShot', origin, dir:normalized(), rounds)
@@ -707,6 +825,49 @@ function M.setModelOffset(x, y, z, pitchDeg)
 end
 
 function M.getConfig() return cfg end
+
+-- ---------------------------------------------------------------- guns ---
+
+local SAVE_FILE = '/settings/vrPistol.json'
+
+-- Switches to another gun with a full load. Remembered in
+-- <user folder>/settings/vrPistol.json unless noSave is true.
+function M.setGun(id, noSave)
+  id = id and tostring(id):lower() or ''
+  local gun = GUNS[id]
+  if not gun then
+    local names = {}
+    for k in pairs(GUNS) do names[#names + 1] = k end
+    table.sort(names)
+    log('W', 'vrPistol', 'unknown gun "' .. id .. '", choose one of: ' .. table.concat(names, ', '))
+    return false
+  end
+  if id == 'deagle' then id = 'magnum' end
+  local changed = cfg.gun ~= id
+  cfg.gun = id
+  cfg.cylinderSize = gun.capacity
+  if changed then
+    deleteParts()
+    modelMissingLogged = nil
+    simpleFailed = nil
+  end
+  rounds = gun.capacity
+  slideLocked, slideReleasedAt, hammerDown = false, nil, false
+  shotsFired = 0
+  if not noSave and jsonWriteFile then
+    pcall(jsonWriteFile, SAVE_FILE, {gun = id}, true)
+  end
+  log('I', 'vrPistol', 'gun: ' .. gun.label)
+  return true
+end
+
+function M.getGun() return cfg.gun, gunDef().label end
+
+function M.getGuns()
+  local out = {}
+  for k, g in pairs(GUNS) do if k ~= 'deagle' then out[k] = g.label end end
+  return out
+end
 
 -- Model smoothness test: drive steadily at speed and watch the gun. It cycles
 -- through ways of moving the model, announcing each phase, and records what
@@ -837,6 +998,13 @@ function M.onInit()
   if setExtensionUnloadMode then setExtensionUnloadMode(M, 'manual') end
 end
 
+-- Picks the gun chosen last time.
+function M.onExtensionLoaded()
+  if not jsonReadFile then return end
+  local ok, saved = pcall(jsonReadFile, SAVE_FILE)
+  if ok and type(saved) == 'table' and saved.gun and GUNS[saved.gun] then M.setGun(saved.gun, true) end
+end
+
 function M.onPreRender(dtReal)
   local aim = vrHands.getPose(cfg.hand, 'aim')
   local drawn = updateEquipped(aim)
@@ -861,6 +1029,7 @@ function M.onPreRender(dtReal)
       end
     elseif triggerHeld and trigger <= cfg.triggerRelease then
       triggerHeld = false
+      hammerDown = false  -- magnum: hammer reset for the next pull
     end
   else
     triggerHeld = false
