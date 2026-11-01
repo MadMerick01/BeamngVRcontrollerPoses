@@ -1,0 +1,108 @@
+{
+  "vrmagnum_black": {
+    "name": "vrmagnum_black",
+    "mapTo": "vrmagnum_black",
+    "class": "Material",
+    "version": 1.5,
+    "Stages": [
+      {
+        "baseColorFactor": [
+          0.03,
+          0.031,
+          0.034,
+          1
+        ],
+        "metallicFactor": 0.85,
+        "roughnessFactor": 0.4
+      },
+      {},
+      {},
+      {}
+    ],
+    "activeLayers": 1
+  },
+  "vrmagnum_grip": {
+    "name": "vrmagnum_grip",
+    "mapTo": "vrmagnum_grip",
+    "class": "Material",
+    "version": 1.5,
+    "Stages": [
+      {
+        "baseColorMap": "/art/shapes/vrmagnum/magnum_grip_baseColor.png",
+        "normalMap": "/art/shapes/vrmagnum/magnum_grip_normal.png",
+        "metallicFactor": 0.0,
+        "roughnessFactor": 0.78
+      },
+      {},
+      {},
+      {}
+    ],
+    "activeLayers": 1
+  },
+  "vrmagnum_bore": {
+    "name": "vrmagnum_bore",
+    "mapTo": "vrmagnum_bore",
+    "class": "Material",
+    "version": 1.5,
+    "Stages": [
+      {
+        "baseColorFactor": [
+          0.01,
+          0.01,
+          0.01,
+          1
+        ],
+        "metallicFactor": 0.6,
+        "roughnessFactor": 0.7
+      },
+      {},
+      {},
+      {}
+    ],
+    "activeLayers": 1
+  },
+  "vrmagnum_red": {
+    "name": "vrmagnum_red",
+    "mapTo": "vrmagnum_red",
+    "class": "Material",
+    "version": 1.5,
+    "Stages": [
+      {
+        "baseColorFactor": [
+          0.75,
+          0.04,
+          0.03,
+          1
+        ],
+        "metallicFactor": 0.0,
+        "roughnessFactor": 0.35
+      },
+      {},
+      {},
+      {}
+    ],
+    "activeLayers": 1
+  },
+  "vrmagnum_brass": {
+    "name": "vrmagnum_brass",
+    "mapTo": "vrmagnum_brass",
+    "class": "Material",
+    "version": 1.5,
+    "Stages": [
+      {
+        "baseColorFactor": [
+          0.78,
+          0.58,
+          0.27,
+          1
+        ],
+        "metallicFactor": 1.0,
+        "roughnessFactor": 0.3
+      },
+      {},
+      {},
+      {}
+    ],
+    "activeLayers": 1
+  }
+}

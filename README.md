@@ -1,6 +1,6 @@
 # BeamNG VR Controller Poses (v3, BeamNG.drive 0.40+)
 
-World-space VR controller poses in BeamNG.drive, plus an animated revolver on the
+World-space VR controller poses in BeamNG.drive, plus an animated handgun (a revolver or a big .50 semi-auto) on the
 right controller that shoots traffic.
 
 ```text
@@ -61,13 +61,13 @@ profiles, and supports the OpenXR 1.1 batch `xrLocateSpaces` call.
      the app is BeamNG.drive and passes every other VR app straight through;
    - puts `vrControllerPoses.zip` in `%LOCALAPPDATA%\BeamNG\BeamNG.drive\current\mods`.
      The mod loads itself (`scripts/vrControllerPoses/modScript.lua`).
-3. Start BeamNG and turn on VR. Hold the right grip to draw the revolver and
+3. Start BeamNG and turn on VR. Hold the right grip to draw the pistol and
    pull the trigger to shoot; let go of the grip to put it away.
 
 `Uninstall.cmd` undoes both steps. To skip the layer for one launch, set the
 environment variable `BEAMNG_VR_POSES_DISABLE=1`.
 
-The revolver model ships inside the mod (`mod/art/shapes/vrrevolver`). The older
+Both gun models ship inside the mod (`mod/art/shapes/vrmagnum` and `vrrevolver`). The older
 `VRPistol_Visual_v0.2_controller_api_fix.zip` is no longer used.
 
 Releases are automatic. Every merge to `main` builds, tests and publishes
@@ -116,6 +116,26 @@ driver camera gets no box and is named in the log. `driverBoxSize`,
 `driverBoxDrop` and `driverBrake` in `vrPistol.getConfig()` change the size,
 the drop and the brake (`driverBrake = 0` just coasts, `driverBoxSize = 0`
 turns driver shots off).
+
+### Choosing the gun
+
+There are two guns: the magnum (used by default) and the revolver. Pick one in the console; the choice is saved in
+`<user folder>/settings/vrPistol.json` and used every time after:
+
+```lua
+vrPistol.setGun('magnum')     -- big .50 semi-auto, the default ('deagle' works too)
+vrPistol.setGun('revolver')   -- the .44 revolver
+```
+
+The magnum is single action. It is carried cocked, so the trigger pull is short
+and light. At the break the hammer drops, the slide blows back and slams home,
+re-cocking the hammer, and the gun kicks about 20% harder than the revolver. It
+holds seven rounds. After the last one the slide locks open, and the trigger
+does nothing until you reload the same way as the revolver (put it away for
+1.5 s and draw it again), which closes the slide. `slideTravel` and
+`slideCycle` in `vrPistol.getConfig()` change how far and how fast the slide
+moves. Shots, sounds, hits, driver shots, ammo and hooks work the same for both
+guns.
 
 The cylinder holds six rounds. When it is empty the trigger still turns the
 cylinder and drops the hammer, but nothing fires. To reload, put the gun away
@@ -177,6 +197,23 @@ B also moving the drawn copy, C/D leading the car by 1/2 frames, E both). It
 announces each letter and records every frame to
 `<user folder>/vrHandsCapture/model_*.jsonl`. The options are also in
 `getConfig()` as `placeMode` ('server'/'client') and `predictSeconds`.
+
+### Magnum model
+
+A big gas-operated .50 semi-automatic in the classic "hand cannon" style, built from
+a reference photo: a 6" barrel with a slotted sight rail and recessed flats, a
+short slide with slanted rear serrations and ambidextrous safety levers, a ring
+hammer, a squared trigger guard, pebbled black grips and an extended magazine
+floor plate, all in matte black. It has no maker's markings or logos, and it
+was modelled for this mod, so there are no third-party asset rights to worry
+about.
+
+`tools/magnumModel/build_magnum.py` builds it the same way as the revolver and
+reuses the revolver script's helpers. It writes `mod/art/shapes/vrmagnum`
+(frame, slide, hammer and trigger). The grip sits where the revolver's grip
+sits, so one `setModelOffset` fits both guns.
+`python tools/revolverModel/build_lowpoly.py magnum` builds its low-poly copy
+(`vrPistolMeshMagnum.lua`).
 
 ### Revolver model
 

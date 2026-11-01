@@ -20,6 +20,7 @@ def lua():
     rt.globals().vrHands = hands
     rt.globals().vrPistol = rt.execute((ROOT / "mod/lua/ge/extensions/vrPistol.lua").read_text())
     rt.globals().vrPistol.getConfig().equipOnGrip = False  # most tests just shoot
+    rt.globals().vrPistol.setGun("revolver", True)  # most tests cover the revolver
     return rt
 
 
@@ -506,3 +507,106 @@ def test_show_driver_boxes_asks_every_vehicle_and_draws_replies(lua):
     lines.clear()
     frame(lua, packet(trigger=0.0))
     assert lines == []
+
+
+# ------------------------------------------------------------- magnum pistol ---
+
+def test_magnum_is_selectable_and_remembered(lua):
+    g = lua.globals()
+    saved = {}
+    g.jsonWriteFile = lambda path, data, pretty=None: saved.update(path=path, gun=data.gun)
+    vp = g.vrPistol
+    assert vp.getGun()[0] == "revolver"  # the fixture picks it
+    assert vp.setGun("deagle") is True
+    assert vp.getGun()[0] == "magnum" and vp.getAmmo() == (7, 7, None)
+    assert saved == {"path": "/settings/vrPistol.json", "gun": "magnum"}
+    assert vp.setGun("bazooka") is False and vp.getGun()[0] == "magnum"
+
+    # A fresh load picks the saved gun.
+    fresh = lua.execute((ROOT / "mod/lua/ge/extensions/vrPistol.lua").read_text())
+    g.jsonReadFile = lambda path: lua.table_from({"gun": "magnum"})
+    fresh.onExtensionLoaded()
+    assert fresh.getGun()[0] == "magnum"
+
+
+def test_magnum_model_has_a_slide_and_no_cylinder(model):
+    vp = model.globals().vrPistol
+    vp.setGun("magnum", True)
+    frame(model, packet(right_aim=AIM, trigger=0.0))
+    assert list(model.globals().mock.materialFiles.values()) == ["/art/shapes/vrmagnum/main.materials.json"]
+    names = sorted(model.globals().mock.objects.keys())
+    assert names == ["vrPistolModel_" + n for n in ("frame", "hammer", "slide", "trigger")]
+    # Switching back swaps the parts.
+    vp.setGun("revolver", True)
+    frame(model, packet(right_aim=AIM, trigger=0.0))
+    assert "vrPistolModel_cylinder" in model.globals().mock.objects.keys()
+    assert "vrPistolModel_slide" not in model.globals().mock.objects.keys()
+
+
+def test_magnum_fires_single_action_and_the_slide_cycles(model):
+    vp = model.globals().vrPistol
+    vp.setGun("magnum", True)
+    add(model, "car", (30, 20, 1), (2, 1, 1))
+    frame(model, packet(right_aim=AIM, trigger=0.0))
+    rest = vp.getActionState(0.0)
+    assert rest.hammer == pytest.approx(math.radians(42))  # carried cocked
+    assert rest.slide == 0 and rest.cylinder is None
+    slide_rest = part(model, "slide").pos
+    frame_rest = part(model, "frame").pos
+
+    half = vp.getActionState(0.35)
+    assert half.hammer == pytest.approx(math.radians(42)) and half.trigger < 0
+
+    frame(model, packet(right_aim=AIM, trigger=0.9))  # breaks
+    assert commands(model) == ["car"]
+    assert vp.getActionState(0.9).hammer == 0          # hammer has fallen
+    model.globals().mock.time += 0.019                 # slide fully back
+    frame(model, packet(right_aim=AIM, trigger=0.9))
+    back = vp.getActionState(0.9)
+    assert back.slide == pytest.approx(0.034, rel=1e-3) and back.hammer == pytest.approx(math.radians(42))
+    # The slide sits further back on the gun than the frame does.
+    s, f = part(model, "slide").pos, part(model, "frame").pos
+    assert (s.x - f.x) < (slide_rest.x - frame_rest.x) - 0.02
+
+    model.globals().mock.time += 1
+    frame(model, packet(right_aim=AIM, trigger=0.0))
+    settled = vp.getActionState(0.0)
+    assert settled.slide == 0 and settled.hammer == pytest.approx(math.radians(42))
+    assert vp.getAmmo()[0] == 6
+
+
+def test_magnum_slide_locks_open_when_empty_until_reloaded(lua):
+    face_plus_x(lua)
+    vp = lua.globals().vrPistol
+    vp.setGun("magnum", True)
+    add(lua, "car", (30, 20, 1), (2, 1, 1))
+    frame(lua, packet(right_aim=AIM, trigger=0.0))
+    pull(lua, 8)
+    assert commands(lua) == ["car"] * 7
+    state = vp.getActionState(0.0)
+    assert state.slideLocked and state.slide == pytest.approx(0.034)
+    assert hooks(lua, "onVrPistolDryFire")[0][1] == "empty"
+
+    assert vp.reload() == 7
+    lua.globals().mock.time += 0.1
+    state = vp.getActionState(0.0)
+    assert not state.slideLocked and state.slide == 0
+
+
+def test_simple_magnum_is_drawn_from_its_own_mesh(lua):
+    face_plus_x(lua)
+    lua.globals().vrPistol.setGun("magnum", True)
+    mesh = lua.eval("require('vrPistolMeshMagnum')")
+    count = sum(len(mesh[n].tris) // 9 for n in ("frame", "slide", "hammer", "trigger"))
+    frame(lua, packet(right_aim=AIM))
+    tris = simple_tris(lua)
+    assert len(tris) == count
+    xs = [v[0] for t in tris for v in t]
+    zs = [v[2] for t in tris for v in t]
+    assert 10.3 < min(xs) and max(xs) < 10.9 and max(xs) - min(xs) > 0.25
+    assert 1.35 < min(zs) and max(zs) < 1.65
+
+
+def test_magnum_is_the_default_gun(lua):
+    fresh = lua.execute((ROOT / "mod/lua/ge/extensions/vrPistol.lua").read_text())
+    assert fresh.getGun()[0] == "magnum" and fresh.getAmmo() == (7, 7, None)
