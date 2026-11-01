@@ -58,11 +58,12 @@ local cfg = {
   laser = false,
   hitMarkers = false,    -- orange/grey spheres where shots land
   -- Hold the grip to draw the gun; let go to put it away (no gun, no shots).
-  -- While it is drawn BeamNG's own controller pointer (black line and orange
-  -- ball) is switched off, and switched back on when the gun is put away.
   equipOnGrip = true,
   gripPress = 0.6,
   gripRelease = 0.4,
+  -- BeamNG's own controller pointers (black line and orange ball, both hands):
+  -- true hides them the whole time the pistol is loaded, 'drawn' only while
+  -- the gun is drawn, false leaves them alone. Unloading puts them back.
   hideGamePointer = true,
   range = 300,
   triggerPress = 0.7,
@@ -722,14 +723,19 @@ end
 
 -- ---------------------------------------------------------- equipping ---
 
--- BeamNG's pointer is the 'openXRuseControllers' setting. Its value is saved
--- when the gun is drawn and put back when it is put away.
+-- BeamNG's pointers (both hands) are the one 'openXRuseControllers' setting.
+-- Its value is saved when they are hidden and put back when they are shown.
+-- While hidden, it is switched off again if anything turns it back on.
 local function setGamePointerHidden(hidden)
   if not settings or not settings.setValue then return end
   if hidden then
-    if savedPointerSetting ~= nil then return end
     local ok, current = pcall(settings.getValue, 'openXRuseControllers')
-    savedPointerSetting = (ok and current ~= nil) and current or true
+    if not ok then current = nil end
+    if savedPointerSetting == nil then
+      savedPointerSetting = current ~= nil and current or true
+    elseif current == false then
+      return
+    end
     pcall(settings.setValue, 'openXRuseControllers', false)
   elseif savedPointerSetting ~= nil then
     pcall(settings.setValue, 'openXRuseControllers', savedPointerSetting)
@@ -747,7 +753,6 @@ local function updateEquipped(aim)
   if want ~= equipped then
     equipped = want
     triggerHeld = false
-    if cfg.hideGamePointer or not want then setGamePointerHidden(want) end
     if want and cfg.equipOnGrip then playEquipSound() end
     -- Reloading: put away long enough, the gun comes out full.
     local t = now()
@@ -768,7 +773,9 @@ end
 
 function M.onPreRender(dtReal)
   local aim = vrHands.getPose(cfg.hand, 'aim')
-  if not updateEquipped(aim) then aim = {valid = false} end
+  local drawn = updateEquipped(aim)
+  setGamePointerHidden(cfg.hideGamePointer == true or (cfg.hideGamePointer == 'drawn' and drawn))
+  if not drawn then aim = {valid = false} end
   local trigger = aim.valid and vrHands.getTrigger(cfg.hand) or 0
   local t = now()
 

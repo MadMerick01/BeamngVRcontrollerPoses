@@ -295,6 +295,7 @@ def test_simple_gun_flashes_and_kicks_on_a_shot(lua):
 def test_gun_is_drawn_only_while_the_grip_is_held(lua):
     face_plus_x(lua)
     lua.globals().vrPistol.getConfig().equipOnGrip = True
+    lua.globals().vrPistol.getConfig().hideGamePointer = "drawn"
     add(lua, "car", (30, 20, 1), (2, 1, 1))
     pointer = lambda: lua.globals().mock.settings.openXRuseControllers
     tris = lambda: len(lua.globals().mock.tris or {})
@@ -437,3 +438,31 @@ def test_a_failing_listener_does_not_stop_the_gun(lua):
     pull(lua)
     assert commands(lua) == ["car"]
     assert any("listener failed" in l for l in lua.globals().logs.values())
+
+
+def test_both_game_pointers_stay_hidden_while_the_pistol_is_loaded(lua):
+    face_plus_x(lua)
+    g = lua.globals()
+    g.vrPistol.getConfig().equipOnGrip = True
+    pointer = lambda: g.mock.settings.openXRuseControllers
+    # Gun put away, and even with no tracking: hidden from the first frame.
+    frame(lua, packet(right_aim=None))
+    assert pointer() is False
+    frame(lua, packet(right_aim=AIM, squeeze=1.0))
+    frame(lua, packet(right_aim=AIM, squeeze=0.0))
+    assert pointer() is False and not g.vrPistol.isEquipped()
+    # Something turns it back on: switched off again next frame.
+    g.mock.settings.openXRuseControllers = True
+    frame(lua, packet(right_aim=AIM))
+    assert pointer() is False
+    # Unloading the pistol puts the player's setting back.
+    g.vrPistol.onExtensionUnloaded()
+    assert pointer() is True
+
+
+def test_hide_game_pointer_false_leaves_it_alone(lua):
+    face_plus_x(lua)
+    g = lua.globals()
+    g.vrPistol.getConfig().hideGamePointer = False
+    frame(lua, packet(right_aim=AIM, trigger=0.0))
+    assert g.mock.settings.openXRuseControllers is True
