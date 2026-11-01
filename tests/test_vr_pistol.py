@@ -476,7 +476,7 @@ def test_shot_sends_the_driver_box_and_driver_hits_raise_a_hook(lua):
     frame(lua, packet(right_aim=AIM, trigger=0.0))
     pull(lua)
     hit_cmd = [c.cmd for c in all_commands(lua) if "vrPistolHit.hit(" in c.cmd][0]
-    assert hit_cmd.endswith(",true,0.400,0.150)")  # deflateTyres, driver box size, drop
+    assert hit_cmd.endswith(",true,0.500,0.150,0.500)")  # deflateTyres, box size, drop, brake
 
     lua.globals().vrPistol.onDriverHit(42, 29.8, 20.0, 1.3)
     hit = hooks(lua, "onVrPistolDriverHit")[0]
@@ -490,7 +490,7 @@ def test_show_driver_boxes_asks_every_vehicle_and_draws_replies(lua):
     vp = lua.globals().vrPistol
     vp.showDriverBoxes(5)
     frame(lua, packet(trigger=0.0))
-    assert any("reportDriverBox(0.400,0.150)" in c.cmd for c in all_commands(lua))
+    assert any("reportDriverBox(0.500,0.150)" in c.cmd for c in all_commands(lua))
     vp.onDriverBox(7, 30, 20, 1.2, 1, 0, 0, 0, 1, 0, 0.2, True)
     vp.onDriverBox(8)  # no driver camera: logged, nothing drawn
     lines.clear()
