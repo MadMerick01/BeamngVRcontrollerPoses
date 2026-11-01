@@ -49,7 +49,7 @@ M.dependencies = {'vrHands'}
 
 local cfg = {
   hand = 'right',
-  gun = 'revolver',      -- 'revolver' or 'magnum'; change it with vrPistol.setGun
+  gun = 'magnum',        -- 'magnum' (default) or 'revolver'; change it with vrPistol.setGun
   -- Where the gun's origin (bore axis, rear face of the revolver's cylinder;
   -- both guns put the grip in the same place) sits in aim-pose space,
   -- metres: x right, y along the aim ray, z up.
@@ -86,7 +86,7 @@ local cfg = {
   triggerPress = 0.7,
   triggerRelease = 0.3,
   cooldown = 0.12,
-  cylinderSize = 6,      -- rounds per load (0 = never runs out); setGun sets it to the gun's capacity
+  cylinderSize = 7,      -- rounds per load (0 = never runs out); setGun sets it to the gun's capacity
   reloadSeconds = 1.5,   -- how long the gun must be put away to reload when drawn again
   hitRadius = 0.3,       -- how far from the ray a vehicle node still counts as hit
   -- Impact physics, same model and defaults as Bolides' BulletDamage.lua:

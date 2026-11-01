@@ -20,6 +20,7 @@ def lua():
     rt.globals().vrHands = hands
     rt.globals().vrPistol = rt.execute((ROOT / "mod/lua/ge/extensions/vrPistol.lua").read_text())
     rt.globals().vrPistol.getConfig().equipOnGrip = False  # most tests just shoot
+    rt.globals().vrPistol.setGun("revolver", True)  # most tests cover the revolver
     return rt
 
 
@@ -515,7 +516,7 @@ def test_magnum_is_selectable_and_remembered(lua):
     saved = {}
     g.jsonWriteFile = lambda path, data, pretty=None: saved.update(path=path, gun=data.gun)
     vp = g.vrPistol
-    assert vp.getGun()[0] == "revolver"
+    assert vp.getGun()[0] == "revolver"  # the fixture picks it
     assert vp.setGun("deagle") is True
     assert vp.getGun()[0] == "magnum" and vp.getAmmo() == (7, 7, None)
     assert saved == {"path": "/settings/vrPistol.json", "gun": "magnum"}
@@ -604,3 +605,8 @@ def test_simple_magnum_is_drawn_from_its_own_mesh(lua):
     zs = [v[2] for t in tris for v in t]
     assert 10.3 < min(xs) and max(xs) < 10.9 and max(xs) - min(xs) > 0.25
     assert 1.35 < min(zs) and max(zs) < 1.65
+
+
+def test_magnum_is_the_default_gun(lua):
+    fresh = lua.execute((ROOT / "mod/lua/ge/extensions/vrPistol.lua").read_text())
+    assert fresh.getGun()[0] == "magnum" and fresh.getAmmo() == (7, 7, None)

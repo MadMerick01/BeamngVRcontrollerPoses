@@ -61,13 +61,13 @@ profiles, and supports the OpenXR 1.1 batch `xrLocateSpaces` call.
      the app is BeamNG.drive and passes every other VR app straight through;
    - puts `vrControllerPoses.zip` in `%LOCALAPPDATA%\BeamNG\BeamNG.drive\current\mods`.
      The mod loads itself (`scripts/vrControllerPoses/modScript.lua`).
-3. Start BeamNG and turn on VR. Hold the right grip to draw the revolver and
+3. Start BeamNG and turn on VR. Hold the right grip to draw the pistol and
    pull the trigger to shoot; let go of the grip to put it away.
 
 `Uninstall.cmd` undoes both steps. To skip the layer for one launch, set the
 environment variable `BEAMNG_VR_POSES_DISABLE=1`.
 
-The revolver model ships inside the mod (`mod/art/shapes/vrrevolver`). The older
+Both gun models ship inside the mod (`mod/art/shapes/vrmagnum` and `vrrevolver`). The older
 `VRPistol_Visual_v0.2_controller_api_fix.zip` is no longer used.
 
 Releases are automatic. Every merge to `main` builds, tests and publishes
@@ -119,12 +119,12 @@ turns driver shots off).
 
 ### Choosing the gun
 
-There are two guns. Pick one in the console; the choice is saved in
+There are two guns: the magnum (used by default) and the revolver. Pick one in the console; the choice is saved in
 `<user folder>/settings/vrPistol.json` and used every time after:
 
 ```lua
-vrPistol.setGun('magnum')     -- big .50 semi-auto ('deagle' works too)
-vrPistol.setGun('revolver')   -- the .44 revolver (the default)
+vrPistol.setGun('magnum')     -- big .50 semi-auto, the default ('deagle' works too)
+vrPistol.setGun('revolver')   -- the .44 revolver
 ```
 
 The magnum is single action. It is carried cocked, so the trigger pull is short
