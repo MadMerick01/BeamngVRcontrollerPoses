@@ -6,7 +6,7 @@
 --
 -- A shot whose path passes through the driver box (a cube around the driver's
 -- head and chest, hung from the vehicle's driver camera) also switches off this
--- vehicle's AI, so it coasts: no throttle, no brake, hands off the wheel.
+-- vehicle's AI: throttle off, brake at half (driverBrake), hands off the wheel.
 
 local M = {}
 
@@ -135,13 +135,13 @@ local function aiDriving()
   return false
 end
 
--- AI off, pedals released: the car rolls on in gear and slows down by itself.
-local function stopDriver()
+-- AI off, throttle off, brake held at `brake` (0..1) so the car slows to a stop.
+local function stopDriver(brake)
   if not aiDriving() then return false end
   ai.setMode('disabled')
   if input and input.event then
     pcall(input.event, 'throttle', 0, 2)
-    pcall(input.event, 'brake', 0, 2)
+    pcall(input.event, 'brake', clamp(brake or 0, 0, 1), 2)
   end
   return true
 end
@@ -158,7 +158,7 @@ end
 
 -- For vrPistol.showDriverBoxes: sends this vehicle's driver box to GE.
 function M.reportDriverBox(size, drop)
-  local center, axes, half = driverBox(size or 0.4, drop or 0.15)
+  local center, axes, half = driverBox(size or 0.5, drop or 0.15)
   if not center then
     obj:queueGameEngineLua(string.format('if vrPistol then vrPistol.onDriverBox(%d) end', objectId))
     return
@@ -171,7 +171,7 @@ end
 
 -- Origin arrives in world space; node positions are relative to obj:getPosition().
 function M.hit(ox, oy, oz, dx, dy, dz, maxDist, hitRadius, impactForce, blastRadius, blastForce,
-               blastInversion, deflateTyres, driverBoxSize, driverBoxDrop)
+               blastInversion, deflateTyres, driverBoxSize, driverBoxDrop, driverBrake)
   local origin = vec3(ox, oy, oz) - obj:getPosition()
   local dir = vec3(dx, dy, dz)
   local hitR2 = hitRadius * hitRadius
@@ -179,7 +179,7 @@ function M.hit(ox, oy, oz, dx, dy, dz, maxDist, hitRadius, impactForce, blastRad
   -- The whole path counts, not just the first panel it meets: a bullet that
   -- stops in the door or glass still reaches the driver.
   local driverAt = driverShot(origin, dir, maxDist, driverBoxSize, driverBoxDrop)
-  if driverAt and stopDriver() then
+  if driverAt and stopDriver(driverBrake) then
     local w = obj:getPosition() + driverAt
     obj:queueGameEngineLua(string.format('if vrPistol then vrPistol.onDriverHit(%d,%.4f,%.4f,%.4f) end',
       objectId, w.x, w.y, w.z))

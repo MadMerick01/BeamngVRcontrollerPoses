@@ -23,7 +23,7 @@
 --
 -- Driver shots: a shot whose path passes through the driver box (a cube of
 -- driverBoxSize, hung driverBoxDrop below the vehicle's driver camera) turns
--- that vehicle's AI off, so it coasts. vrPistol.showDriverBoxes(seconds) draws
+-- that vehicle's AI off and holds its brake at driverBrake. vrPistol.showDriverBoxes(seconds) draws
 -- the boxes of every vehicle, to check where they sit.
 --
 -- The shot always travels along the controller's aim ray (OpenXR aim pose), so
@@ -85,8 +85,9 @@ local cfg = {
   deflateTyres = true,   -- a hit near a wheel hub also flattens that tyre
   -- One shot through the driver box (head, neck, upper chest) turns the
   -- vehicle's AI off. 0 disables it.
-  driverBoxSize = 0.4,   -- cube side, metres
+  driverBoxSize = 0.5,   -- cube side, metres
   driverBoxDrop = 0.15,  -- box centre this far below the driver camera
+  driverBrake = 0.5,     -- brake held after the driver is hit (0 = coast, 1 = full)
   allowSelfHit = false,
   -- 'simple' draws a low-poly gun with the debug drawer, fresh every frame like
   -- the laser, so it never trails the car. 'textured' uses the full revolver
@@ -602,10 +603,10 @@ function M.shoot(origin, dir)
   local target = candidates[1]
   if target then
     target.veh:queueLuaCommand(string.format(
-      "extensions.load('vrPistolHit'); extensions.vrPistolHit.hit(%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.2f,%.3f,%.1f,%.3f,%.1f,%.3f,%s,%.3f,%.3f)",
+      "extensions.load('vrPistolHit'); extensions.vrPistolHit.hit(%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.2f,%.3f,%.1f,%.3f,%.1f,%.3f,%s,%.3f,%.3f,%.3f)",
       origin.x, origin.y, origin.z, dir.x, dir.y, dir.z, wallDist, cfg.hitRadius,
       cfg.impactForce, cfg.blastRadius, cfg.blastForce, cfg.blastInversion, tostring(cfg.deflateTyres),
-      cfg.driverBoxSize or 0, cfg.driverBoxDrop or 0))
+      cfg.driverBoxSize or 0, cfg.driverBoxDrop or 0, cfg.driverBrake or 0))
   elseif wallDist < cfg.range then
     addMarker(origin + dir * wallDist, missColour)
   end
@@ -669,7 +670,7 @@ local function updateDriverBoxes(t)
   if t >= nextBoxQuery then
     nextBoxQuery = t + 0.1
     local cmd = string.format("extensions.load('vrPistolHit'); extensions.vrPistolHit.reportDriverBox(%.3f,%.3f)",
-      cfg.driverBoxSize or 0.4, cfg.driverBoxDrop or 0.15)
+      cfg.driverBoxSize or 0.5, cfg.driverBoxDrop or 0.15)
     for i = 0, be:getObjectCount() - 1 do
       local veh = be:getObject(i)
       if veh and veh.queueLuaCommand then veh:queueLuaCommand(cmd) end

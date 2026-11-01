@@ -104,17 +104,18 @@ it. A hit near a wheel hub also deflates that tyre. Your own
 vehicle is never hit.
 
 One shot at an AI driver stops their car. Each vehicle has a driver box, a
-40 cm cube hung 15 cm below its driver camera (the in-car view from the
+50 cm cube hung 15 cm below its driver camera (the in-car view from the
 vehicle's `camerasInternal` data) and turned with the body, which covers the
 head, neck and upper chest. If a shot's path goes through that box, even
 when it would stop at the door or the glass first, the vehicle's AI is
-switched off with the throttle and brake released, so it just coasts. It
+switched off, the throttle is released and the brake is held at 50%, so the car slows to a stop. It
 only affects AI-driven vehicles. To see where the boxes sit, run
 `vrPistol.showDriverBoxes(30)` in the console: for 30 s every vehicle's box is
 drawn, red while its AI is driving and grey once it is off. A vehicle with no
-driver camera gets no box and is named in the log. `driverBoxSize` and
-`driverBoxDrop` in `vrPistol.getConfig()` change the size and drop
-(`driverBoxSize = 0` turns driver shots off).
+driver camera gets no box and is named in the log. `driverBoxSize`,
+`driverBoxDrop` and `driverBrake` in `vrPistol.getConfig()` change the size,
+the drop and the brake (`driverBrake = 0` just coasts, `driverBoxSize = 0`
+turns driver shots off).
 
 The cylinder holds six rounds. When it is empty the trigger still turns the
 cylinder and drops the hammer, but nothing fires. To reload, put the gun away

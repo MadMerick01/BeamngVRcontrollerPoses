@@ -72,7 +72,7 @@ def test_miss_does_nothing(lua):
 
 # ------------------------------------------------------------------ driver ---
 # The car faces world +Y, roof up. Its driver camera node (cid 4) sits 1.2 m up,
-# at world (100, 1, 1.2); the driver box is 0.4 m, centred 0.15 m below it.
+# at world (100, 1, 1.2); the driver box is 0.5 m, centred 0.15 m below it.
 DRIVER = """
 nodePos[4] = vec3(0, 1, 1.2)
 v.data.nodes[4] = {cid = 4, pos = vec3(0.35, -1, 1.2)}
@@ -102,22 +102,22 @@ def driver_hits(rt):
 def shoot(rt, oy, oz, **kw):
     # Shot along +X from x = 90; the car (and the box) sit at x = 100.
     rt.globals().hit(90, oy, oz, 1, 0, 0, kw.get("dist", 50), 0.3, 6000, 1.3, 70, 0.3, True,
-                     kw.get("size", 0.4), 0.15)
+                     kw.get("size", 0.5), 0.15, kw.get("brake", 0.5))
 
 
 def test_one_shot_through_the_driver_box_turns_the_ai_off(car):
     car.execute("v.data.camerasInternal = {[0] = {type = 'driver', camNodeID = 4}}")
     shoot(car, 1, 1.1)  # 0.1 m below the camera: inside the box
     assert ai_calls(car) == ["disabled"]
-    assert car.globals().inputs.throttle == 0 and car.globals().inputs.brake == 0
-    # Reported where the bullet enters the box: its near face, 0.2 m before the camera.
-    assert "onDriverHit(42,99.8000,1.0000,1.1000)" in driver_hits(car)[0]
+    assert car.globals().inputs.throttle == 0 and car.globals().inputs.brake == 0.5
+    # Reported where the bullet enters the box: its near face, 0.25 m before the camera.
+    assert "onDriverHit(42,99.7500,1.0000,1.1000)" in driver_hits(car)[0]
 
 
 def test_shot_beside_the_box_leaves_the_ai_driving(car):
     car.execute("v.data.camerasInternal = {[0] = {type = 'driver', camNodeID = 4}}")
-    shoot(car, 1, 1.4)    # 0.2 m above the camera: over the box top (1.25)
-    shoot(car, 1.3, 1.05)  # 0.3 m behind it
+    shoot(car, 1, 1.4)    # 0.2 m above the camera: over the box top (1.3)
+    shoot(car, 1.3, 1.05)  # 0.3 m behind it, past the back face (1.25)
     assert ai_calls(car) == [] and driver_hits(car) == []
 
 
@@ -171,3 +171,15 @@ def test_driver_box_size_zero_disables_it(car):
     car.execute("v.data.camerasInternal = {[0] = {type = 'driver', camNodeID = 4}}")
     shoot(car, 1, 1.1, size=0)
     assert ai_calls(car) == []
+
+
+def test_box_reaches_a_quarter_metre_from_its_centre(car):
+    car.execute("v.data.camerasInternal = {[0] = {type = 'driver', camNodeID = 4}}")
+    shoot(car, 1, 1.28)  # top of the head, 8 cm above the camera
+    assert ai_calls(car) == ["disabled"]
+
+
+def test_driver_brake_zero_just_coasts(car):
+    car.execute("v.data.camerasInternal = {[0] = {type = 'driver', camNodeID = 4}}")
+    shoot(car, 1, 1.1, brake=0)
+    assert car.globals().inputs.brake == 0 and car.globals().inputs.throttle == 0
