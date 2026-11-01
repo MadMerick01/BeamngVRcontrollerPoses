@@ -103,6 +103,19 @@ along the bullet's path, plus a 1.3 m falloff blast that dents the panel around
 it. A hit near a wheel hub also deflates that tyre. Your own
 vehicle is never hit.
 
+One shot at an AI driver stops their car. Each vehicle has a driver box, a
+40 cm cube hung 15 cm below its driver camera (the in-car view from the
+vehicle's `camerasInternal` data) and turned with the body, which covers the
+head, neck and upper chest. If a shot's path goes through that box, even
+when it would stop at the door or the glass first, the vehicle's AI is
+switched off with the throttle and brake released, so it just coasts. It
+only affects AI-driven vehicles. To see where the boxes sit, run
+`vrPistol.showDriverBoxes(30)` in the console: for 30 s every vehicle's box is
+drawn, red while its AI is driving and grey once it is off. A vehicle with no
+driver camera gets no box and is named in the log. `driverBoxSize` and
+`driverBoxDrop` in `vrPistol.getConfig()` change the size and drop
+(`driverBoxSize = 0` turns driver shots off).
+
 The cylinder holds six rounds. When it is empty the trigger still turns the
 cylinder and drops the hammer, but nothing fires. To reload, put the gun away
 (let go of the grip) for 1.5 s and draw it again. Spare rounds are unlimited
@@ -130,6 +143,7 @@ defines a function of the same name hears them:
 | `onVrPistolDryFire` | the trigger breaks but nothing fires | `'empty'` or `'refused'` |
 | `onVrPistolReload` | the cylinder is refilled | rounds, spare rounds |
 | `onVrPistolHit` | a shot hits a vehicle | vehicle id, hit position (`vec3`), nodes pushed |
+| `onVrPistolDriverHit` | a shot hits an AI driver and turns the AI off | vehicle id, where the shot entered the driver box (`vec3`) |
 
 A listener that throws an error is logged and never stops the gun.
 

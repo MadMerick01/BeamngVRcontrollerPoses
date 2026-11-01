@@ -19,6 +19,12 @@
 --   onVrPistolDryFire(reason)                 -- 'empty' or 'refused'
 --   onVrPistolReload(rounds, spareRounds)     -- the cylinder was refilled
 --   onVrPistolHit(vehId, pos, nodesPushed)    -- a shot hit a vehicle
+--   onVrPistolDriverHit(vehId, pos)           -- a shot hit an AI driver; its AI is now off
+--
+-- Driver shots: a shot whose path passes through the driver box (a cube of
+-- driverBoxSize, hung driverBoxDrop below the vehicle's driver camera) turns
+-- that vehicle's AI off, so it coasts. vrPistol.showDriverBoxes(seconds) draws
+-- the boxes of every vehicle, to check where they sit.
 --
 -- The shot always travels along the controller's aim ray (OpenXR aim pose), so
 -- the model offset only changes how the gun looks, never where it hits.
@@ -78,6 +84,10 @@ local cfg = {
   blastForce = 70,
   blastInversion = 0.3,  -- chance a node is pulled instead of pushed
   deflateTyres = true,   -- a hit near a wheel hub also flattens that tyre
+  -- One shot through the driver box (head, neck, upper chest) turns the
+  -- vehicle's AI off. 0 disables it.
+  driverBoxSize = 0.4,   -- cube side, metres
+  driverBoxDrop = 0.15,  -- box centre this far below the driver camera
   allowSelfHit = false,
   -- 'simple' draws a low-poly gun with the debug drawer, fresh every frame like
   -- the laser, so it never trails the car. 'textured' uses the full revolver
@@ -100,6 +110,10 @@ local shotFilter, holsteredAt = nil, nil
 
 local laserColour = ColorF(1, 0.1, 0.1, 0.8)
 local hitColour = ColorF(1, 0.6, 0, 1)
+local driverHitColour = ColorF(1, 0, 0, 1)
+local boxColourAI = ColorF(1, 0.2, 0.2, 1)
+local boxColourIdle = ColorF(0.5, 0.5, 0.5, 1)
+local driverBoxes, showBoxesUntil, nextBoxQuery = {}, 0, 0
 local missColour = ColorF(0.6, 0.6, 0.6, 1)
 
 local function now() return os.clock() end
@@ -597,9 +611,10 @@ function M.shoot(origin, dir)
   local target = candidates[1]
   if target then
     target.veh:queueLuaCommand(string.format(
-      "extensions.load('vrPistolHit'); extensions.vrPistolHit.hit(%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.2f,%.3f,%.1f,%.3f,%.1f,%.3f,%s)",
+      "extensions.load('vrPistolHit'); extensions.vrPistolHit.hit(%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.2f,%.3f,%.1f,%.3f,%.1f,%.3f,%s,%.3f,%.3f)",
       origin.x, origin.y, origin.z, dir.x, dir.y, dir.z, wallDist, cfg.hitRadius,
-      cfg.impactForce, cfg.blastRadius, cfg.blastForce, cfg.blastInversion, tostring(cfg.deflateTyres)))
+      cfg.impactForce, cfg.blastRadius, cfg.blastForce, cfg.blastInversion, tostring(cfg.deflateTyres),
+      cfg.driverBoxSize or 0, cfg.driverBoxDrop or 0))
   elseif wallDist < cfg.range then
     addMarker(origin + dir * wallDist, missColour)
   end
@@ -611,6 +626,65 @@ function M.onVehicleHit(vehId, x, y, z, nodesPushed)
   addMarker(pos, hitColour)
   log('D', 'vrPistol', string.format('hit vehicle %d, pushed %d nodes', vehId, nodesPushed))
   hook('onVrPistolHit', vehId, pos, nodesPushed)
+end
+
+-- Called from vehicle Lua when a shot went through an AI driver's box.
+function M.onDriverHit(vehId, x, y, z)
+  local pos = vec3(x, y, z)
+  addMarker(pos, driverHitColour)
+  log('I', 'vrPistol', string.format('driver of vehicle %d hit, AI off', vehId))
+  hook('onVrPistolDriverHit', vehId, pos)
+end
+
+-- Debug view: draws every vehicle's driver box for `seconds` (default 30),
+-- red while its AI is driving, grey otherwise. Vehicles with no driver
+-- camera are logged.
+function M.showDriverBoxes(seconds)
+  showBoxesUntil = now() + (seconds or 30)
+  nextBoxQuery = 0
+  driverBoxes = {}
+end
+
+-- Reply from vehicle Lua; only the id when the vehicle has no driver camera.
+function M.onDriverBox(vehId, cx, cy, cz, rx, ry, rz, fx, fy, fz, half, aiOn)
+  if not cx then
+    if driverBoxes[vehId] ~= false then
+      log('W', 'vrPistol', string.format('vehicle %d has no driver camera, so no driver box', vehId))
+    end
+    driverBoxes[vehId] = false
+    return
+  end
+  local r, f = vec3(rx, ry, rz), vec3(fx, fy, fz)
+  driverBoxes[vehId] = {center = vec3(cx, cy, cz), r = r, f = f, u = r:cross(f), half = half, ai = aiOn}
+end
+
+local function drawBox(b)
+  local c, col = b.center, b.ai and boxColourAI or boxColourIdle
+  local r, f, u = b.r * b.half, b.f * b.half, b.u * b.half
+  local corner = {}
+  for i = 0, 7 do
+    corner[i] = c + r * (i % 2 == 0 and -1 or 1) + f * (math.floor(i / 2) % 2 == 0 and -1 or 1)
+      + u * (i < 4 and -1 or 1)
+  end
+  for i = 0, 7 do
+    for _, bit in ipairs({1, 2, 4}) do
+      if math.floor(i / bit) % 2 == 0 then debugDrawer:drawLine(corner[i], corner[i + bit], col) end
+    end
+  end
+end
+
+local function updateDriverBoxes(t)
+  if t > showBoxesUntil then return end
+  if t >= nextBoxQuery then
+    nextBoxQuery = t + 0.1
+    local cmd = string.format("extensions.load('vrPistolHit'); extensions.vrPistolHit.reportDriverBox(%.3f,%.3f)",
+      cfg.driverBoxSize or 0.4, cfg.driverBoxDrop or 0.15)
+    for i = 0, be:getObjectCount() - 1 do
+      local veh = be:getObject(i)
+      if veh and veh.queueLuaCommand then veh:queueLuaCommand(cmd) end
+    end
+  end
+  for _, b in pairs(driverBoxes) do if b then drawBox(b) end end
 end
 
 -- A trigger break: fires a round, or clicks when empty or refused. The
@@ -802,6 +876,8 @@ function M.onPreRender(dtReal)
 
   placeModel(aim, trigger, t)
   modelTestFrame(aim, dtReal)
+
+  updateDriverBoxes(t)
 
   for i = #markers, 1, -1 do
     local m = markers[i]

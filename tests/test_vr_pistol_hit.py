@@ -68,3 +68,106 @@ def test_tyre_deflation_can_be_disabled(lua):
 def test_miss_does_nothing(lua):
     lua.globals().hit(90, 10, 1, 1, 0, 0, 50, 0.3, 6000, 1.3, 70, 0.3, True)
     assert len(lua.globals().geCalls) == 0
+
+
+# ------------------------------------------------------------------ driver ---
+# The car faces world +Y, roof up. Its driver camera node (cid 4) sits 1.2 m up,
+# at world (100, 1, 1.2); the driver box is 0.4 m, centred 0.15 m below it.
+DRIVER = """
+nodePos[4] = vec3(0, 1, 1.2)
+v.data.nodes[4] = {cid = 4, pos = vec3(0.35, -1, 1.2)}
+obj.getDirectionVector = function() return vec3(0, 1, 0) end
+obj.getDirectionVectorUp = function() return vec3(0, 0, 1) end
+aiCalls, inputs = {}, {}
+ai = {mode = 'traffic', setMode = function(m) aiCalls[#aiCalls + 1] = m; ai.mode = m end}
+input = {event = function(name, value, filter) inputs[name] = value end}
+"""
+
+
+@pytest.fixture
+def car(lua):
+    lua.execute(DRIVER)
+    return lua
+
+
+def ai_calls(rt):
+    return list(rt.globals().aiCalls.values())
+
+
+def driver_hits(rt):
+    calls = rt.globals().geCalls
+    return [calls[i] for i in range(1, len(calls) + 1) if "onDriverHit" in calls[i]]
+
+
+def shoot(rt, oy, oz, **kw):
+    # Shot along +X from x = 90; the car (and the box) sit at x = 100.
+    rt.globals().hit(90, oy, oz, 1, 0, 0, kw.get("dist", 50), 0.3, 6000, 1.3, 70, 0.3, True,
+                     kw.get("size", 0.4), 0.15)
+
+
+def test_one_shot_through_the_driver_box_turns_the_ai_off(car):
+    car.execute("v.data.camerasInternal = {[0] = {type = 'driver', camNodeID = 4}}")
+    shoot(car, 1, 1.1)  # 0.1 m below the camera: inside the box
+    assert ai_calls(car) == ["disabled"]
+    assert car.globals().inputs.throttle == 0 and car.globals().inputs.brake == 0
+    # Reported where the bullet enters the box: its near face, 0.2 m before the camera.
+    assert "onDriverHit(42,99.8000,1.0000,1.1000)" in driver_hits(car)[0]
+
+
+def test_shot_beside_the_box_leaves_the_ai_driving(car):
+    car.execute("v.data.camerasInternal = {[0] = {type = 'driver', camNodeID = 4}}")
+    shoot(car, 1, 1.4)    # 0.2 m above the camera: over the box top (1.25)
+    shoot(car, 1.3, 1.05)  # 0.3 m behind it
+    assert ai_calls(car) == [] and driver_hits(car) == []
+
+
+def test_a_wall_before_the_driver_stops_the_bullet(car):
+    car.execute("v.data.camerasInternal = {[0] = {type = 'driver', camNodeID = 4}}")
+    shoot(car, 1, 1.1, dist=5)  # world hit 5 m out, the car is 10 m away
+    assert ai_calls(car) == []
+
+
+def test_driver_hit_counts_even_without_a_node_hit(car):
+    # Through an open window: no node near the ray, still the driver.
+    car.execute("v.data.camerasInternal = {[0] = {type = 'driver', camNodeID = 4}}")
+    car.execute("v.data.nodes[0], v.data.nodes[1] = nil, nil")
+    shoot(car, 1, 1.1)
+    assert ai_calls(car) == ["disabled"]
+
+
+def test_already_stopped_or_player_car_is_left_alone(car):
+    car.execute("v.data.camerasInternal = {[0] = {type = 'driver', camNodeID = 4}}; ai.mode = 'disabled'")
+    shoot(car, 1, 1.1)
+    assert ai_calls(car) == [] and driver_hits(car) == []
+
+
+def test_camera_found_by_jbeam_position_and_driver_preferred(car):
+    car.execute("""v.data.camerasInternal = {
+      [0] = {type = 'hood', x = 0, y = 0, z = 0},
+      [1] = {type = 'driver', x = 0.35, y = -1, z = 1.2},
+    }""")
+    shoot(car, 1, 1.1)
+    assert ai_calls(car) == ["disabled"]
+
+
+def test_camera_without_a_node_uses_the_ref_node_offset(car):
+    # Ref node 0 is at jbeam (0, 0, 0) and world offset (0, 0, 1). The camera is
+    # 1 m forward (jbeam -y) and 0.2 m up from it: world offset (0, 1, 1.2).
+    car.execute("""
+      v.data.nodes[0].pos = vec3(0, 0, 0)
+      v.data.refNodes = {[0] = {ref = 0}}
+      v.data.camerasInternal = {[0] = {type = 'driver', x = 0, y = -1, z = 0.2}}
+    """)
+    shoot(car, 1, 1.1)
+    assert ai_calls(car) == ["disabled"]
+
+
+def test_no_driver_camera_means_no_driver_shot(car):
+    shoot(car, 1, 1.1)
+    assert ai_calls(car) == []
+
+
+def test_driver_box_size_zero_disables_it(car):
+    car.execute("v.data.camerasInternal = {[0] = {type = 'driver', camNodeID = 4}}")
+    shoot(car, 1, 1.1, size=0)
+    assert ai_calls(car) == []
