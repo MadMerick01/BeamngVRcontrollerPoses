@@ -85,14 +85,14 @@ dump(vrHands.getStatus())          -- packets, age, which poses are valid
 vrHands.startCapture(20)           -- record 20 s of camera + pose data to <user folder>/vrHandsCapture/
 ```
 
-By default the pistol mod leaves BeamNG's own controller pointers (the black
-line and orange ball) alone. The only way to hide them is BeamNG's "use
-controllers" setting (`openXRuseControllers`), and switching that off also
-turns off the controllers' sticks and buttons in the game, so you can't walk or
-drive with the sticks. If you want them hidden anyway,
-`vrPistol.getConfig().hideGamePointer = true` hides them (and the stick input)
-the whole time the mod is loaded, and `'drawn'` only while the gun is drawn.
-Unloading the mod puts the setting back.
+While the pistol mod is loaded, BeamNG's own controller pointers on both hands
+(the black line and orange ball) stay switched off. The only way to hide them is
+BeamNG's "use controllers" setting (`openXRuseControllers`), and switching that
+off also turns off the controllers' sticks and buttons in the game, so you can't
+walk or drive with the sticks while the mod is loaded. With
+`vrPistol.getConfig().hideGamePointer = 'drawn'` both are off only while the gun
+is drawn, and `false` keeps the pointers and sticks working. Unloading the mod
+puts the setting back.
 
 Hold the right grip to draw the gun. Drawing it plays a holster sound. Pull the right trigger to shoot. The revolver is double action: as you squeeze,
 the hammer comes back and the cylinder turns, and at the break the hammer drops,
@@ -180,7 +180,7 @@ vrPistol.getConfig().shotVolume = 18         -- shotSound = '' mutes it
 vrPistol.testSound()                         -- plays the gunshot once (check the console for "created SFX source")
 vrPistol.testSound('equip')                  -- plays the equip sound (equipSound, equipVolume)
 vrPistol.setLaser(true)                      -- aiming laser (off by default)
-vrPistol.getConfig().equipOnGrip = false     -- gun always drawn; hideGamePointer = true or 'drawn' hides BeamNG's pointers (and stick input)
+vrPistol.getConfig().equipOnGrip = false     -- gun always drawn; hideGamePointer = false keeps BeamNG's pointers and sticks
 vrPistol.getConfig().impactForce = 9000      -- also blastRadius, blastForce, deflateTyres, range, cooldown
 vrPistol.fireFromCamera()                    -- desktop test along the camera view
 vrPistol.startModelTest()                     -- gun smoothness test, see below

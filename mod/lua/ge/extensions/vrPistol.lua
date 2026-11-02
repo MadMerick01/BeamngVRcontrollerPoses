@@ -81,10 +81,11 @@ local cfg = {
   -- BeamNG's own controller pointers (black line and orange ball, both hands).
   -- The only way to hide them is BeamNG's 'openXRuseControllers' setting, and
   -- that also turns off the controllers' sticks and buttons in the game (no
-  -- walking or driving with the sticks). So by default they are left alone.
+  -- walking or driving with the sticks).
   -- true hides them (and the stick input) the whole time the pistol is loaded,
-  -- 'drawn' only while the gun is drawn. Unloading puts the setting back.
-  hideGamePointer = false,
+  -- 'drawn' only while the gun is drawn, false leaves both working.
+  -- Unloading puts the setting back.
+  hideGamePointer = true,
   range = 300,
   triggerPress = 0.7,
   triggerRelease = 0.3,

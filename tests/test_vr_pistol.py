@@ -447,7 +447,6 @@ def test_both_game_pointers_stay_hidden_while_the_pistol_is_loaded(lua):
     face_plus_x(lua)
     g = lua.globals()
     g.vrPistol.getConfig().equipOnGrip = True
-    g.vrPistol.getConfig().hideGamePointer = True
     pointer = lambda: g.mock.settings.openXRuseControllers
     # Gun put away, and even with no tracking: hidden from the first frame.
     frame(lua, packet(right_aim=None))
@@ -464,10 +463,11 @@ def test_both_game_pointers_stay_hidden_while_the_pistol_is_loaded(lua):
     assert pointer() is True
 
 
-def test_game_pointers_and_stick_input_are_left_alone_by_default(lua):
+def test_hide_game_pointer_false_keeps_pointers_and_sticks(lua):
     face_plus_x(lua)
     g = lua.globals()
     g.vrPistol.getConfig().equipOnGrip = True
+    g.vrPistol.getConfig().hideGamePointer = False
     frame(lua, packet(right_aim=AIM, trigger=0.0))
     assert g.mock.settings.openXRuseControllers is True
     frame(lua, packet(right_aim=AIM, squeeze=1.0))
