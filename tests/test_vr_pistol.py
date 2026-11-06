@@ -21,6 +21,7 @@ def lua():
     rt.globals().vrPistol = rt.execute((ROOT / "mod/lua/ge/extensions/vrPistol.lua").read_text())
     rt.globals().vrPistol.getConfig().equipOnGrip = False  # most tests just shoot
     rt.globals().vrPistol.setGun("revolver", True)  # most tests cover the revolver
+    rt.globals().vrPistol.setAimPitch(0, True)  # most tests shoot straight along the aim ray
     return rt
 
 
@@ -447,6 +448,7 @@ def test_both_game_pointers_stay_hidden_while_the_pistol_is_loaded(lua):
     face_plus_x(lua)
     g = lua.globals()
     g.vrPistol.getConfig().equipOnGrip = True
+    g.vrPistol.getConfig().hideGamePointer = True
     pointer = lambda: g.mock.settings.openXRuseControllers
     # Gun put away, and even with no tracking: hidden from the first frame.
     frame(lua, packet(right_aim=None))
@@ -463,11 +465,11 @@ def test_both_game_pointers_stay_hidden_while_the_pistol_is_loaded(lua):
     assert pointer() is True
 
 
-def test_hide_game_pointer_false_keeps_pointers_and_sticks(lua):
+def test_game_pointers_and_sticks_stay_on_by_default(lua):
     face_plus_x(lua)
     g = lua.globals()
     g.vrPistol.getConfig().equipOnGrip = True
-    g.vrPistol.getConfig().hideGamePointer = False
+    assert g.vrPistol.getConfig().hideGamePointer is False
     frame(lua, packet(right_aim=AIM, trigger=0.0))
     assert g.mock.settings.openXRuseControllers is True
     frame(lua, packet(right_aim=AIM, squeeze=1.0))
@@ -614,3 +616,43 @@ def test_simple_magnum_is_drawn_from_its_own_mesh(lua):
 def test_magnum_is_the_default_gun(lua):
     fresh = lua.execute((ROOT / "mod/lua/ge/extensions/vrPistol.lua").read_text())
     assert fresh.getGun()[0] == "magnum" and fresh.getAmmo() == (7, 7, None)
+
+
+def shot_dir(lua):
+    cmd = [c.cmd for c in all_commands(lua) if "vrPistolHit" in c.cmd][-1]
+    args = cmd.split("vrPistolHit.hit(")[1].split(",")
+    return [float(a) for a in args[3:6]]
+
+
+def test_aim_pitch_follows_the_game_pointer_setting(lua):
+    face_plus_x(lua)
+    g = lua.globals()
+    g.vrPistol.setAimPitch("game", True)
+    assert g.vrPistol.getAimPitch() == -10  # setting missing: BeamNG's default
+    g.mock.settings.openXRhandPoseDirectionDegrees = -25
+    assert g.vrPistol.getAimPitch() == -25
+    # Aimed straight at +X, the shot tips 25 degrees down toward a car below.
+    add(lua, "low", (10.5 + 20, 20, 1.5 - 20 * math.tan(math.radians(25))), (2, 1, 1))
+    add(lua, "level", (30, 20, 1.5), (2, 1, 1))
+    frame(lua, packet(right_aim=AIM, trigger=0.0))
+    frame(lua, packet(right_aim=AIM, trigger=0.9))
+    assert commands(lua) == ["low"]
+    d = shot_dir(lua)
+    assert d[0] == pytest.approx(math.cos(math.radians(25)), abs=1e-4)
+    assert d[2] == pytest.approx(-math.sin(math.radians(25)), abs=1e-4)
+
+
+def test_set_aim_pitch_overrides_and_is_remembered(lua):
+    face_plus_x(lua)
+    g = lua.globals()
+    saved = {}
+    def write(path, data, pretty=None):
+        saved.clear()
+        saved.update(dict(data), path=path)
+    g.jsonWriteFile = write
+    g.mock.settings.openXRhandPoseDirectionDegrees = -10
+    assert g.vrPistol.setAimPitch(-30) == -30
+    assert saved == {"path": "/settings/vrPistol.json", "gun": "revolver", "aimPitchDeg": -30}
+    g.vrPistol.setAimPitch("game")
+    assert g.vrPistol.getAimPitch() == -10
+    assert saved == {"path": "/settings/vrPistol.json", "gun": "revolver"}

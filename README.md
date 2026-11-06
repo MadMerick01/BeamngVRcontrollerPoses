@@ -85,14 +85,26 @@ dump(vrHands.getStatus())          -- packets, age, which poses are valid
 vrHands.startCapture(20)           -- record 20 s of camera + pose data to <user folder>/vrHandsCapture/
 ```
 
-While the pistol mod is loaded, BeamNG's own controller pointers on both hands
-(the black line and orange ball) stay switched off. The only way to hide them is
-BeamNG's "use controllers" setting (`openXRuseControllers`), and switching that
-off also turns off the controllers' sticks and buttons in the game, so you can't
-walk or drive with the sticks while the mod is loaded. With
-`vrPistol.getConfig().hideGamePointer = 'drawn'` both are off only while the gun
-is drawn, and `false` keeps the pointers and sticks working. Unloading the mod
-puts the setting back.
+BeamNG's own controller pointers on both hands (the black line and orange ball)
+stay on while the pistol mod is loaded, along with the sticks and buttons. The gun
+and its shots are tilted from the OpenXR aim ray by the same angle BeamNG tilts
+its pointer (the game's `openXRhandPoseDirectionDegrees` setting, -10 degrees on a
+default install), so the gun points along the game's black line.
+
+If the gun still points above or below the black line, turn on the laser and
+nudge the tilt until the red laser sits on the black line (negative is down):
+
+```lua
+vrPistol.setLaser(true)
+vrPistol.setAimPitch(-30)       -- remembered between sessions
+vrPistol.setAimPitch('game')    -- back to following BeamNG's setting
+```
+
+The only way to hide BeamNG's pointers is its "use controllers" setting
+(`openXRuseControllers`), and switching that off also turns off the controllers'
+sticks and buttons in the game. `vrPistol.getConfig().hideGamePointer = true`
+hides both the whole time the mod is loaded, `'drawn'` only while the gun is
+drawn. Unloading the mod puts the setting back.
 
 Hold the right grip to draw the gun. Drawing it plays a holster sound. Pull the right trigger to shoot. The revolver is double action: as you squeeze,
 the hammer comes back and the cylinder turns, and at the break the hammer drops,
@@ -180,7 +192,8 @@ vrPistol.getConfig().shotVolume = 18         -- shotSound = '' mutes it
 vrPistol.testSound()                         -- plays the gunshot once (check the console for "created SFX source")
 vrPistol.testSound('equip')                  -- plays the equip sound (equipSound, equipVolume)
 vrPistol.setLaser(true)                      -- aiming laser (off by default)
-vrPistol.getConfig().equipOnGrip = false     -- gun always drawn; hideGamePointer = false keeps BeamNG's pointers and sticks
+vrPistol.setAimPitch(-10)                    -- tilt gun + shot from the aim ray (deg, negative down); 'game' follows BeamNG's pointer
+vrPistol.getConfig().equipOnGrip = false     -- gun always drawn
 vrPistol.getConfig().impactForce = 9000      -- also blastRadius, blastForce, deflateTyres, range, cooldown
 vrPistol.fireFromCamera()                    -- desktop test along the camera view
 vrPistol.startModelTest()                     -- gun smoothness test, see below
