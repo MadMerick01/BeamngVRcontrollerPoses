@@ -3,6 +3,7 @@
 --   extensions.load('vrPistol')       -- also loads vrHands
 --   vrPistol.setGun('revolver'|'magnum')  -- pick the gun (remembered between sessions)
 --   vrPistol.setLaser(true|false)     -- aiming laser (off by default)
+--   vrPistol.setAimPitch(deg|'game')  -- tilt gun and shot to match BeamNG's pointer
 --   vrPistol.setModelOffset(x, y, z, pitchDeg)  -- fit the model to your hand
 --   vrPistol.fireFromCamera()         -- desktop test: shoot along the camera view
 --
@@ -27,8 +28,10 @@
 -- that vehicle's AI off and holds its brake at driverBrake. vrPistol.showDriverBoxes(seconds) draws
 -- the boxes of every vehicle, to check where they sit.
 --
--- The shot always travels along the controller's aim ray (OpenXR aim pose), so
--- the model offset only changes how the gun looks, never where it hits.
+-- The shot travels along the controller's aim ray (OpenXR aim pose) tilted by
+-- aimPitchDeg, the same tilt BeamNG gives its own controller pointer, so the gun
+-- points where the game's black line points. The model offset only changes how
+-- the gun looks, never where it hits.
 --
 -- Two guns, picked with setGun:
 --   'revolver'  double-action .44 revolver (mod/art/shapes/vrrevolver, built by
@@ -55,6 +58,11 @@ local cfg = {
   -- metres: x right, y along the aim ray, z up.
   modelOffset = {x = 0, y = -0.02, z = 0.05},
   modelPitchDeg = 0,
+  -- Tilt of the gun and the shot from the OpenXR aim ray, degrees (negative is
+  -- down). 'game' follows BeamNG's own pointer tilt, the 'openXRhandPoseDirectionDegrees'
+  -- setting (-10 on a default install), so the gun lines up with the game's pointer.
+  -- A number overrides it; vrPistol.setAimPitch changes it and remembers it.
+  aimPitchDeg = 'game',
   -- Action and recoil. The hammer and trigger angles are the revolver's; the
   -- magnum's are in its GUNS entry.
   hammerCockDeg = 48,
@@ -83,9 +91,10 @@ local cfg = {
   -- that also turns off the controllers' sticks and buttons in the game (no
   -- walking or driving with the sticks).
   -- true hides them (and the stick input) the whole time the pistol is loaded,
-  -- 'drawn' only while the gun is drawn, false leaves both working.
+  -- 'drawn' only while the gun is drawn, false (the default) leaves both
+  -- working, so the pointer can be used to check the gun's aim.
   -- Unloading puts the setting back.
-  hideGamePointer = true,
+  hideGamePointer = false,
   range = 300,
   triggerPress = 0.7,
   triggerRelease = 0.3,
@@ -834,6 +843,36 @@ function M.getConfig() return cfg end
 
 local SAVE_FILE = '/settings/vrPistol.json'
 
+-- Remembers the gun and a hand-set aim pitch in <user folder>/settings/vrPistol.json.
+local function saveChoices()
+  if not jsonWriteFile then return end
+  local data = {gun = cfg.gun}
+  if type(cfg.aimPitchDeg) == 'number' then data.aimPitchDeg = cfg.aimPitchDeg end
+  pcall(jsonWriteFile, SAVE_FILE, data, true)
+end
+
+-- BeamNG's pointer tilt from the aim ray, degrees ('openXRhandPoseDirectionDegrees').
+local function gamePointerPitch()
+  if not settings or not settings.getValue then return 0 end
+  local ok, v = pcall(settings.getValue, 'openXRhandPoseDirectionDegrees')
+  return ok and tonumber(v) or -10
+end
+
+-- Degrees the gun and shot are tilted from the aim ray (negative is down).
+function M.getAimPitch()
+  if type(cfg.aimPitchDeg) == 'number' then return cfg.aimPitchDeg end
+  return gamePointerPitch()
+end
+
+-- deg: a number, or 'game' (or nil) to follow BeamNG's pointer setting.
+-- Remembered between sessions unless noSave is true.
+function M.setAimPitch(deg, noSave)
+  cfg.aimPitchDeg = tonumber(deg) or 'game'
+  if not noSave then saveChoices() end
+  log('I', 'vrPistol', 'aim pitch: ' .. M.getAimPitch() .. ' deg' .. (cfg.aimPitchDeg == 'game' and ' (BeamNG pointer setting)' or ''))
+  return M.getAimPitch()
+end
+
 -- Switches to another gun with a full load. Remembered in
 -- <user folder>/settings/vrPistol.json unless noSave is true.
 function M.setGun(id, noSave)
@@ -858,9 +897,7 @@ function M.setGun(id, noSave)
   rounds = gun.capacity
   slideLocked, slideReleasedAt, hammerDown = false, nil, false
   shotsFired = 0
-  if not noSave and jsonWriteFile then
-    pcall(jsonWriteFile, SAVE_FILE, {gun = id}, true)
-  end
+  if not noSave then saveChoices() end
   log('I', 'vrPistol', 'gun: ' .. gun.label)
   return true
 end
@@ -1007,7 +1044,22 @@ end
 function M.onExtensionLoaded()
   if not jsonReadFile then return end
   local ok, saved = pcall(jsonReadFile, SAVE_FILE)
-  if ok and type(saved) == 'table' and saved.gun and GUNS[saved.gun] then M.setGun(saved.gun, true) end
+  if not ok or type(saved) ~= 'table' then return end
+  if saved.gun and GUNS[saved.gun] then M.setGun(saved.gun, true) end
+  if tonumber(saved.aimPitchDeg) then cfg.aimPitchDeg = tonumber(saved.aimPitchDeg) end
+end
+
+-- The aim pose turned about its right axis by pitchDeg (negative tips it down).
+local function pitchedPose(aim, pitchDeg)
+  if not aim.valid or not pitchDeg or pitchDeg == 0 then return aim end
+  local a = math.rad(pitchDeg)
+  local c, s = math.cos(a), math.sin(a)
+  local out = {}
+  for k, v in pairs(aim) do out[k] = v end
+  out.dir = aim.dir * c + aim.up * s
+  out.up = aim.up * c - aim.dir * s
+  if quatFromDir then out.rot = quatFromDir(out.dir, out.up) end
+  return out
 end
 
 function M.onPreRender(dtReal)
@@ -1015,6 +1067,7 @@ function M.onPreRender(dtReal)
   local drawn = updateEquipped(aim)
   setGamePointerHidden(cfg.hideGamePointer == true or (cfg.hideGamePointer == 'drawn' and drawn))
   if not drawn then aim = {valid = false} end
+  aim = pitchedPose(aim, M.getAimPitch())
   local trigger = aim.valid and vrHands.getTrigger(cfg.hand) or 0
   local t = now()
 
